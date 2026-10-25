@@ -1,22 +1,23 @@
 //! veylog: Laravel log dosyalarını özetleyen komut satırı aracı.
 
+mod drain;
 mod kayit;
 mod maske;
 
-use std::borrow::Cow;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::process;
 
+use drain::{Ayarlar, Drain, Kume};
 use kayit::kayitlari_ayir;
 use maske::maskele;
 
-/// Listede gösterilecek en fazla mesaj sayısı.
-const GOSTERILECEK_MESAJ: usize = 10;
-/// Uzun mesajlar bu kadar karakterden sonra kesilir.
-const MESAJ_GENISLIGI: usize = 90;
+/// Listede gösterilecek en fazla kalıp sayısı.
+const GOSTERILECEK_KALIP: usize = 10;
+/// Uzun kalıplar bu kadar karakterden sonra kesilir.
+const KALIP_GENISLIGI: usize = 90;
 
 fn main() {
     let argumanlar: Vec<String> = env::args().collect();
@@ -52,26 +53,34 @@ fn main() {
         println!("  {:<10}{adet:>4}", seviye.ad());
     }
 
-    // Aynı maskelenmiş mesaja sahip kayıtları say. BTreeMap mesajları alfabetik tutar.
-    let mut mesaj_sayilari: BTreeMap<Cow<str>, usize> = BTreeMap::new();
+    // Her mesajı maskele ve Drain'e ver. Karşılaştırma için farklı mesajları da say.
+    let mut drain = Drain::new(Ayarlar::default());
+    let mut maskeli_mesajlar = BTreeSet::new();
     for kayit in &log.kayitlar {
-        *mesaj_sayilari.entry(maskele(kayit.mesaj)).or_insert(0) += 1;
+        let maskeli = maskele(kayit.mesaj);
+        drain.ekle(&maskeli);
+        maskeli_mesajlar.insert(maskeli);
     }
     let ham_mesajlar: BTreeSet<&str> = log.kayitlar.iter().map(|kayit| kayit.mesaj).collect();
 
-    // En sık olan başa. Reverse sırayı ters çevirir (çoktan aza). Sıralama kararlıdır:
-    // adedi eşit olanlar BTreeMap'ten geldikleri alfabetik sırada kalır.
-    let mut en_sik: Vec<(Cow<str>, usize)> = mesaj_sayilari.into_iter().collect();
-    en_sik.sort_by_key(|(_, adet)| Reverse(*adet));
+    // En kalabalık kalıp başa. Sıralama kararlıdır: adedi eşit olanlar ilk görüldükleri
+    // sırada kalır.
+    let mut kaliplar: Vec<&Kume> = drain.kumeler().iter().collect();
+    kaliplar.sort_by_key(|kume| Reverse(kume.adet));
 
     println!();
     println!(
-        "Mesajlar: {} farklı mesaj, maskeleyince {}",
+        "Kalıplar: {} farklı mesaj → maskeleyince {} → Drain ile {} kalıp",
         ham_mesajlar.len(),
-        en_sik.len()
+        maskeli_mesajlar.len(),
+        kaliplar.len()
     );
-    for (mesaj, adet) in en_sik.iter().take(GOSTERILECEK_MESAJ) {
-        println!("  {adet:>4}  {}", kisalt(mesaj, MESAJ_GENISLIGI));
+    for kume in kaliplar.iter().take(GOSTERILECEK_KALIP) {
+        println!(
+            "  {:>4}  {}",
+            kume.adet,
+            kisalt(&kume.metin(), KALIP_GENISLIGI)
+        );
     }
 }
 

@@ -2,9 +2,6 @@
 
 Laravel log dosyalarını okuyup özetleyen, Rust ile yazılmış bir komut satırı aracı.
 
-> 🚧 Proje geliştirme aşamasında. Rust öğrenirken adım adım yazılıyor; aşağıdaki
-> [Yol haritası](#yol-haritası) neyin hazır, neyin planlı olduğunu gösterir.
-
 ## Neden?
 
 Bir Laravel uygulamasının `storage/logs/laravel.log` dosyası binlerce satıra ulaşabilir.
@@ -23,8 +20,10 @@ ve ne zaman başladı.
 - Logun kapsadığı zaman aralığını gösterir.
 - Kayıtları seviyelerine göre (DEBUG → EMERGENCY) sayar; en önemlisi en üstte.
 - Mesajlardaki değişken kısımları (URL, e-posta, UUID, zaman, IP, sayı) yer tutucularla
-  maskeler: `Kullanıcı 381 giriş yaptı` → `Kullanıcı <SAYI> giriş yaptı`. Böylece aynı türden
-  mesajlar birlikte sayılır ve en sık tekrar edenler listelenir.
+  maskeler: `Kullanıcı 381 giriş yaptı` → `Kullanıcı <SAYI> giriş yaptı`.
+- Maskelenmiş mesajları [Drain](#nasıl-çalışıyor) algoritmasıyla kalıplara ayırır ve en sık
+  tekrar eden kalıpları listeler: `Zamanlanmış görev başladı: kurlar:guncelle` ile
+  `Zamanlanmış görev başladı: yedek:al` → `Zamanlanmış görev başladı: <*>`.
 
 ```text
 $ veylog ornekler/laravel.log
@@ -42,18 +41,83 @@ Seviyeler:
   INFO        31
   DEBUG        3
 
-Mesajlar: 45 farklı mesaj, maskeleyince 27
-     8  Kullanıcı <SAYI> giriş yaptı
-     6  Sipariş <SAYI> için ödeme alındı
+Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp
+     9  Kullanıcı <SAYI> <*> yaptı
      6  Sipariş <SAYI> oluşturuldu
+     6  Sipariş <SAYI> için ödeme alındı
      6  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> bytes receiv…
      4  Undefined array key "kargo_ucreti"
      3  Sepet önbellekten okundu
+     3  SQLSTATE[<SAYI>]: Integrity constraint violation: <SAYI> Duplicate entry '<EPOSTA>' for k…
      3  Ödeme sağlayıcısı yanıt vermedi, sipariş <SAYI> için yeniden denenecek (deneme <SAYI>/<SA…
+     2  Zamanlanmış görev başladı: <*>
      2  Attempt to read property "ad" on null
-     2  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]
-     2  İade talebi oluşturuldu
 ```
+
+## Nasıl çalışıyor?
+
+```text
+laravel.log → kayıtlara ayır → maskele → Drain → kalıplar
+              59 kayıt          27 farklı   23 kalıp
+              45 farklı mesaj   mesaj
+```
+
+### Maskeleme
+
+Değişken kısımlar düzenli ifadelerle şu sırayla yer tutuculara çevrilir: URL, e-posta, UUID,
+zaman, IP, sayı. Sıra önemlidir: geniş yapılar önce, tek tek sayılar en son yakalanır. Yoksa
+`10.0.3.12` bir IP olarak değil, sayılara bölünmüş olarak maskelenirdi.
+
+### Drain
+
+Kalıp çıkarma için He ve arkadaşlarının
+[Drain](http://jiemingzhu.github.io/pub/pjhe_icws2017.pdf) algoritması (ICWS 2017) kullanılır.
+Mesajlar teker teker işlenir:
+
+1. Mesaj boşluklardan belirteçlere bölünür.
+2. Sabit derinlikli bir ağaçta önce belirteç sayısına, sonra ilk belirtece göre dal seçilir.
+   İçinde rakam olan belirteçler ortak `<*>` dalına gider. Böylece her mesaj bütün kalıplarla
+   değil, yalnızca birkaç adayla karşılaştırılır.
+3. Varılan yapraktaki her kalıp için benzerlik hesaplanır: aynı konumda aynı olan
+   belirteçlerin oranı.
+4. En iyi benzerlik eşiği geçerse mesaj o kümeye katılır ve kalıpta farklı olan konumlar
+   `<*>` olur; geçmezse yeni bir küme açılır.
+
+```text
+Zamanlanmış görev başladı: kurlar:guncelle
+Zamanlanmış görev başladı: yedek:al
+→ 4 belirtecin 3'ü aynı: 3/4 = 0,75 ≥ 0,7
+→ Zamanlanmış görev başladı: <*>
+```
+
+| Ayar | Varsayılan | Açıklama |
+|---|---|---|
+| Önek derinliği | 1 | Kaç baş belirtece göre dallanılacağı. Laravel hata mesajlarında değişken çoğu zaman ikinci sıradadır (`View [x] not found.`), bu yüzden yalnızca ilk belirteç kullanılır. |
+| Benzerlik eşiği | 0,7 | Bir mesajın kümeye katılması için gereken en düşük benzerlik. |
+| En fazla çocuk | 100 | Bir düğümün en fazla dal sayısı; dolunca yeni belirteçler `<*>` dalına gider. |
+
+Eşiğin örnek logdaki etkisi:
+
+| Eşik | Kalıp | Etkisi |
+|---|---|---|
+| 0,4 | 22 | İki farklı yavaş SQL sorgusu anlamsız tek bir kalıpta birleşir. |
+| **0,7** | 23 | Sorgular ayrı kalır; zamanlanmış görevler birleşir. |
+| 0,8 | 25 | `giriş` ve `çıkış` ayrılır, ama zamanlanmış görevler de ayrılır. |
+
+Yanlışlıkla birleştirilen yeni bir hata eski bir kalıbın içinde kaybolacağı için varsayılan
+eşik temkinli seçildi. Geliştirme sırasında aynı ayarlarla [Drain3](https://github.com/IBM/Drain3)
+(IBM, Python) ile karşılaştırıldı; örnek logda ve rastgele üretilmiş mesajlarda aynı kümeleri
+veriyor.
+
+### Bilinen sınırlamalar
+
+- Drain sözdizimine bakar, anlama bakmaz: `Kullanıcı <SAYI> giriş yaptı` ile
+  `Kullanıcı <SAYI> çıkış yaptı` aynı yapıda olduğu için `Kullanıcı <SAYI> <*> yaptı`
+  kalıbında birleşir.
+- Boşluk içeren bir değer (ör. `Ali Veli`) belirteç sayısını değiştirdiği için aynı kalıptan
+  gelen mesajlar farklı kümelere düşebilir.
+- Ayarlar henüz komut satırından değiştirilemiyor.
+- Dosyanın tamamı belleğe okunuyor; çok büyük dosyalar için satır satır okuma ileride eklenecek.
 
 ## Kurulum
 
@@ -83,7 +147,8 @@ cargo run -- ornekler/laravel.log
 src/
 ├── main.rs    programın girişi: dosyayı okur, özeti ekrana yazar
 ├── kayit.rs   log metnini kayıtlara ayırır: başlık, seviye, mesaj, devam satırları
-└── maske.rs   mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
+├── maske.rs   mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
+└── drain.rs   Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
 ```
 
 Dış kütüphane olarak yalnızca [regex](https://crates.io/crates/regex) kullanılır.
@@ -107,7 +172,9 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] Kodu modüllere ayırma
 - [x] Çok satırlı kayıtları (stack trace) kayda bağlama, zaman aralığını gösterme
 - [x] Değişken kısımları maskeleme (sayı, IP, e-posta, UUID → `<SAYI>`, `<IP>`...)
-- [ ] Drain algoritmasıyla tekrar eden kalıpları bulma
+- [x] Drain algoritmasıyla tekrar eden kalıpları bulma
+- [ ] Kalıp raporu: en yüksek seviye, ilk/son görülme zamanı, örnek mesaj
+- [ ] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı
 - [ ] JSON ve Markdown çıktısı
 - [ ] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar
 - [ ] Ani hata artışlarını yakalama (medyan + MAD)
