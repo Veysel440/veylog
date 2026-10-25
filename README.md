@@ -26,6 +26,8 @@ ve ne zaman başladı.
 - Maskelenmiş mesajları [Drain](#nasıl-çalışıyor) algoritmasıyla kalıplara ayırır ve en sık
   tekrar eden kalıpları listeler: `Zamanlanmış görev başladı: kurlar:guncelle` ile
   `Zamanlanmış görev başladı: yedek:al` → `Zamanlanmış görev başladı: <*>`.
+- Kısa mesajlardaki rakamlı değişkenleri de birleştirir: `Yanıt süresi 120ms` ile
+  `Yanıt süresi 95ms` → `Yanıt süresi <*>`.
 - Geçersiz UTF-8 baytları içeren dosyalarda durmaz; bu baytları `�` ile değiştirip uyarır.
 - Çıktısı başka bir programa yönlendirilebilir (`veylog laravel.log | head`); okuyan program
   erken kapansa da çökmez.
@@ -100,6 +102,7 @@ Zamanlanmış görev başladı: yedek:al
 | Önek derinliği | 1 | Kaç baş belirtece göre dallanılacağı. Laravel hata mesajlarında değişken çoğu zaman ikinci sıradadır (`View [x] not found.`), bu yüzden yalnızca ilk belirteç kullanılır. |
 | Benzerlik eşiği | 0,7 | Bir mesajın kümeye katılması için gereken en düşük benzerlik. |
 | En fazla çocuk | 100 | Bir düğümün en fazla dal sayısı; dolunca yeni belirteçler `<*>` dalına gider. |
+| Rakama duyarlı eşik | açık | Eşik, rakam içeren farklılıkların oranında gevşer (aşağıda). |
 
 Eşiğin örnek logdaki etkisi:
 
@@ -110,18 +113,44 @@ Eşiğin örnek logdaki etkisi:
 | 0,8 | 25 | `giriş` ve `çıkış` ayrılır, ama zamanlanmış görevler de ayrılır. |
 
 Yanlışlıkla birleştirilen yeni bir hata eski bir kalıbın içinde kaybolacağı için varsayılan
-eşik temkinli seçildi. Geliştirme sırasında aynı ayarlarla [Drain3](https://github.com/IBM/Drain3)
-(IBM, Python) ile karşılaştırıldı; örnek logda ve rastgele üretilmiş mesajlarda aynı kümeleri
-veriyor.
+eşik temkinli seçildi.
+
+### Rakama duyarlı eşik
+
+Sabit bir eşik kısa mesajlarda sorun çıkarır: `Yanıt süresi 120ms` ile `Yanıt süresi 95ms`
+mesajlarında 3 belirtecin 2'si aynıdır (0,67 < 0,7) ve her değer ayrı bir kalıp olur. Eşiği
+düşürmek ise uzun mesajlarda farklı SQL sorgularını birleştirir. Bunun yerine, Drain'in
+[genişletilmiş sürümündeki](https://arxiv.org/pdf/1806.04356) fikir uygulanır: içinde rakam
+olan belirteçler büyük ihtimalle değişkendir, eşik onların oranında gevşer.
+
+```text
+eşik = 0,7 × (n − rakamlı fark) / n
+```
+
+Burada `rakamlı fark`, farklı olan (ya da kalıpta `<*>` olan) ve iki taraftan en az birinde
+rakam bulunan konumların sayısıdır.
+
+| Mesajlar | Rakamlı fark | Eşik | Benzerlik | Sonuç |
+|---|---|---|---|---|
+| `Yanıt süresi 120ms` / `95ms` | 1 | 0,47 | 0,67 | Birleşir: `Yanıt süresi <*>` |
+| `Ödeme alındı` / `Ödeme reddedildi` | 0 | 0,70 | 0,50 | Ayrı kalır |
+| `S3 yüklemesi tamamlandı` / `başarısız` | 0 | 0,70 | 0,67 | Ayrı kalır |
+
+Makaledeki formülden farkı, bütün rakamlı belirteçleri değil yalnızca rakamlı
+**farklılıkları** saymasıdır. `S3` gibi rakam içeren ama sabit olan bir kelime bu yüzden
+eşiği gevşetmez.
+
+Geliştirme sırasında [Drain3](https://github.com/IBM/Drain3) (IBM, Python) ile
+karşılaştırıldı: rakama duyarlı eşik kapalıyken aynı kümeleri, açıkken de rakam içermeyen
+mesajlarda aynı kümeleri veriyor.
 
 ### Bilinen sınırlamalar
 
 - Drain sözdizimine bakar, anlama bakmaz: `Kullanıcı <SAYI> giriş yaptı` ile
   `Kullanıcı <SAYI> çıkış yaptı` aynı yapıda olduğu için `Kullanıcı <SAYI> <*> yaptı`
   kalıbında birleşir.
-- Kısa mesajlarda maskelenemeyen tek bir değişken bile eşiği geçmeyi engeller:
-  `Yanıt süresi 120ms` ile `Yanıt süresi 95ms` (3 belirtecin 2'si aynı, 0,67 < 0,7) ayrı
-  kalıplar olur.
+- Kısa mesajlarda rakam içermeyen bir değişken hâlâ her değer için ayrı kalıp oluşturur
+  (ör. `İşlendi: App\Jobs\FaturaGonder` ile `İşlendi: App\Jobs\EpostaGonder`).
 - Boşluk içeren bir değer (ör. `Ali Veli`) belirteç sayısını değiştirdiği için aynı kalıptan
   gelen mesajlar farklı kümelere düşebilir.
 - Stack trace henüz kullanılmıyor: aynı mesajla farklı yerlerde fırlatılan iki hata
@@ -194,7 +223,7 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] Değişken kısımları maskeleme (sayı, IP, e-posta, UUID → `<SAYI>`, `<IP>`...)
 - [x] Drain algoritmasıyla tekrar eden kalıpları bulma
 - [x] Dayanıklı okuma: ISO 8601 zaman, geçersiz UTF-8, yönlendirilen çıktı
-- [ ] Rakama duyarlı benzerlik eşiği: kısa mesajlardaki sayısal değişkenler
+- [x] Rakama duyarlı benzerlik eşiği: kısa mesajlardaki sayısal değişkenler
 - [ ] Kalıp raporu: en yüksek seviye, ilk/son görülme zamanı, örnek mesaj
 - [ ] Hata parmak izi: istisna sınıfı ve uygulamadaki ilk satır
 - [ ] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı

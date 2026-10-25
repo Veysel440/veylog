@@ -33,6 +33,12 @@
 //! 4. Varılan yapraktaki kümelerden en benzeri bulunur. Benzerlik eşiği geçiyorsa mesaj o
 //!    kümeye katılır, geçmiyorsa yeni bir küme açılır.
 //! 5. Kümeye katılan mesajla kalıp arasında farklı olan konumlar `<*>` yapılır.
+//!
+//! Rakama duyarlı eşik: 4. adımdaki eşik, rakam içeren farklılıkların oranında gevşer.
+//! Fikir Drain'in genişletilmiş sürümünden gelir (He ve ark., "A Directed Acyclic Graph
+//! Approach to Online Log Parsing", 2018): rakam içeren belirteçler büyük ihtimalle
+//! değişkendir. Böylece `Yanıt süresi 120ms` ile `Yanıt süresi 95ms` gibi kısa mesajlar da
+//! birleşebilir.
 
 use std::collections::HashMap;
 
@@ -48,6 +54,9 @@ pub struct Ayarlar {
     pub benzerlik_esigi: f64,
     /// Bir düğümün en fazla çocuk sayısı; dolunca yeni belirteçler `<*>` dalına gider.
     pub en_fazla_cocuk: usize,
+    /// Eşik, rakam içeren farklılıkların oranında gevşesin mi? Kapalıyken davranış klasik
+    /// Drain (ve Drain3) ile birebir aynıdır.
+    pub rakama_duyarli_esik: bool,
 }
 
 impl Default for Ayarlar {
@@ -56,6 +65,7 @@ impl Default for Ayarlar {
             onek_derinligi: 1,
             benzerlik_esigi: 0.7,
             en_fazla_cocuk: 100,
+            rakama_duyarli_esik: true,
         }
     }
 }
@@ -156,18 +166,27 @@ impl Drain {
 
         // 4. Yapraktaki en benzer küme. Bir yapraktaki bütün kalıplar aynı uzunlukta olduğu
         // için eşit belirteç sayısını karşılaştırmak, oranları karşılaştırmakla aynı şey.
-        let mut en_iyi: Option<(usize, usize, usize)> = None; // (küme no, eşit, joker)
+        let mut en_iyi: Option<(usize, Karsilastirma)> = None;
         for &numara in &dugum.kume_numaralari {
-            let (esit, joker) = karsilastir(&self.kumeler[numara].kalip, belirtecler);
+            let sonuc = karsilastir(&self.kumeler[numara].kalip, belirtecler);
             // Eşitlikte daha çok jokeri olan, yani daha genel kalıp seçilir
-            if en_iyi.is_none_or(|(_, e, j)| (esit, joker) > (e, j)) {
-                en_iyi = Some((numara, esit, joker));
+            if en_iyi.is_none_or(|(_, e)| (sonuc.esit, sonuc.joker) > (e.esit, e.joker)) {
+                en_iyi = Some((numara, sonuc));
             }
         }
+        let (numara, sonuc) = en_iyi?;
 
-        let (numara, esit, _) = en_iyi?;
-        let benzerlik = esit as f64 / belirtecler.len() as f64;
-        (benzerlik >= self.ayarlar.benzerlik_esigi).then_some(numara)
+        // Rakam içeren farklılıklar büyük ihtimalle değişkendir; eşik onların oranında gevşer:
+        // eşik × (n − rakamlı fark) / n
+        let n = belirtecler.len() as f64;
+        let rakamli_fark = if self.ayarlar.rakama_duyarli_esik {
+            sonuc.rakamli_fark as f64
+        } else {
+            0.0
+        };
+        let esik = self.ayarlar.benzerlik_esigi * (n - rakamli_fark) / n;
+        let benzerlik = sonuc.esit as f64 / n;
+        (benzerlik >= esik).then_some(numara)
     }
 
     /// Yeni kümeyi ağaca yerleştirir; yol üzerindeki eksik düğümleri oluşturur.
@@ -200,7 +219,7 @@ fn dal_anahtari(
         return belirtec.to_string();
     }
     // İçinde rakam olan belirteç büyük ihtimalle değişkendir (ör. "a1b2c3"): ayrı dal açma
-    if belirtec.chars().any(|c| c.is_ascii_digit()) {
+    if rakam_iceriyor(belirtec) {
         return JOKER.to_string();
     }
     // Düğüm doluysa yeni belirteç joker dalına gider. Joker dalına her zaman yer ayrılır.
@@ -211,19 +230,45 @@ fn dal_anahtari(
     belirtec.to_string()
 }
 
-/// Kalıp ile mesajı konum konum karşılaştırır: (eşit belirteç sayısı, kalıptaki joker sayısı).
-/// Joker konumlar eşit sayılmaz; makaledeki benzerlik (simSeq) böyle tanımlanır.
-fn karsilastir(kalip: &[String], belirtecler: &[&str]) -> (usize, usize) {
-    let mut esit = 0;
-    let mut joker = 0;
+/// İçinde en az bir rakam var mı? "120ms", "a1b2", "S3" → evet; "<*>", "giriş" → hayır.
+fn rakam_iceriyor(belirtec: &str) -> bool {
+    belirtec.chars().any(|c| c.is_ascii_digit())
+}
+
+/// Bir kalıpla bir mesajın konum konum karşılaştırılmasının sonucu.
+#[derive(Debug, Clone, Copy)]
+struct Karsilastirma {
+    /// Kalıpta ve mesajda aynı olan konumlar. Joker konumlar eşit sayılmaz; makaledeki
+    /// benzerlik (simSeq) böyle tanımlanır.
+    esit: usize,
+    /// Kalıptaki joker konumlar.
+    joker: usize,
+    /// Farklı olan (ya da kalıpta joker olan) ve iki taraftan en az birinde rakam bulunan
+    /// konumlar: büyük ihtimalle değişken.
+    rakamli_fark: usize,
+}
+
+/// Kalıp ile mesajı konum konum karşılaştırır.
+fn karsilastir(kalip: &[String], belirtecler: &[&str]) -> Karsilastirma {
+    let mut sonuc = Karsilastirma {
+        esit: 0,
+        joker: 0,
+        rakamli_fark: 0,
+    };
     for (k, b) in kalip.iter().zip(belirtecler) {
+        let rakamli = rakam_iceriyor(k) || rakam_iceriyor(b);
         if k == JOKER {
-            joker += 1;
+            sonuc.joker += 1;
+            if rakamli {
+                sonuc.rakamli_fark += 1;
+            }
         } else if k == b {
-            esit += 1;
+            sonuc.esit += 1;
+        } else if rakamli {
+            sonuc.rakamli_fark += 1;
         }
     }
-    (esit, joker)
+    sonuc
 }
 
 /// Kalıpta mesajdan farklı olan konumları jokere çevirir.
@@ -417,5 +462,47 @@ mod testler {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn rakamli_degisken_kisa_mesajda_birlesir() {
+        // "120ms" maskelenmez (birime yapışık); her değer ayrı kalıp olmamalı
+        let sonuc = kumele(
+            Ayarlar::default(),
+            &[
+                "Yanıt süresi 120ms",
+                "Yanıt süresi 95ms",
+                "Yanıt süresi 300ms",
+            ],
+        );
+        assert_eq!(sonuc, ["3 × Yanıt süresi <*>"]);
+    }
+
+    #[test]
+    fn rakamsiz_fark_kisa_mesajda_birlesmez() {
+        // "alındı" ile "reddedildi" farklı olaylar; rakam yok, eşik gevşememeli
+        let sonuc = kumele(Ayarlar::default(), &["Ödeme alındı", "Ödeme reddedildi"]);
+        assert_eq!(sonuc.len(), 2);
+    }
+
+    #[test]
+    fn rakamli_sabit_kelime_esigi_gevsetmez() {
+        // "S3" iki mesajda da aynı; farklı olan kelimede rakam yok, eşik gevşememeli
+        let sonuc = kumele(
+            Ayarlar::default(),
+            &["S3 yüklemesi tamamlandı", "S3 yüklemesi başarısız"],
+        );
+        assert_eq!(sonuc.len(), 2);
+    }
+
+    #[test]
+    fn rakama_duyarli_esik_kapatilabilir() {
+        // Kapalıyken klasik Drain: 2/3 = 0,67 < 0,7 olduğu için her değer ayrı kalır
+        let klasik = Ayarlar {
+            rakama_duyarli_esik: false,
+            ..Ayarlar::default()
+        };
+        let sonuc = kumele(klasik, &["Yanıt süresi 120ms", "Yanıt süresi 95ms"]);
+        assert_eq!(sonuc.len(), 2);
     }
 }
