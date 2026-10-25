@@ -64,6 +64,8 @@ pub struct Kayit<'a> {
     /// "2026-10-24 14:03:11"
     zaman: &'a str,
     seviye: Seviye,
+    /// Bağlam JSON'u olmadan mesajın kendisi: "Kullanıcı 381 giriş yaptı"
+    pub mesaj: &'a str,
     /// Başlıktan sonra gelen satırlar: stack trace, çok satırlı mesajlar.
     devam_satirlari: Vec<&'a str>,
 }
@@ -134,15 +136,29 @@ fn baslik_ayristir(satir: &str) -> Option<Kayit<'_>> {
     if !zaman_gecerli_mi(zaman) {
         return None;
     }
-    let (kanal_seviye, _) = kalan.split_once(':')?; // "production.ERROR"
+    let (kanal_seviye, mesaj_ve_baglam) = kalan.split_once(':')?; // "production.ERROR" ve " Mesaj {...}"
     let (_, seviye_metni) = kanal_seviye.rsplit_once('.')?; // "ERROR"
     let seviye = Seviye::ayristir(seviye_metni)?;
 
     Some(Kayit {
         zaman,
         seviye,
+        mesaj: mesaji_ayir(mesaj_ve_baglam),
         devam_satirlari: Vec::new(),
     })
+}
+
+/// Başlıkta seviyeden sonra gelen kısımdan mesajı ayırır.
+///
+/// Laravel, mesajın arkasına bağlam bilgisini JSON olarak ekler:
+/// ` Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} ` → `Kullanıcı 381 giriş yaptı`
+/// Bağlam ` {"` ile başlar; ondan öncesi mesajdır. Baştaki ve sondaki boşluklar atılır.
+fn mesaji_ayir(metin: &str) -> &str {
+    let mesaj = match metin.find(" {\"") {
+        Some(konum) => &metin[..konum],
+        None => metin,
+    };
+    mesaj.trim()
 }
 
 /// "2026-10-24 14:03:11" biçiminde mi? (19 karakter: rakamlar, -, boşluk ve :)
@@ -171,8 +187,26 @@ mod testler {
             Some(Kayit {
                 zaman: "2026-10-24 14:03:11",
                 seviye: Seviye::Error,
+                mesaj: "Saat 10:00 raporu",
                 devam_satirlari: vec![],
             })
+        );
+    }
+
+    #[test]
+    fn mesaj_baglamdan_ve_bosluklardan_ayrilir() {
+        let kayit = baslik_ayristir(
+            r#"[2026-10-24 09:02:13] production.INFO: Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} "#,
+        );
+        assert_eq!(kayit.map(|k| k.mesaj), Some("Kullanıcı 381 giriş yaptı"));
+
+        // Mesajın içindeki ":" işaretleri bölmeyi bozmamalı; sondaki boşluklar atılmalı
+        let kayit = baslik_ayristir(
+            "[2026-10-24 08:59:58] production.INFO: Zamanlanmış görev başladı: kurlar:guncelle  ",
+        );
+        assert_eq!(
+            kayit.map(|k| k.mesaj),
+            Some("Zamanlanmış görev başladı: kurlar:guncelle")
         );
     }
 

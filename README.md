@@ -22,6 +22,9 @@ ve ne zaman başladı.
   "yetim satır" olarak ayrıca sayar.
 - Logun kapsadığı zaman aralığını gösterir.
 - Kayıtları seviyelerine göre (DEBUG → EMERGENCY) sayar; en önemlisi en üstte.
+- Mesajlardaki değişken kısımları (URL, e-posta, UUID, zaman, IP, sayı) yer tutucularla
+  maskeler: `Kullanıcı 381 giriş yaptı` → `Kullanıcı <SAYI> giriş yaptı`. Böylece aynı türden
+  mesajlar birlikte sayılır ve en sık tekrar edenler listelenir.
 
 ```text
 $ veylog ornekler/laravel.log
@@ -38,6 +41,18 @@ Seviyeler:
   NOTICE       1
   INFO        31
   DEBUG        3
+
+Mesajlar: 45 farklı mesaj, maskeleyince 27
+     8  Kullanıcı <SAYI> giriş yaptı
+     6  Sipariş <SAYI> için ödeme alındı
+     6  Sipariş <SAYI> oluşturuldu
+     6  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> bytes receiv…
+     4  Undefined array key "kargo_ucreti"
+     3  Sepet önbellekten okundu
+     3  Ödeme sağlayıcısı yanıt vermedi, sipariş <SAYI> için yeniden denenecek (deneme <SAYI>/<SA…
+     2  Attempt to read property "ad" on null
+     2  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]
+     2  İade talebi oluşturuldu
 ```
 
 ## Kurulum
@@ -67,8 +82,11 @@ cargo run -- ornekler/laravel.log
 ```text
 src/
 ├── main.rs    programın girişi: dosyayı okur, özeti ekrana yazar
-└── kayit.rs   log metnini kayıtlara ayırır: başlık, seviye, devam satırları
+├── kayit.rs   log metnini kayıtlara ayırır: başlık, seviye, mesaj, devam satırları
+└── maske.rs   mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
 ```
+
+Dış kütüphane olarak yalnızca [regex](https://crates.io/crates/regex) kullanılır.
 
 ## Testler
 
@@ -88,7 +106,7 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] Seviyelere göre sayım
 - [x] Kodu modüllere ayırma
 - [x] Çok satırlı kayıtları (stack trace) kayda bağlama, zaman aralığını gösterme
-- [ ] Değişken kısımları maskeleme (sayı, IP, e-posta, UUID → `<SAYI>`, `<IP>`...)
+- [x] Değişken kısımları maskeleme (sayı, IP, e-posta, UUID → `<SAYI>`, `<IP>`...)
 - [ ] Drain algoritmasıyla tekrar eden kalıpları bulma
 - [ ] JSON ve Markdown çıktısı
 - [ ] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar
