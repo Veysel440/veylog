@@ -7,8 +7,8 @@ Laravel log dosyalarını okuyup özetleyen, Rust ile yazılmış bir komut sat�
 Bir Laravel uygulamasının `storage/logs/laravel.log` dosyası binlerce satıra ulaşabilir.
 Aynı hata yüzlerce kez tekrarlanır, stack trace'ler satır sayısını şişirir ve gerçekten
 önemli olan kayıtlar bu kalabalıkta kaybolur. veylog'un amacı bu dosyayı birkaç saniyede
-okunabilir bir özete çevirmek: kaç kayıt var, hangi seviyede, hangi hatalar tekrar ediyor
-ve ne zaman başladı.
+okunabilir bir özete çevirmek: kaç kayıt var, hangi seviyede, hangi hatalar tekrar ediyor,
+ne zaman başladı ve kodun neresinde oluşuyor.
 
 ## Şu an ne yapıyor?
 
@@ -23,13 +23,17 @@ ve ne zaman başladı.
 - Kayıtları seviyelerine göre (DEBUG → EMERGENCY) sayar; en önemlisi en üstte.
 - Mesajlardaki değişken kısımları (URL, e-posta, UUID, zaman, IP, sayı) yer tutucularla
   maskeler: `Kullanıcı 381 giriş yaptı` → `Kullanıcı <SAYI> giriş yaptı`.
-- Maskelenmiş mesajları [Drain](#nasıl-çalışıyor) algoritmasıyla kalıplara ayırır:
+- Maskelenmiş mesajları [Drain](#drain) algoritmasıyla kalıplara ayırır:
   `Zamanlanmış görev başladı: kurlar:guncelle` ile `Zamanlanmış görev başladı: yedek:al`
   → `Zamanlanmış görev başladı: <*>`.
 - Kısa mesajlardaki rakamlı değişkenleri de birleştirir: `Yanıt süresi 120ms` ile
   `Yanıt süresi 95ms` → `Yanıt süresi <*>`.
-- Her kalıp için en yüksek seviyeyi, ilk ve son görülme zamanını ve maskelenmemiş bir örnek
-  mesajı gösterir. Tablo önem sırasına göre dizilir: en ciddi hatalar en üstte.
+- Hata kayıtlarının stack trace'inden bir [parmak izi](#hata-parmak-izi) çıkarır: istisna
+  sınıfı ve uygulama kodundaki ilk satır (`app/Services/SepetHesaplayici.php:88`). Aynı mesaj
+  kodun farklı yerlerinden geliyorsa ayrı satırlarda gösterir.
+- Her satır için en yüksek seviyeyi, ilk ve son görülme zamanını, maskelenmemiş bir örnek
+  mesajı ve hatanın konumunu gösterir. Tablo önem sırasına göre dizilir: en ciddi hatalar
+  en üstte.
 - Geçersiz UTF-8 baytları içeren dosyalarda durmaz; bu baytları `�` ile değiştirip uyarır.
 - Çıktısı başka bir programa yönlendirilebilir (`veylog laravel.log | head`); okuyan program
   erken kapansa da çökmez.
@@ -50,37 +54,48 @@ Seviyeler:
   INFO        31
   DEBUG        3
 
-Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp
+Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp → parmak iziyle 24 grup
   adet  seviye     ilk       son       kalıp
      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]
                                        örnek: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
+                                       konum: app/Http/Middleware/HizSiniri.php:22 (RedisException)
      6  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
                                        örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
+                                       konum: app/Services/OdemeServisi.php:64 (ConnectionException)
      4  ERROR      15:02:11  16:58:12  Undefined array key "kargo_ucreti"
+                                       konum: app/Services/SepetHesaplayici.php:88 (ErrorException)
      3  ERROR      09:14:20  17:55:03  SQLSTATE[<SAYI>]: Integrity constraint violation: <SAYI> Duplicate entry '<EPOS…
                                        örnek: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'a…
-     2  ERROR      09:47:12  13:18:20  Attempt to read property "ad" on null
+                                       konum: app/Http/Controllers/KayitController.php:38 (UniqueConstraintViolationException)
+     1  ERROR      09:47:12  09:47:12  Attempt to read property "ad" on null
+                                       konum: app/Http/Controllers/KategoriController.php:54 (ErrorException)
      1  ERROR      11:30:44  11:30:44  App\Jobs\FaturaGonder has been attempted too many times.
+                                       konum: uygulama kodunda bulunamadı (MaxAttemptsExceededException)
+     1  ERROR      13:18:20  13:18:20  Attempt to read property "ad" on null
+                                       konum: app/Http/Controllers/UrunController.php:72 (ErrorException)
      3  WARNING    16:10:03  16:12:41  Ödeme sağlayıcısı yanıt vermedi, sipariş <SAYI> için yeniden denenecek (deneme …
                                        örnek: Ödeme sağlayıcısı yanıt vermedi, sipariş 1047 için yeniden denenecek (de…
      1  WARNING    09:33:05  09:33:05  Yavaş sorgu (<SAYI> ms): select * from `siparisler` where `kullanici_id` = <SAY…
                                        örnek: Yavaş sorgu (1532 ms): select * from `siparisler` where `kullanici_id` =…
      1  WARNING    10:58:51  10:58:51  Yavaş sorgu (<SAYI> ms): select * from `urunler` where `kategori_id` = <SAYI> a…
                                        örnek: Yavaş sorgu (2210 ms): select * from `urunler` where `kategori_id` = 12 …
-     1  WARNING    14:12:55  14:12:55  Yavaş sorgu (<SAYI> ms): select count(*) as aggregate from `siparisler` where `…
-                                       örnek: Yavaş sorgu (1876 ms): select count(*) as aggregate from `siparisler` wh…
 ```
 
 Örnek logdaki tablo bir günün hikâyesini anlatıyor: saat 15:00'teki deploy'dan iki dakika
 sonra başlayan `kargo_ucreti` hatası, 16:10–16:16 arasındaki ödeme zaman aşımları ve
-17:05'teki Redis çöküşü.
+17:05'teki Redis çöküşü. `Attempt to read property "ad" on null` ise iki ayrı satırda
+görünüyor: mesajları aynı ama biri kategori sayfasında, diğeri ürün sayfasında oluşan iki
+ayrı hata.
 
 ## Nasıl çalışıyor?
 
 ```text
-laravel.log → kayıtlara ayır → maskele → Drain → kalıp raporu
-              59 kayıt          27 farklı   23 kalıp
-              45 farklı mesaj   mesaj
+laravel.log
+  → kayıtlara ayır    59 kayıt, 45 farklı mesaj
+  → maskele           27 farklı mesaj
+  → Drain             23 kalıp
+  → parmak izi        24 grup
+  → kalıp raporu
 ```
 
 ### Maskeleme
@@ -158,18 +173,73 @@ Geliştirme sırasında [Drain3](https://github.com/IBM/Drain3) (IBM, Python) il
 karşılaştırıldı: rakama duyarlı eşik kapalıyken aynı kümeleri, açıkken de rakam içermeyen
 mesajlarda aynı kümeleri veriyor.
 
+### Hata parmak izi
+
+Aynı PHP mesajı kodun birçok yerinden gelebilir: `Attempt to read property "ad" on null`
+hem kategori sayfasında hem ürün sayfasında oluşabilir. Drain yalnızca mesaja baktığı için
+bunları tek kalıpta birleştirir, oysa bunlar iki ayrı hatadır. [Sentry](https://docs.sentry.io/concepts/data-management/event-grouping/)
+gibi hata takip araçları bu yüzden hataları mesajla değil, stack trace'in uygulamaya ait
+kısmıyla tanır. veylog bunun sade bir halini kullanır: istisna sınıfı ve uygulama kodundaki
+ilk satır.
+
+Laravel bir istisnayı loglarken bağlama sınıfını, fırlatıldığı yeri ve stack trace'i yazar
+(satırlar kısaltıldı):
+
+```text
+[2026-10-24 09:14:20] production.ERROR: SQLSTATE[23000]: ... {"exception":"[object] (Illuminate\\Database\\UniqueConstraintViolationException(code: 23000): ... at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php:819)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php(779): ...
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php(3780): ...
+#2 /var/www/magaza/app/Http/Controllers/KayitController.php(38): Illuminate\\Database\\Eloquent\\Model->save()
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): ...
+#4 /var/www/magaza/public/index.php(17): ...
+#5 {main}
+"}
+```
+
+Parmak izi şöyle çıkarılır:
+
+1. Bağlamda `[object] (Sınıf(code: ...` başlığı aranır; buradan istisna sınıfı alınır.
+   Mesaj çok satırlıysa bağlam bir sonraki satırlardan birinde başlar.
+2. Başlık `[stacktrace]` satırına kadar sürer, çünkü istisna mesajı da çok satırlı olabilir.
+   Son satırının sonundaki `at dosya:satır` istisnanın fırlatıldığı yerdir.
+3. Stack trace'in çerçeveleri (`#2 dosya(satır): ...`) okunur. `[previous exception]` ile
+   başlayan kısım bu istisnaya yol açan önceki istisnadır; okunmaz.
+4. Proje kökü, `/vendor/` içeren ilk yoldan bulunur (`/var/www/magaza/`) ve yollardan silinir.
+   Böylece her dağıtımda klasör adı değişse de (`releases/20261024/`) konum aynı kalır.
+5. Adaylar içten dışa taranır, önce fırlatıldığı yer, sonra onu çağıranlar. `vendor/`
+   altında olmayan ve giriş noktası (`artisan`, `public/index.php`) olmayan ilk dosya seçilir.
+
+Örnekteki istisna vendor'da fırlatıldı; uygulama kodundaki ilk satır `#2`'dir:
+`app/Http/Controllers/KayitController.php:38 (UniqueConstraintViolationException)`. Hata
+tamamen vendor içinde oluştuysa, örneğin bir kuyruk işinin deneme hakkı bittiyse, konum
+"uygulama kodunda bulunamadı" olarak gösterilir.
+
+Parmak izi Drain'in kalıplarını yalnızca **böler**: aynı kalıptaki kayıtlar farklı yerlerden
+geliyorsa ayrı satırlarda görünür. Aynı yerden gelen farklı kalıplar ise birleştirilmez,
+çünkü bir yardımcı fonksiyondaki tek bir `throw` birbirinden bağımsız birçok hatanın ortak
+yeri olabilir.
+
+Algoritma, Laravel 13.38 ile üretilen gerçek bir log üzerinde doğrulandı: Eloquent, Blade,
+HTTP istemcisi ve Artisan hataları, önceki istisnası olan ve mesajı çok satırlı olan
+istisnalar.
+
 ### Kalıp raporu
 
-Drain yalnızca metinle ilgilenir; seviyeyi ve zamanı bilmez. Rapor, Drain'in her mesaj için
-döndürdüğü küme numarasını kullanarak her kalıba şu bilgileri ekler:
+Drain yalnızca metinle ilgilenir; seviyeyi, zamanı ve stack trace'i bilmez. Rapor, Drain'in
+her mesaj için döndürdüğü küme numarasını kaydın parmak iziyle birlikte kullanır: ikisi de
+aynı olan kayıtlar tablonun bir satırını oluşturur. Her satıra şu bilgiler eklenir:
 
-- **seviye:** kalıba uyan kayıtların en önemlisi.
+- **seviye:** satırdaki kayıtların en önemlisi.
 - **ilk / son:** ilk ve son görülme zamanı. Tek günlük logda yalnızca saat, birden çok günü
   kapsayan logda tarih de gösterilir (`10-23 23:59:58`).
-- **örnek:** kalıba uyan ilk kaydın maskelenmemiş mesajı; `<SAYI>` ve `<*>`'ın arkasındaki
+- **örnek:** satırdaki ilk kaydın maskelenmemiş mesajı; `<SAYI>` ve `<*>`'ın arkasındaki
   gerçek değerleri gösterir. Kalıp ham mesajla aynıysa gösterilmez.
+- **konum:** kayıtlar bir istisnadan geliyorsa uygulama kodundaki ilk satır ve istisna
+  sınıfı. Dosya yolu kısaltılmaz; birçok editörün terminalinde `dosya:satır` tıklanarak
+  açılabilir.
 
-Tablo önce seviyeye, aynı seviyede adede göre sıralanır ve ilk 10 kalıp gösterilir.
+Tablo önce seviyeye, aynı seviyede adede göre sıralanır ve ilk 10 satır gösterilir.
 
 ### Bilinen sınırlamalar
 
@@ -179,12 +249,20 @@ Tablo önce seviyeye, aynı seviyede adede göre sıralanır ve ilk 10 kalıp g�
 - Kısa mesajlarda rakam içermeyen bir değişken hâlâ her değer için ayrı kalıp oluşturur
   (ör. `İşlendi: App\Jobs\FaturaGonder` ile `İşlendi: App\Jobs\EpostaGonder`).
 - Boşluk içeren bir değer (ör. `Ali Veli`) belirteç sayısını değiştirdiği için aynı kalıptan
-  gelen mesajlar farklı kümelere düşebilir.
-- Stack trace henüz kullanılmıyor: aynı mesajla farklı yerlerde fırlatılan iki hata
-  (ör. `Undefined array key "id"`) tek kalıpta birleşir.
+  gelen mesajlar farklı kümelere düşebilir. Parmak izi kalıpları birleştirmediği için bu
+  kayıtlar aynı yerden gelseler de ayrı satırlarda kalır.
+- Parmak izi satır numarasını içerir: bir dağıtımda dosyanın üst kısmı değişirse aynı hata
+  iki ayrı satırda görünebilir. Sentry gibi araçlar bu yüzden satır numarası kullanmaz.
+- Yalnızca Laravel'in istisna biçimi tanınır: yakalanmayan istisnalar, `report($e)` ve
+  `Log::error('...', ['exception' => $e])`. İstisnayı metne çeviren `Log::error($e)`
+  kullanımı (`Stack trace:` biçimi) tanınmaz.
+- Blade hatalarında konum, derlenmiş görünüm dosyasıdır (`storage/framework/views/…`);
+  asıl Blade dosyası mesajın sonunda `(View: …)` olarak yazar.
+- Windows yolları (`C:\laragon\www\...`) henüz tanınmıyor: vendor klasörü ayırt edilemediği
+  için konum, istisnanın fırlatıldığı yer olur.
 - Aynı dosyada farklı zaman biçimleri ya da saat dilimleri karışırsa zaman aralığı yanlış
   sıralanabilir.
-- Ayarlar, gösterilecek kalıp sayısı ve sıralama henüz komut satırından değiştirilemiyor.
+- Ayarlar, gösterilecek satır sayısı ve sıralama henüz komut satırından değiştirilemiyor.
 - Dosyanın tamamı belleğe okunuyor; çok büyük dosyalar için satır satır okuma ileride eklenecek.
 
 ## Kurulum
@@ -216,13 +294,14 @@ cargo run -- ornekler/laravel.log
 
 ```text
 src/
-├── main.rs    programın girişi: argümanlar, dosya okuma, hata yönetimi
-├── kayit.rs   log metnini kayıtlara ayırır: başlık, seviye, mesaj, devam satırları
-├── maske.rs   mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
-├── drain.rs   Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
-└── rapor.rs   özet raporu: sayılar, seviyeler ve kalıp tablosu
+├── main.rs        programın girişi: argümanlar, dosya okuma, hata yönetimi
+├── kayit.rs       log metnini kayıtlara ayırır: başlık, seviye, mesaj, bağlam, devam satırları
+├── maske.rs       mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
+├── drain.rs       Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
+├── parmak_izi.rs  hata parmak izi: istisna sınıfı ve uygulama kodundaki ilk satır
+└── rapor.rs       özet raporu: sayılar, seviyeler ve kalıp tablosu
 tests/
-└── cli.rs     programı gerçekten çalıştıran testler: argümanlar, hata mesajları, çıkış kodları
+└── cli.rs         programı gerçekten çalıştıran testler: argümanlar, hata mesajları, çıkış kodları
 ```
 
 Dış kütüphane olarak yalnızca [regex](https://crates.io/crates/regex) kullanılır.
@@ -253,7 +332,7 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] Dayanıklı okuma: ISO 8601 zaman, geçersiz UTF-8, yönlendirilen çıktı
 - [x] Rakama duyarlı benzerlik eşiği: kısa mesajlardaki sayısal değişkenler
 - [x] Kalıp raporu: en yüksek seviye, ilk/son görülme zamanı, örnek mesaj
-- [ ] Hata parmak izi: istisna sınıfı ve uygulamadaki ilk satır
+- [x] Hata parmak izi: istisna sınıfı ve uygulamadaki ilk satır
 - [ ] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı, sıralama
 - [ ] JSON ve Markdown çıktısı
 - [ ] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar

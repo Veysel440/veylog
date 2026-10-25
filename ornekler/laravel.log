@@ -52,11 +52,11 @@
 #4 /var/www/magaza/public/index.php(17): Illuminate\\Foundation\\Application->handleRequest(Object(Illuminate\\Http\\Request))
 #5 {main}
 "} 
-[2026-10-24 13:18:20] production.ERROR: Attempt to read property "ad" on null {"userId":77,"exception":"[object] (ErrorException(code: 0): Attempt to read property \"ad\" on null at /var/www/magaza/app/Http/Controllers/KategoriController.php:54)  
+[2026-10-24 13:18:20] production.ERROR: Attempt to read property "ad" on null {"userId":77,"exception":"[object] (ErrorException(code: 0): Attempt to read property \"ad\" on null at /var/www/magaza/app/Http/Controllers/UrunController.php:72)  
 [stacktrace]
-#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError(2, 'Attempt to read...', '/var/www/magaza...', 54)
-#1 /var/www/magaza/app/Http/Controllers/KategoriController.php(54): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{closure}(2, 'Attempt to read...', '/var/www/magaza...', 54)
-#2 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\KategoriController->goster('bahce')
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError(2, 'Attempt to read...', '/var/www/magaza...', 72)
+#1 /var/www/magaza/app/Http/Controllers/UrunController.php(72): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{closure}(2, 'Attempt to read...', '/var/www/magaza...', 72)
+#2 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\UrunController->goster('kablosuz-kulaklik')
 #3 {main}
 "} 
 [2026-10-24 13:40:05] production.INFO: Sipariş 1045 oluşturuldu {"kullanici_id":381,"tutar":"249.50"} 

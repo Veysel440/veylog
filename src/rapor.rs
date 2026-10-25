@@ -1,36 +1,40 @@
 //! Özet raporu: genel sayılar, seviyeler ve kalıp tablosu.
 //!
-//! Drain yalnızca metinle ilgilenir; seviye ve zaman gibi bilgileri bilmez. Bu modül her
-//! kaydı maskeleyip Drain'e verir, Drain'in döndürdüğü küme numarasını kullanarak da kaydın
-//! seviyesini, zamanını ve ham mesajını o kümenin bilgilerine ekler.
+//! Drain yalnızca metinle ilgilenir; seviyeyi, zamanı ve yığın izini bilmez. Bu modül her
+//! kaydı maskeleyip Drain'e verir, sonra kaydı iki şeye göre bir gruba ekler: Drain'in
+//! döndürdüğü küme numarası ve kaydın parmak izi. Aynı kalıptaki kayıtlar kodun farklı
+//! yerlerinden geliyorsa böylece ayrı satırlarda görünür.
 
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Write};
 
 use crate::drain::{Ayarlar, Drain};
-use crate::kayit::{Log, Seviye};
+use crate::kayit::{Kayit, Log, Seviye};
 use crate::maske::maskele;
+use crate::parmak_izi::ParmakIzi;
 
-/// Tabloda gösterilecek en fazla kalıp sayısı.
+/// Tabloda gösterilecek en fazla satır sayısı.
 const GOSTERILECEK_KALIP: usize = 10;
 /// Uzun kalıplar ve örnekler bu kadar karakterden sonra kesilir.
 const KALIP_GENISLIGI: usize = 80;
 
-/// Bir kalıp ve ona uyan kayıtlar hakkında toplanan bilgiler.
+/// Tablodaki bir satır: bir kalıp, bir parmak izi ve onlara uyan kayıtlar hakkındaki bilgiler.
 #[derive(Debug)]
 pub struct KalipSatiri<'a> {
     /// Kalıbın son hali: "Zamanlanmış görev başladı: <*>"
     pub kalip: String,
     pub adet: usize,
-    /// Kalıba uyan kayıtların en önemli seviyesi.
+    /// Satırdaki kayıtların en önemli seviyesi.
     pub seviye: Seviye,
     /// İlk görülme zamanı.
     pub ilk: &'a str,
     /// Son görülme zamanı.
     pub son: &'a str,
-    /// Kalıba uyan ilk kaydın maskelenmemiş mesajı: "Kullanıcı 381 giriş yaptı"
+    /// Satırdaki ilk kaydın maskelenmemiş mesajı: "Kullanıcı 381 giriş yaptı"
     pub ornek: &'a str,
+    /// Kayıtlar bir istisnadan geliyorsa: istisnanın sınıfı ve uygulama kodundaki yeri.
+    pub parmak_izi: Option<ParmakIzi<'a>>,
 }
 
 /// Kalıp çıkarmanın sonucu.
@@ -40,62 +44,86 @@ pub struct KalipAnalizi<'a> {
     pub ham_mesaj_sayisi: usize,
     /// Maskelemeden sonra kaç farklı mesaj kaldı?
     pub maskeli_mesaj_sayisi: usize,
-    /// En önemli seviye başta; aynı seviyede en kalabalık kalıp başta.
+    /// Drain kaç kalıp buldu? Parmak izi bir kalıbı birden çok satıra bölebilir.
+    pub kalip_sayisi: usize,
+    /// En önemli seviye başta; aynı seviyede en kalabalık satır başta.
     pub satirlar: Vec<KalipSatiri<'a>>,
 }
 
-/// Kalıp çıkarılırken her küme için biriktirilen bilgiler.
-struct KumeBilgisi<'a> {
+/// Kalıp çıkarılırken her grup için biriktirilen bilgiler. Bir grup, aynı Drain kümesine
+/// düşen ve aynı parmak izini taşıyan kayıtlardır.
+struct Grup<'a> {
+    /// Drain'deki küme numarası; kalıp metni en sonda bununla alınır.
+    kume: usize,
+    parmak_izi: Option<ParmakIzi<'a>>,
+    adet: usize,
     seviye: Seviye,
     ilk: &'a str,
     son: &'a str,
     ornek: &'a str,
 }
 
-/// Kayıtları maskeleyip Drain'den geçirir ve her kalıp için bir satır üretir.
+impl<'a> Grup<'a> {
+    /// Boş bir grup açar; seviye, zaman ve örnek ilk kayıttan alınır. Kaydın kendisini
+    /// saymak `ekle`nin işidir.
+    fn yeni(kume: usize, parmak_izi: Option<ParmakIzi<'a>>, ilk_kayit: &Kayit<'a>) -> Grup<'a> {
+        Grup {
+            kume,
+            parmak_izi,
+            adet: 0,
+            seviye: ilk_kayit.seviye(),
+            ilk: ilk_kayit.zaman(),
+            son: ilk_kayit.zaman(),
+            ornek: ilk_kayit.mesaj(),
+        }
+    }
+
+    /// Kaydı gruba katar: adedi artırır, en yüksek seviyeyi ve zaman aralığını günceller.
+    fn ekle(&mut self, kayit: &Kayit<'a>) {
+        self.adet += 1;
+        self.seviye = self.seviye.max(kayit.seviye());
+        self.ilk = self.ilk.min(kayit.zaman());
+        self.son = self.son.max(kayit.zaman());
+    }
+}
+
+/// Kayıtları maskeleyip Drain'den geçirir, parmak izine göre böler ve her grup için bir
+/// satır üretir.
 pub fn kaliplari_cikar<'a>(log: &Log<'a>, ayarlar: Ayarlar) -> KalipAnalizi<'a> {
     let mut drain = Drain::new(ayarlar);
-    // Küme numarası → o kümeye uyan kayıtlardan toplanan bilgiler. Drain her yeni kümeye
-    // sıradaki numarayı (0, 1, 2...) verdiği için bu liste kümeler listesiyle aynı sırada büyür.
-    let mut bilgiler: Vec<KumeBilgisi<'a>> = Vec::new();
+    let mut gruplar: Vec<Grup<'a>> = Vec::new();
+    // (küme numarası, parmak izi) → grubun `gruplar` listesindeki sırası
+    let mut grup_sirasi: HashMap<(usize, Option<ParmakIzi<'a>>), usize> = HashMap::new();
     let mut ham_mesajlar = BTreeSet::new();
     let mut maskeli_mesajlar = BTreeSet::new();
 
     for kayit in &log.kayitlar {
         let maskeli = maskele(kayit.mesaj());
-        let numara = drain.ekle(&maskeli);
+        let kume = drain.ekle(&maskeli);
+        let parmak_izi = ParmakIzi::kayittan(kayit);
         ham_mesajlar.insert(kayit.mesaj());
         maskeli_mesajlar.insert(maskeli);
 
-        if numara == bilgiler.len() {
-            // Yeni küme: bilgilerini bu kayıtla başlat
-            bilgiler.push(KumeBilgisi {
-                seviye: kayit.seviye(),
-                ilk: kayit.zaman(),
-                son: kayit.zaman(),
-                ornek: kayit.mesaj(),
-            });
-        } else {
-            // Bilinen küme: en yüksek seviyeyi ve zaman aralığını güncelle
-            let bilgi = &mut bilgiler[numara];
-            bilgi.seviye = bilgi.seviye.max(kayit.seviye());
-            bilgi.ilk = bilgi.ilk.min(kayit.zaman());
-            bilgi.son = bilgi.son.max(kayit.zaman());
-        }
+        // Bu küme ve parmak izi ilk kez görülüyorsa yeni bir grup aç, sonra kaydı ona kat
+        let sira = *grup_sirasi.entry((kume, parmak_izi)).or_insert_with(|| {
+            gruplar.push(Grup::yeni(kume, parmak_izi, kayit));
+            gruplar.len() - 1
+        });
+        gruplar[sira].ekle(kayit);
     }
 
     // Kalıp metni yeni mesajlar geldikçe değişebildiği için en sonda Drain'den alınır
-    let mut satirlar: Vec<KalipSatiri<'a>> = drain
-        .kumeler()
-        .iter()
-        .zip(bilgiler)
-        .map(|(kume, bilgi)| KalipSatiri {
-            kalip: kume.metin(),
-            adet: kume.adet,
-            seviye: bilgi.seviye,
-            ilk: bilgi.ilk,
-            son: bilgi.son,
-            ornek: bilgi.ornek,
+    let kumeler = drain.kumeler();
+    let mut satirlar: Vec<KalipSatiri<'a>> = gruplar
+        .into_iter()
+        .map(|grup| KalipSatiri {
+            kalip: kumeler[grup.kume].metin(),
+            adet: grup.adet,
+            seviye: grup.seviye,
+            ilk: grup.ilk,
+            son: grup.son,
+            ornek: grup.ornek,
+            parmak_izi: grup.parmak_izi,
         })
         .collect();
     // En önemli seviye başa, aynı seviyede en kalabalık başa. Sıralama kararlıdır: eşit
@@ -105,6 +133,7 @@ pub fn kaliplari_cikar<'a>(log: &Log<'a>, ayarlar: Ayarlar) -> KalipAnalizi<'a> 
     KalipAnalizi {
         ham_mesaj_sayisi: ham_mesajlar.len(),
         maskeli_mesaj_sayisi: maskeli_mesajlar.len(),
+        kalip_sayisi: kumeler.len(),
         satirlar,
     }
 }
@@ -132,9 +161,10 @@ pub fn ozet_yaz(cikti: &mut impl Write, yol: &str, icerik: &str, log: &Log<'_>) 
     writeln!(cikti)?;
     writeln!(
         cikti,
-        "Kalıplar: {} farklı mesaj → maskeleyince {} → Drain ile {} kalıp",
+        "Kalıplar: {} farklı mesaj → maskeleyince {} → Drain ile {} kalıp → parmak iziyle {} grup",
         analiz.ham_mesaj_sayisi,
         analiz.maskeli_mesaj_sayisi,
+        analiz.kalip_sayisi,
         analiz.satirlar.len()
     )?;
 
@@ -143,7 +173,7 @@ pub fn ozet_yaz(cikti: &mut impl Write, yol: &str, icerik: &str, log: &Log<'_>) 
         let tek_gun =
             zaman_araligi.is_some_and(|(en_eski, en_yeni)| en_eski[..10] == en_yeni[..10]);
         let zaman_genisligi = if tek_gun { 8 } else { 14 };
-        // Örnek satırı, kalıp sütununun hizasından başlasın
+        // Örnek ve konum satırları, kalıp sütununun hizasından başlasın
         let girinti = " ".repeat(2 + 4 + 2 + 9 + 2 + zaman_genisligi + 2 + zaman_genisligi + 2);
 
         writeln!(
@@ -168,6 +198,11 @@ pub fn ozet_yaz(cikti: &mut impl Write, yol: &str, icerik: &str, log: &Log<'_>) 
                     "{girinti}örnek: {}",
                     kisalt(satir.ornek, KALIP_GENISLIGI - 7)
                 )?;
+            }
+            // Kayıtlar bir istisnadan geliyorsa nerede oluştuğunu göster. Dosya yolu
+            // kısaltılmaz: terminalde tıklanıp doğrudan açılabilsin.
+            if let Some(parmak_izi) = satir.parmak_izi {
+                writeln!(cikti, "{girinti}konum: {parmak_izi}")?;
             }
         }
     }
@@ -248,13 +283,50 @@ mod testler {
     }
 
     #[test]
+    fn ayni_kalip_farkli_konumda_ayri_satirlara_bolunur() {
+        // Aynı mesaj: ikisi aynı denetleyiciden, biri bir servisten, biri istisnasız
+        let metin = r#"[2026-10-24 10:00:00] local.ERROR: Undefined array key "id" {"exception":"[object] (ErrorException(code: 0): Undefined array key \"id\" at /var/www/app/Http/Controllers/SepetController.php:30)"}
+[2026-10-24 10:05:00] local.ERROR: Undefined array key "id" {"exception":"[object] (ErrorException(code: 0): Undefined array key \"id\" at /var/www/app/Services/FaturaServisi.php:12)"}
+[2026-10-24 10:09:00] local.ERROR: Undefined array key "id" {"exception":"[object] (ErrorException(code: 0): Undefined array key \"id\" at /var/www/app/Http/Controllers/SepetController.php:30)"}
+[2026-10-24 10:10:00] local.ERROR: Undefined array key "id""#;
+        let log = kayitlari_ayir(metin);
+        let analiz = kaliplari_cikar(&log, Ayarlar::default());
+
+        assert_eq!(analiz.kalip_sayisi, 1);
+        let satirlar: Vec<(usize, Option<String>)> = analiz
+            .satirlar
+            .iter()
+            .map(|satir| (satir.adet, satir.parmak_izi.map(|iz| iz.to_string())))
+            .collect();
+        assert_eq!(
+            satirlar,
+            [
+                (
+                    2,
+                    Some(
+                        "/var/www/app/Http/Controllers/SepetController.php:30 (ErrorException)"
+                            .to_string()
+                    )
+                ),
+                (
+                    1,
+                    Some("/var/www/app/Services/FaturaServisi.php:12 (ErrorException)".to_string())
+                ),
+                (1, None),
+            ]
+        );
+    }
+
+    #[test]
     fn ornek_logda_kalip_bilgileri_dogru() {
         let log = kayitlari_ayir(ORNEK_LOG);
         let analiz = kaliplari_cikar(&log, Ayarlar::default());
 
         assert_eq!(analiz.ham_mesaj_sayisi, 45);
         assert_eq!(analiz.maskeli_mesaj_sayisi, 27);
-        assert_eq!(analiz.satirlar.len(), 23);
+        assert_eq!(analiz.kalip_sayisi, 23);
+        // Bir kalıp iki farklı yerden geldiği için iki satıra bölünür
+        assert_eq!(analiz.satirlar.len(), 24);
 
         // En önemli kalıp başta: 17:05'teki Redis çöküşü
         let ilk = &analiz.satirlar[0];
@@ -265,6 +337,25 @@ mod testler {
             ("2026-10-24 17:05:13", "2026-10-24 17:06:45")
         );
         assert!(ilk.ornek.contains("10.0.3.12:6379"));
+        assert_eq!(
+            ilk.parmak_izi.map(|iz| iz.to_string()).as_deref(),
+            Some("app/Http/Middleware/HizSiniri.php:22 (RedisException)")
+        );
+
+        // Aynı PHP mesajı iki ayrı denetleyiciden geliyor: iki ayrı hata
+        let konumlar: Vec<String> = analiz
+            .satirlar
+            .iter()
+            .filter(|satir| satir.kalip == r#"Attempt to read property "ad" on null"#)
+            .filter_map(|satir| satir.parmak_izi.map(|iz| iz.to_string()))
+            .collect();
+        assert_eq!(
+            konumlar,
+            [
+                "app/Http/Controllers/KategoriController.php:54 (ErrorException)",
+                "app/Http/Controllers/UrunController.php:72 (ErrorException)",
+            ]
+        );
 
         // 15:00'teki deploy'dan hemen sonra başlayan hata
         let kargo = analiz
@@ -299,13 +390,17 @@ mod testler {
 
         assert!(metin.starts_with("ornek.log: 203 satır\n"));
         assert!(metin.contains("\nSeviyeler:\n  CRITICAL     2\n  ERROR       16\n"));
-        assert!(
-            metin.contains("Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp\n")
-        );
+        assert!(metin.contains(
+            "Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp → parmak iziyle 24 grup\n"
+        ));
         assert!(metin.contains("\n  adet  seviye     ilk       son       kalıp\n"));
         assert!(metin.contains("\n     2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı"));
         assert!(metin.contains(
             "örnek: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]"
+        ));
+        // Konum satırı da kalıp sütununun hizasında başlar
+        assert!(metin.contains(
+            "\n                                       konum: app/Http/Middleware/HizSiniri.php:22 (RedisException)\n"
         ));
     }
 }

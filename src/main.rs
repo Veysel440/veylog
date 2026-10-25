@@ -3,6 +3,7 @@
 mod drain;
 mod kayit;
 mod maske;
+mod parmak_izi;
 mod rapor;
 
 use std::borrow::Cow;

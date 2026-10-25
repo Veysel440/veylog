@@ -70,6 +70,8 @@ pub struct Kayit<'a> {
     seviye: Seviye,
     /// Bağlam JSON'u olmadan mesajın kendisi: "Kullanıcı 381 giriş yaptı"
     mesaj: &'a str,
+    /// Başlık satırında mesajdan sonra gelen kısım: `{"ip":"203.0.113.24"}`. Yoksa boş.
+    baglam: &'a str,
     /// Başlıktan sonra gelen satırlar: stack trace, çok satırlı mesajlar.
     devam_satirlari: Vec<&'a str>,
 }
@@ -88,6 +90,20 @@ impl<'a> Kayit<'a> {
     /// Bağlam JSON'u olmadan mesajın kendisi.
     pub fn mesaj(&self) -> &'a str {
         self.mesaj
+    }
+
+    /// Başlık satırında mesajdan sonra gelen bağlam: `{"exception":"[object] (...`
+    /// Bağlam yoksa boş metin.
+    pub fn baglam(&self) -> &'a str {
+        self.baglam
+    }
+
+    /// Başlıktan sonra gelen satırlar.
+    ///
+    /// Dönen dilim kayda aittir (`&self` kadar yaşar); içindeki metinler ise log metnine
+    /// (`'a` kadar yaşar).
+    pub fn devam_satirlari(&self) -> &[&'a str] {
+        &self.devam_satirlari
     }
 }
 
@@ -161,26 +177,30 @@ fn baslik_ayristir(satir: &str) -> Option<Kayit<'_>> {
     let (kanal_seviye, mesaj_ve_baglam) = kalan.split_once(':')?; // "production.ERROR" ve " Mesaj {...}"
     let (_, seviye_metni) = kanal_seviye.rsplit_once('.')?; // "ERROR"
     let seviye = Seviye::ayristir(seviye_metni)?;
+    let (mesaj, baglam) = mesaji_ayir(mesaj_ve_baglam);
 
     Some(Kayit {
         zaman,
         seviye,
-        mesaj: mesaji_ayir(mesaj_ve_baglam),
+        mesaj,
+        baglam,
         devam_satirlari: Vec::new(),
     })
 }
 
-/// Başlıkta seviyeden sonra gelen kısımdan mesajı ayırır.
+/// Başlıkta seviyeden sonra gelen kısmı mesaj ve bağlam olarak ikiye ayırır.
 ///
 /// Laravel, mesajın arkasına bağlam bilgisini JSON olarak ekler:
-/// ` Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} ` → `Kullanıcı 381 giriş yaptı`
+/// ` Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} `
+/// → `Kullanıcı 381 giriş yaptı` ve `{"ip":"203.0.113.24"}`
+///
 /// Bağlam ` {"` ile başlar; ondan öncesi mesajdır. Baştaki ve sondaki boşluklar atılır.
-fn mesaji_ayir(metin: &str) -> &str {
-    let mesaj = match metin.find(" {\"") {
-        Some(konum) => &metin[..konum],
-        None => metin,
+fn mesaji_ayir(metin: &str) -> (&str, &str) {
+    let (mesaj, baglam) = match metin.find(" {\"") {
+        Some(konum) => metin.split_at(konum),
+        None => (metin, ""),
     };
-    mesaj.trim()
+    (mesaj.trim(), baglam.trim())
 }
 
 /// Kayıt zamanı geçerli mi? İki biçim kabul edilir:
@@ -241,6 +261,7 @@ mod testler {
                 zaman: "2026-10-24 14:03:11",
                 seviye: Seviye::Error,
                 mesaj: "Saat 10:00 raporu",
+                baglam: "",
                 devam_satirlari: vec![],
             })
         );
@@ -250,16 +271,32 @@ mod testler {
     fn mesaj_baglamdan_ve_bosluklardan_ayrilir() {
         let kayit = baslik_ayristir(
             r#"[2026-10-24 09:02:13] production.INFO: Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} "#,
-        );
-        assert_eq!(kayit.map(|k| k.mesaj), Some("Kullanıcı 381 giriş yaptı"));
+        )
+        .unwrap();
+        assert_eq!(kayit.mesaj, "Kullanıcı 381 giriş yaptı");
+        assert_eq!(kayit.baglam, r#"{"ip":"203.0.113.24"}"#);
 
         // Mesajın içindeki ":" işaretleri bölmeyi bozmamalı; sondaki boşluklar atılmalı
         let kayit = baslik_ayristir(
             "[2026-10-24 08:59:58] production.INFO: Zamanlanmış görev başladı: kurlar:guncelle  ",
-        );
-        assert_eq!(
-            kayit.map(|k| k.mesaj),
-            Some("Zamanlanmış görev başladı: kurlar:guncelle")
+        )
+        .unwrap();
+        assert_eq!(kayit.mesaj, "Zamanlanmış görev başladı: kurlar:guncelle");
+        assert_eq!(kayit.baglam, "");
+    }
+
+    #[test]
+    fn mesaji_bos_istisnada_baglam_kaybolmaz() {
+        // `throw new Exception()` boş mesajla loglanır: seviyeden sonra iki boşluk ve bağlam
+        let kayit = baslik_ayristir(
+            r#"[2026-10-24 10:00:00] local.ERROR:  {"exception":"[object] (Exception(code: 0):  at /var/www/app/Kod.php:12)"} "#,
+        )
+        .unwrap();
+        assert_eq!(kayit.mesaj, "");
+        assert!(
+            kayit
+                .baglam
+                .starts_with(r#"{"exception":"[object] (Exception"#)
         );
     }
 
