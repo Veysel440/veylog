@@ -1,0 +1,203 @@
+#14 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Pipeline/Pipeline.php(170): Illuminate\\Pipeline\\Pipeline->Illuminate\\Pipeline\\{closure}(Object(Illuminate\\Http\\Request))
+#15 {main}
+"} 
+[2026-10-24 08:59:58] production.INFO: Zamanlanmış görev başladı: kurlar:guncelle  
+[2026-10-24 09:00:01] production.INFO: Döviz kurları güncellendi {"kaynak":"tcmb","adet":12} 
+[2026-10-24 09:00:01] production.INFO: Zamanlanmış görev tamamlandı: kurlar:guncelle (2.41 sn)  
+[2026-10-24 09:02:13] production.INFO: Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} 
+[2026-10-24 09:05:47] production.INFO: Kullanıcı 1024 giriş yaptı {"ip":"198.51.100.7"} 
+[2026-10-24 09:06:02] production.DEBUG: Sepet önbellekten okundu {"anahtar":"sepet:1024","sure_ms":3} 
+[2026-10-24 09:14:20] production.ERROR: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'ayse@ornek.test' for key 'kullanicilar_eposta_unique' (Connection: mysql, SQL: insert into `kullanicilar` (`ad`, `eposta`, `updated_at`, `created_at`) values (Ayşe, ayse@ornek.test, 2026-10-24 09:14:20, 2026-10-24 09:14:20)) {"exception":"[object] (Illuminate\\Database\\UniqueConstraintViolationException(code: 23000): SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'ayse@ornek.test' for key 'kullanicilar_eposta_unique' (Connection: mysql, SQL: insert into `kullanicilar` (`ad`, `eposta`, `updated_at`, `created_at`) values (Ayşe, ayse@ornek.test, 2026-10-24 09:14:20, 2026-10-24 09:14:20)) at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php:819)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php(779): Illuminate\\Database\\Connection->runQueryCallback('insert into `ku...', Array, Object(Closure))
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php(3780): Illuminate\\Database\\Connection->insert('insert into `ku...', Array)
+#2 /var/www/magaza/app/Http/Controllers/KayitController.php(38): Illuminate\\Database\\Eloquent\\Model->save()
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\KayitController->store(Object(App\\Http\\Requests\\KayitRequest))
+#4 /var/www/magaza/public/index.php(17): Illuminate\\Foundation\\Application->handleRequest(Object(Illuminate\\Http\\Request))
+#5 {main}
+"} 
+[2026-10-24 09:21:40] production.INFO: Sipariş 1042 oluşturuldu {"kullanici_id":381,"tutar":"1250.00"} 
+[2026-10-24 09:21:42] production.INFO: Sipariş 1042 için ödeme alındı {"saglayici":"odeme-test","sure_ms":842} 
+[2026-10-24 09:33:05] production.WARNING: Yavaş sorgu (1532 ms): select * from `siparisler` where `kullanici_id` = 381 order by `created_at` desc  
+[2026-10-24 09:47:12] production.ERROR: Attempt to read property "ad" on null {"userId":1024,"exception":"[object] (ErrorException(code: 0): Attempt to read property \"ad\" on null at /var/www/magaza/app/Http/Controllers/KategoriController.php:54)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError(2, 'Attempt to read...', '/var/www/magaza...', 54)
+#1 /var/www/magaza/app/Http/Controllers/KategoriController.php(54): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{closure}(2, 'Attempt to read...', '/var/www/magaza...', 54)
+#2 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\KategoriController->goster('elektronik')
+#3 {main}
+"} 
+[2026-10-24 10:03:29] production.INFO: Kullanıcı 77 giriş yaptı {"ip":"203.0.113.91"} 
+[2026-10-24 10:12:40] production.NOTICE: Şüpheli giriş denemesi {"eposta":"admin@ornek.test","ip":"192.0.2.55","deneme":5} 
+[2026-10-24 10:15:02] production.INFO: Sipariş 1043 oluşturuldu {"kullanici_id":77,"tutar":"89.90"} 
+[2026-10-24 10:15:04] production.INFO: Sipariş 1043 için ödeme alındı {"saglayici":"odeme-test","sure_ms":1210} 
+[2026-10-24 10:41:18] production.INFO: İade talebi oluşturuldu {"siparis_id":1031,"neden":"Hasarlı ürün"} 
+[2026-10-24 10:58:51] production.WARNING: Yavaş sorgu (2210 ms): select * from `urunler` where `kategori_id` = 12 and `stok` > 0  
+[2026-10-24 11:07:33] production.INFO: Kullanıcı 2210 giriş yaptı {"ip":"198.51.100.42"} 
+[2026-10-24 11:30:44] production.ERROR: App\Jobs\FaturaGonder has been attempted too many times. {"exception":"[object] (Illuminate\\Queue\\MaxAttemptsExceededException(code: 0): App\\Jobs\\FaturaGonder has been attempted too many times. at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Queue/MaxAttemptsExceededException.php:24)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Queue/Worker.php(817): Illuminate\\Queue\\MaxAttemptsExceededException::forJob(Object(Illuminate\\Queue\\Jobs\\RedisJob))
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Queue/Worker.php(535): Illuminate\\Queue\\Worker->maxAttemptsExceededException(Object(Illuminate\\Queue\\Jobs\\RedisJob))
+#2 {main}
+"} 
+[2026-10-24 11:45:09] production.INFO: Sipariş 1044 oluşturuldu {"kullanici_id":2210,"tutar":"3499.00"} 
+[2026-10-24 11:45:11] production.INFO: Sipariş 1044 için ödeme alındı {"saglayici":"odeme-test","sure_ms":977} 
+[2026-10-24 12:20:36] production.DEBUG: Sepet önbellekten okundu {"anahtar":"sepet:2210","sure_ms":2} 
+[2026-10-24 12:31:02] production.INFO: Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} 
+[2026-10-24 13:02:47] production.ERROR: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'mehmet@ornek.test' for key 'kullanicilar_eposta_unique' (Connection: mysql, SQL: insert into `kullanicilar` (`ad`, `eposta`, `updated_at`, `created_at`) values (Mehmet, mehmet@ornek.test, 2026-10-24 13:02:47, 2026-10-24 13:02:47)) {"exception":"[object] (Illuminate\\Database\\UniqueConstraintViolationException(code: 23000): SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'mehmet@ornek.test' for key 'kullanicilar_eposta_unique' (Connection: mysql, SQL: insert into `kullanicilar` (`ad`, `eposta`, `updated_at`, `created_at`) values (Mehmet, mehmet@ornek.test, 2026-10-24 13:02:47, 2026-10-24 13:02:47)) at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php:819)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php(779): Illuminate\\Database\\Connection->runQueryCallback('insert into `ku...', Array, Object(Closure))
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php(3780): Illuminate\\Database\\Connection->insert('insert into `ku...', Array)
+#2 /var/www/magaza/app/Http/Controllers/KayitController.php(38): Illuminate\\Database\\Eloquent\\Model->save()
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\KayitController->store(Object(App\\Http\\Requests\\KayitRequest))
+#4 /var/www/magaza/public/index.php(17): Illuminate\\Foundation\\Application->handleRequest(Object(Illuminate\\Http\\Request))
+#5 {main}
+"} 
+[2026-10-24 13:18:20] production.ERROR: Attempt to read property "ad" on null {"userId":77,"exception":"[object] (ErrorException(code: 0): Attempt to read property \"ad\" on null at /var/www/magaza/app/Http/Controllers/KategoriController.php:54)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError(2, 'Attempt to read...', '/var/www/magaza...', 54)
+#1 /var/www/magaza/app/Http/Controllers/KategoriController.php(54): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{closure}(2, 'Attempt to read...', '/var/www/magaza...', 54)
+#2 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\KategoriController->goster('bahce')
+#3 {main}
+"} 
+[2026-10-24 13:40:05] production.INFO: Sipariş 1045 oluşturuldu {"kullanici_id":381,"tutar":"249.50"} 
+[2026-10-24 13:40:07] production.INFO: Sipariş 1045 için ödeme alındı {"saglayici":"odeme-test","sure_ms":1034} 
+[2026-10-24 14:12:55] production.WARNING: Yavaş sorgu (1876 ms): select count(*) as aggregate from `siparisler` where `durum` = 'beklemede'  
+[2026-10-24 14:55:00] production.INFO: Uygulama bakım moduna alındı {"sure_dk":5} 
+[2026-10-24 15:00:12] production.INFO: Uygulama sürümü 2.4.0 yayına alındı {"commit":"9f3c2ab","yayinlayan":"ci"} 
+[2026-10-24 15:02:11] production.ERROR: Undefined array key "kargo_ucreti" {"userId":2210,"exception":"[object] (ErrorException(code: 0): Undefined array key \"kargo_ucreti\" at /var/www/magaza/app/Services/SepetHesaplayici.php:88)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError(2, 'Undefined array...', '/var/www/magaza...', 88)
+#1 /var/www/magaza/app/Services/SepetHesaplayici.php(88): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{closure}(2, 'Undefined array...', '/var/www/magaza...', 88)
+#2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam(Object(App\\Models\\Sepet))
+#3 {main}
+"} 
+[2026-10-24 15:04:37] production.INFO: Kullanıcı 1024 giriş yaptı {"ip":"198.51.100.7"} 
+[2026-10-24 15:09:58] production.ERROR: Undefined array key "kargo_ucreti" {"userId":1024,"exception":"[object] (ErrorException(code: 0): Undefined array key \"kargo_ucreti\" at /var/www/magaza/app/Services/SepetHesaplayici.php:88)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError(2, 'Undefined array...', '/var/www/magaza...', 88)
+#1 /var/www/magaza/app/Services/SepetHesaplayici.php(88): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{closure}(2, 'Undefined array...', '/var/www/magaza...', 88)
+#2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam(Object(App\\Models\\Sepet))
+#3 {main}
+"} 
+[2026-10-24 15:21:14] production.INFO: Sipariş 1046 oluşturuldu {"kullanici_id":1024,"tutar":"129.00"} 
+[2026-10-24 15:21:16] production.INFO: Sipariş 1046 için ödeme alındı {"saglayici":"odeme-test","sure_ms":1102} 
+[2026-10-24 15:47:30] production.ERROR: Undefined array key "kargo_ucreti" {"userId":381,"exception":"[object] (ErrorException(code: 0): Undefined array key \"kargo_ucreti\" at /var/www/magaza/app/Services/SepetHesaplayici.php:88)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError(2, 'Undefined array...', '/var/www/magaza...', 88)
+#1 /var/www/magaza/app/Services/SepetHesaplayici.php(88): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{closure}(2, 'Undefined array...', '/var/www/magaza...', 88)
+#2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam(Object(App\\Models\\Sepet))
+#3 {main}
+"} 
+[2026-10-24 16:02:44] production.INFO: Kullanıcı 4410 giriş yaptı {"ip":"203.0.113.150"} 
+[2026-10-24 16:10:02] production.ERROR: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat {"userId":4410,"exception":"[object] (Illuminate\\Http\\Client\\ConnectionException(code: 0): cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php:1641)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php(1013): Illuminate\\Http\\Client\\PendingRequest->marshalConnectionException(Object(GuzzleHttp\\Exception\\ConnectException))
+#1 /var/www/magaza/app/Services/OdemeServisi.php(64): Illuminate\\Http\\Client\\PendingRequest->post('https://api.ode...', Array)
+#2 /var/www/magaza/app/Http/Controllers/OdemeController.php(31): App\\Services\\OdemeServisi->tahsilEt(Object(App\\Models\\Siparis))
+#3 {main}
+
+[previous exception] [object] (GuzzleHttp\\Exception\\ConnectException(code: 0): cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php:275)
+[stacktrace]
+#0 /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php(205): GuzzleHttp\\Handler\\CurlFactory::createRejection(Object(GuzzleHttp\\Handler\\EasyHandle), Array)
+#1 {main}
+"} 
+[2026-10-24 16:10:03] production.WARNING: Ödeme sağlayıcısı yanıt vermedi, sipariş 1047 için yeniden denenecek (deneme 2/3)  
+[2026-10-24 16:11:15] production.ERROR: cURL error 28: Operation timed out after 10002 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat {"userId":381,"exception":"[object] (Illuminate\\Http\\Client\\ConnectionException(code: 0): cURL error 28: Operation timed out after 10002 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php:1641)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php(1013): Illuminate\\Http\\Client\\PendingRequest->marshalConnectionException(Object(GuzzleHttp\\Exception\\ConnectException))
+#1 /var/www/magaza/app/Services/OdemeServisi.php(64): Illuminate\\Http\\Client\\PendingRequest->post('https://api.ode...', Array)
+#2 /var/www/magaza/app/Http/Controllers/OdemeController.php(31): App\\Services\\OdemeServisi->tahsilEt(Object(App\\Models\\Siparis))
+#3 {main}
+
+[previous exception] [object] (GuzzleHttp\\Exception\\ConnectException(code: 0): cURL error 28: Operation timed out after 10002 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php:275)
+[stacktrace]
+#0 /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php(205): GuzzleHttp\\Handler\\CurlFactory::createRejection(Object(GuzzleHttp\\Handler\\EasyHandle), Array)
+#1 {main}
+"} 
+[2026-10-24 16:11:16] production.WARNING: Ödeme sağlayıcısı yanıt vermedi, sipariş 1048 için yeniden denenecek (deneme 2/3)  
+[2026-10-24 16:12:40] production.ERROR: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat {"userId":4410,"exception":"[object] (Illuminate\\Http\\Client\\ConnectionException(code: 0): cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php:1641)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php(1013): Illuminate\\Http\\Client\\PendingRequest->marshalConnectionException(Object(GuzzleHttp\\Exception\\ConnectException))
+#1 /var/www/magaza/app/Services/OdemeServisi.php(64): Illuminate\\Http\\Client\\PendingRequest->post('https://api.ode...', Array)
+#2 /var/www/magaza/app/Http/Controllers/OdemeController.php(31): App\\Services\\OdemeServisi->tahsilEt(Object(App\\Models\\Siparis))
+#3 {main}
+
+[previous exception] [object] (GuzzleHttp\\Exception\\ConnectException(code: 0): cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php:275)
+[stacktrace]
+#0 /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php(205): GuzzleHttp\\Handler\\CurlFactory::createRejection(Object(GuzzleHttp\\Handler\\EasyHandle), Array)
+#1 {main}
+"} 
+[2026-10-24 16:12:41] production.WARNING: Ödeme sağlayıcısı yanıt vermedi, sipariş 1047 için yeniden denenecek (deneme 3/3)  
+[2026-10-24 16:13:59] production.ERROR: cURL error 28: Operation timed out after 10003 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat {"userId":2210,"exception":"[object] (Illuminate\\Http\\Client\\ConnectionException(code: 0): cURL error 28: Operation timed out after 10003 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php:1641)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php(1013): Illuminate\\Http\\Client\\PendingRequest->marshalConnectionException(Object(GuzzleHttp\\Exception\\ConnectException))
+#1 /var/www/magaza/app/Services/OdemeServisi.php(64): Illuminate\\Http\\Client\\PendingRequest->post('https://api.ode...', Array)
+#2 /var/www/magaza/app/Http/Controllers/OdemeController.php(31): App\\Services\\OdemeServisi->tahsilEt(Object(App\\Models\\Siparis))
+#3 {main}
+
+[previous exception] [object] (GuzzleHttp\\Exception\\ConnectException(code: 0): cURL error 28: Operation timed out after 10003 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php:275)
+[stacktrace]
+#0 /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php(205): GuzzleHttp\\Handler\\CurlFactory::createRejection(Object(GuzzleHttp\\Handler\\EasyHandle), Array)
+#1 {main}
+"} 
+[2026-10-24 16:15:20] production.ERROR: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat {"userId":77,"exception":"[object] (Illuminate\\Http\\Client\\ConnectionException(code: 0): cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php:1641)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php(1013): Illuminate\\Http\\Client\\PendingRequest->marshalConnectionException(Object(GuzzleHttp\\Exception\\ConnectException))
+#1 /var/www/magaza/app/Services/OdemeServisi.php(64): Illuminate\\Http\\Client\\PendingRequest->post('https://api.ode...', Array)
+#2 /var/www/magaza/app/Http/Controllers/OdemeController.php(31): App\\Services\\OdemeServisi->tahsilEt(Object(App\\Models\\Siparis))
+#3 {main}
+
+[previous exception] [object] (GuzzleHttp\\Exception\\ConnectException(code: 0): cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php:275)
+[stacktrace]
+#0 /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php(205): GuzzleHttp\\Handler\\CurlFactory::createRejection(Object(GuzzleHttp\\Handler\\EasyHandle), Array)
+#1 {main}
+"} 
+[2026-10-24 16:16:02] production.ERROR: cURL error 28: Operation timed out after 10002 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat {"userId":1024,"exception":"[object] (Illuminate\\Http\\Client\\ConnectionException(code: 0): cURL error 28: Operation timed out after 10002 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php:1641)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Http/Client/PendingRequest.php(1013): Illuminate\\Http\\Client\\PendingRequest->marshalConnectionException(Object(GuzzleHttp\\Exception\\ConnectException))
+#1 /var/www/magaza/app/Services/OdemeServisi.php(64): Illuminate\\Http\\Client\\PendingRequest->post('https://api.ode...', Array)
+#2 /var/www/magaza/app/Http/Controllers/OdemeController.php(31): App\\Services\\OdemeServisi->tahsilEt(Object(App\\Models\\Siparis))
+#3 {main}
+
+[previous exception] [object] (GuzzleHttp\\Exception\\ConnectException(code: 0): cURL error 28: Operation timed out after 10002 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat at /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php:275)
+[stacktrace]
+#0 /var/www/magaza/vendor/guzzlehttp/guzzle/src/Handler/CurlFactory.php(205): GuzzleHttp\\Handler\\CurlFactory::createRejection(Object(GuzzleHttp\\Handler\\EasyHandle), Array)
+#1 {main}
+"} 
+[2026-10-24 16:24:10] production.INFO: Ödeme sağlayıcısı yeniden yanıt veriyor {"gecikme_ms":640} 
+[2026-10-24 16:40:33] production.INFO: İade talebi oluşturuldu {"siparis_id":1046,"neden":"Yanlış beden"} 
+[2026-10-24 16:58:12] production.ERROR: Undefined array key "kargo_ucreti" {"userId":4410,"exception":"[object] (ErrorException(code: 0): Undefined array key \"kargo_ucreti\" at /var/www/magaza/app/Services/SepetHesaplayici.php:88)  
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError(2, 'Undefined array...', '/var/www/magaza...', 88)
+#1 /var/www/magaza/app/Services/SepetHesaplayici.php(88): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{closure}(2, 'Undefined array...', '/var/www/magaza...', 88)
+#2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam(Object(App\\Models\\Sepet))
+#3 {main}
+"} 
+[2026-10-24 17:05:13] production.CRITICAL: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379] {"exception":"[object] (RedisException(code: 0): Connection refused at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Redis/Connectors/PhpRedisConnector.php:173)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Redis/Connectors/PhpRedisConnector.php(173): Redis->connect('10.0.3.12', 6379, 0.0, NULL, 0, 0.0)
+#1 /var/www/magaza/app/Http/Middleware/HizSiniri.php(22): Illuminate\\Redis\\RedisManager->connection()
+#2 {main}
+"} 
+[2026-10-24 17:06:45] production.CRITICAL: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379] {"exception":"[object] (RedisException(code: 0): Connection refused at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Redis/Connectors/PhpRedisConnector.php:173)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Redis/Connectors/PhpRedisConnector.php(173): Redis->connect('10.0.3.12', 6379, 0.0, NULL, 0, 0.0)
+#1 /var/www/magaza/app/Http/Middleware/HizSiniri.php(22): Illuminate\\Redis\\RedisManager->connection()
+#2 {main}
+"} 
+[2026-10-24 17:07:30] production.INFO: Redis bağlantısı yeniden kuruldu {"deneme":4} 
+[2026-10-24 17:22:08] production.INFO: Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} 
+[2026-10-24 17:30:51] production.INFO: Sipariş 1049 oluşturuldu {"kullanici_id":381,"tutar":"760.00"} 
+[2026-10-24 17:30:53] production.INFO: Sipariş 1049 için ödeme alındı {"saglayici":"odeme-test","sure_ms":905} 
+[2026-10-24 17:55:03] production.ERROR: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'zeynep@ornek.test' for key 'kullanicilar_eposta_unique' (Connection: mysql, SQL: insert into `kullanicilar` (`ad`, `eposta`, `updated_at`, `created_at`) values (Zeynep, zeynep@ornek.test, 2026-10-24 17:55:03, 2026-10-24 17:55:03)) {"exception":"[object] (Illuminate\\Database\\UniqueConstraintViolationException(code: 23000): SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'zeynep@ornek.test' for key 'kullanicilar_eposta_unique' (Connection: mysql, SQL: insert into `kullanicilar` (`ad`, `eposta`, `updated_at`, `created_at`) values (Zeynep, zeynep@ornek.test, 2026-10-24 17:55:03, 2026-10-24 17:55:03)) at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php:819)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php(779): Illuminate\\Database\\Connection->runQueryCallback('insert into `ku...', Array, Object(Closure))
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php(3780): Illuminate\\Database\\Connection->insert('insert into `ku...', Array)
+#2 /var/www/magaza/app/Http/Controllers/KayitController.php(38): Illuminate\\Database\\Eloquent\\Model->save()
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\KayitController->store(Object(App\\Http\\Requests\\KayitRequest))
+#4 /var/www/magaza/public/index.php(17): Illuminate\\Foundation\\Application->handleRequest(Object(Illuminate\\Http\\Request))
+#5 {main}
+"} 
+[2026-10-24 18:12:19] production.DEBUG: Sepet önbellekten okundu {"anahtar":"sepet:381","sure_ms":4} 
+[2026-10-24 18:30:40] production.INFO: Kullanıcı 2210 çıkış yaptı {"ip":"198.51.100.42"} 
+[2026-10-24 18:31:07] production.INFO: Zamanlanmış görev başladı: yedek:al  
