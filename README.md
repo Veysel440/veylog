@@ -23,11 +23,13 @@ ve ne zaman başladı.
 - Kayıtları seviyelerine göre (DEBUG → EMERGENCY) sayar; en önemlisi en üstte.
 - Mesajlardaki değişken kısımları (URL, e-posta, UUID, zaman, IP, sayı) yer tutucularla
   maskeler: `Kullanıcı 381 giriş yaptı` → `Kullanıcı <SAYI> giriş yaptı`.
-- Maskelenmiş mesajları [Drain](#nasıl-çalışıyor) algoritmasıyla kalıplara ayırır ve en sık
-  tekrar eden kalıpları listeler: `Zamanlanmış görev başladı: kurlar:guncelle` ile
-  `Zamanlanmış görev başladı: yedek:al` → `Zamanlanmış görev başladı: <*>`.
+- Maskelenmiş mesajları [Drain](#nasıl-çalışıyor) algoritmasıyla kalıplara ayırır:
+  `Zamanlanmış görev başladı: kurlar:guncelle` ile `Zamanlanmış görev başladı: yedek:al`
+  → `Zamanlanmış görev başladı: <*>`.
 - Kısa mesajlardaki rakamlı değişkenleri de birleştirir: `Yanıt süresi 120ms` ile
   `Yanıt süresi 95ms` → `Yanıt süresi <*>`.
+- Her kalıp için en yüksek seviyeyi, ilk ve son görülme zamanını ve maskelenmemiş bir örnek
+  mesajı gösterir. Tablo önem sırasına göre dizilir: en ciddi hatalar en üstte.
 - Geçersiz UTF-8 baytları içeren dosyalarda durmaz; bu baytları `�` ile değiştirip uyarır.
 - Çıktısı başka bir programa yönlendirilebilir (`veylog laravel.log | head`); okuyan program
   erken kapansa da çökmez.
@@ -49,22 +51,34 @@ Seviyeler:
   DEBUG        3
 
 Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp
-     9  Kullanıcı <SAYI> <*> yaptı
-     6  Sipariş <SAYI> oluşturuldu
-     6  Sipariş <SAYI> için ödeme alındı
-     6  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> bytes receiv…
-     4  Undefined array key "kargo_ucreti"
-     3  Sepet önbellekten okundu
-     3  SQLSTATE[<SAYI>]: Integrity constraint violation: <SAYI> Duplicate entry '<EPOSTA>' for k…
-     3  Ödeme sağlayıcısı yanıt vermedi, sipariş <SAYI> için yeniden denenecek (deneme <SAYI>/<SA…
-     2  Zamanlanmış görev başladı: <*>
-     2  Attempt to read property "ad" on null
+  adet  seviye     ilk       son       kalıp
+     2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]
+                                       örnek: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
+     6  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
+                                       örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
+     4  ERROR      15:02:11  16:58:12  Undefined array key "kargo_ucreti"
+     3  ERROR      09:14:20  17:55:03  SQLSTATE[<SAYI>]: Integrity constraint violation: <SAYI> Duplicate entry '<EPOS…
+                                       örnek: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'a…
+     2  ERROR      09:47:12  13:18:20  Attempt to read property "ad" on null
+     1  ERROR      11:30:44  11:30:44  App\Jobs\FaturaGonder has been attempted too many times.
+     3  WARNING    16:10:03  16:12:41  Ödeme sağlayıcısı yanıt vermedi, sipariş <SAYI> için yeniden denenecek (deneme …
+                                       örnek: Ödeme sağlayıcısı yanıt vermedi, sipariş 1047 için yeniden denenecek (de…
+     1  WARNING    09:33:05  09:33:05  Yavaş sorgu (<SAYI> ms): select * from `siparisler` where `kullanici_id` = <SAY…
+                                       örnek: Yavaş sorgu (1532 ms): select * from `siparisler` where `kullanici_id` =…
+     1  WARNING    10:58:51  10:58:51  Yavaş sorgu (<SAYI> ms): select * from `urunler` where `kategori_id` = <SAYI> a…
+                                       örnek: Yavaş sorgu (2210 ms): select * from `urunler` where `kategori_id` = 12 …
+     1  WARNING    14:12:55  14:12:55  Yavaş sorgu (<SAYI> ms): select count(*) as aggregate from `siparisler` where `…
+                                       örnek: Yavaş sorgu (1876 ms): select count(*) as aggregate from `siparisler` wh…
 ```
+
+Örnek logdaki tablo bir günün hikâyesini anlatıyor: saat 15:00'teki deploy'dan iki dakika
+sonra başlayan `kargo_ucreti` hatası, 16:10–16:16 arasındaki ödeme zaman aşımları ve
+17:05'teki Redis çöküşü.
 
 ## Nasıl çalışıyor?
 
 ```text
-laravel.log → kayıtlara ayır → maskele → Drain → kalıplar
+laravel.log → kayıtlara ayır → maskele → Drain → kalıp raporu
               59 kayıt          27 farklı   23 kalıp
               45 farklı mesaj   mesaj
 ```
@@ -144,6 +158,19 @@ Geliştirme sırasında [Drain3](https://github.com/IBM/Drain3) (IBM, Python) il
 karşılaştırıldı: rakama duyarlı eşik kapalıyken aynı kümeleri, açıkken de rakam içermeyen
 mesajlarda aynı kümeleri veriyor.
 
+### Kalıp raporu
+
+Drain yalnızca metinle ilgilenir; seviyeyi ve zamanı bilmez. Rapor, Drain'in her mesaj için
+döndürdüğü küme numarasını kullanarak her kalıba şu bilgileri ekler:
+
+- **seviye:** kalıba uyan kayıtların en önemlisi.
+- **ilk / son:** ilk ve son görülme zamanı. Tek günlük logda yalnızca saat, birden çok günü
+  kapsayan logda tarih de gösterilir (`10-23 23:59:58`).
+- **örnek:** kalıba uyan ilk kaydın maskelenmemiş mesajı; `<SAYI>` ve `<*>`'ın arkasındaki
+  gerçek değerleri gösterir. Kalıp ham mesajla aynıysa gösterilmez.
+
+Tablo önce seviyeye, aynı seviyede adede göre sıralanır ve ilk 10 kalıp gösterilir.
+
 ### Bilinen sınırlamalar
 
 - Drain sözdizimine bakar, anlama bakmaz: `Kullanıcı <SAYI> giriş yaptı` ile
@@ -157,7 +184,7 @@ mesajlarda aynı kümeleri veriyor.
   (ör. `Undefined array key "id"`) tek kalıpta birleşir.
 - Aynı dosyada farklı zaman biçimleri ya da saat dilimleri karışırsa zaman aralığı yanlış
   sıralanabilir.
-- Ayarlar henüz komut satırından değiştirilemiyor.
+- Ayarlar, gösterilecek kalıp sayısı ve sıralama henüz komut satırından değiştirilemiyor.
 - Dosyanın tamamı belleğe okunuyor; çok büyük dosyalar için satır satır okuma ileride eklenecek.
 
 ## Kurulum
@@ -189,10 +216,11 @@ cargo run -- ornekler/laravel.log
 
 ```text
 src/
-├── main.rs    programın girişi: dosyayı okur, özeti yazar
+├── main.rs    programın girişi: argümanlar, dosya okuma, hata yönetimi
 ├── kayit.rs   log metnini kayıtlara ayırır: başlık, seviye, mesaj, devam satırları
 ├── maske.rs   mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
-└── drain.rs   Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
+├── drain.rs   Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
+└── rapor.rs   özet raporu: sayılar, seviyeler ve kalıp tablosu
 tests/
 └── cli.rs     programı gerçekten çalıştıran testler: argümanlar, hata mesajları, çıkış kodları
 ```
@@ -224,9 +252,9 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] Drain algoritmasıyla tekrar eden kalıpları bulma
 - [x] Dayanıklı okuma: ISO 8601 zaman, geçersiz UTF-8, yönlendirilen çıktı
 - [x] Rakama duyarlı benzerlik eşiği: kısa mesajlardaki sayısal değişkenler
-- [ ] Kalıp raporu: en yüksek seviye, ilk/son görülme zamanı, örnek mesaj
+- [x] Kalıp raporu: en yüksek seviye, ilk/son görülme zamanı, örnek mesaj
 - [ ] Hata parmak izi: istisna sınıfı ve uygulamadaki ilk satır
-- [ ] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı
+- [ ] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı, sıralama
 - [ ] JSON ve Markdown çıktısı
 - [ ] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar
 - [ ] Ani hata artışlarını yakalama (medyan + MAD)

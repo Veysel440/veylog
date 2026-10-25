@@ -60,15 +60,35 @@ impl Seviye {
 ///
 /// `'a`: kayıt, log metninin parçalarını kopyalamaz, onlardan ödünç alır.
 /// Bu yüzden log metni yaşadığı sürece yaşayabilir, daha uzun değil.
+///
+/// Alanlar gizli, dışarıdan yalnızca okunabilir (aşağıdaki metotlarla). Böylece bir kayıt
+/// yalnızca bu modülde, denetlenerek oluşturulabilir.
 #[derive(Debug, PartialEq)]
 pub struct Kayit<'a> {
     /// "2026-10-24 14:03:11"
     zaman: &'a str,
     seviye: Seviye,
     /// Bağlam JSON'u olmadan mesajın kendisi: "Kullanıcı 381 giriş yaptı"
-    pub mesaj: &'a str,
+    mesaj: &'a str,
     /// Başlıktan sonra gelen satırlar: stack trace, çok satırlı mesajlar.
     devam_satirlari: Vec<&'a str>,
+}
+
+impl<'a> Kayit<'a> {
+    /// Kaydın zamanı. İlk 19 karakteri her zaman geçerli bir tarih-saattir
+    /// (`2026-10-24 14:03:11` ya da `2026-10-24T14:03:11`); `zaman_gecerli_mi` bunu denetler.
+    pub fn zaman(&self) -> &'a str {
+        self.zaman
+    }
+
+    pub fn seviye(&self) -> Seviye {
+        self.seviye
+    }
+
+    /// Bağlam JSON'u olmadan mesajın kendisi.
+    pub fn mesaj(&self) -> &'a str {
+        self.mesaj
+    }
 }
 
 /// Bir log metninin kayıtlara ayrılmış hali.

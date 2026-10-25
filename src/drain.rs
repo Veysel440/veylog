@@ -431,7 +431,7 @@ mod testler {
         let maskeli: Vec<_> = log
             .kayitlar
             .iter()
-            .map(|kayit| maskele(kayit.mesaj))
+            .map(|kayit| maskele(kayit.mesaj()))
             .collect();
         let mesajlar: Vec<&str> = maskeli.iter().map(|mesaj| mesaj.as_ref()).collect();
         let kaliplar = kumele(Ayarlar::default(), &mesajlar);
