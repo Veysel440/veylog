@@ -15,13 +15,23 @@ ve ne zaman başladı.
 
 ## Şu an ne yapıyor?
 
-- Log dosyasındaki satırları ve kayıtları sayar. Stack trace gibi devam satırları kayıt sayılmaz;
-  yalnızca `[2026-10-24 14:03:11] production.ERROR: ...` biçimindeki başlıklar sayılır.
-- Kayıtları seviyelerine göre (DEBUG → EMERGENCY) gruplar ve en önemlisi en üstte olacak şekilde listeler.
+- Log dosyasını kayıtlara ayırır: `[2026-10-24 14:03:11] production.ERROR: ...` biçimindeki
+  başlık satırı yeni bir kayıt başlatır; stack trace gibi devam satırları bir sonraki başlığa
+  kadar o kayda bağlanır.
+- Dosya bir kaydın ortasından başlıyorsa, hiçbir kayda ait olmayan bu ilk satırları
+  "yetim satır" olarak ayrıca sayar.
+- Logun kapsadığı zaman aralığını gösterir.
+- Kayıtları seviyelerine göre (DEBUG → EMERGENCY) sayar; en önemlisi en üstte.
 
 ```text
 $ veylog ornekler/laravel.log
-ornekler/laravel.log: 203 satır, 59 kayıt
+ornekler/laravel.log: 203 satır
+  Kayıt         : 59
+  Devam satırı  : 141
+  Yetim satır   : 3
+  Zaman aralığı : 2026-10-24 08:59:58 → 2026-10-24 18:31:07
+
+Seviyeler:
   CRITICAL     2
   ERROR       16
   WARNING      6
@@ -52,6 +62,14 @@ cargo run -- ornekler/laravel.log
 ./target/release/veylog /yol/storage/logs/laravel.log
 ```
 
+## Proje yapısı
+
+```text
+src/
+├── main.rs    programın girişi: dosyayı okur, özeti ekrana yazar
+└── kayit.rs   log metnini kayıtlara ayırır: başlık, seviye, devam satırları
+```
+
 ## Testler
 
 ```bash
@@ -68,8 +86,8 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 
 - [x] Kayıt başlıklarını tanıma ve sayma
 - [x] Seviyelere göre sayım
-- [ ] Kodu modüllere ayırma
-- [ ] Çok satırlı kayıtları (stack trace) kayda bağlama, zaman aralığını gösterme
+- [x] Kodu modüllere ayırma
+- [x] Çok satırlı kayıtları (stack trace) kayda bağlama, zaman aralığını gösterme
 - [ ] Değişken kısımları maskeleme (sayı, IP, e-posta, UUID → `<SAYI>`, `<IP>`...)
 - [ ] Drain algoritmasıyla tekrar eden kalıpları bulma
 - [ ] JSON ve Markdown çıktısı

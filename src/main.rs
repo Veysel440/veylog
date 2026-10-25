@@ -2,12 +2,11 @@
 
 mod kayit;
 
-use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::process;
 
-use kayit::{Seviye, seviye_bul};
+use kayit::kayitlari_ayir;
 
 fn main() {
     let argumanlar: Vec<String> = env::args().collect();
@@ -26,20 +25,20 @@ fn main() {
         }
     };
 
-    // Her seviyeden kaç kayıt var? BTreeMap anahtarları sıralı tutar.
-    let mut sayaclar: BTreeMap<Seviye, usize> = BTreeMap::new();
-    for satir in icerik.lines() {
-        if let Some(seviye) = seviye_bul(satir) {
-            *sayaclar.entry(seviye).or_insert(0) += 1;
-        }
+    let log = kayitlari_ayir(&icerik);
+
+    println!("{yol}: {} satır", icerik.lines().count());
+    println!("  Kayıt         : {}", log.kayitlar.len());
+    println!("  Devam satırı  : {}", log.devam_satiri_sayisi());
+    println!("  Yetim satır   : {}", log.yetim_satir);
+    if let Some((en_eski, en_yeni)) = log.zaman_araligi() {
+        println!("  Zaman aralığı : {en_eski} → {en_yeni}");
     }
 
-    let satir_sayisi = icerik.lines().count();
-    let kayit_sayisi: usize = sayaclar.values().sum();
-
-    println!("{yol}: {satir_sayisi} satır, {kayit_sayisi} kayıt");
+    println!();
+    println!("Seviyeler:");
     // En önemli seviye en üstte görünsün diye ters sırada yaz
-    for (seviye, adet) in sayaclar.iter().rev() {
+    for (seviye, adet) in log.seviye_sayilari().iter().rev() {
         println!("  {:<10}{adet:>4}", seviye.ad());
     }
 }
