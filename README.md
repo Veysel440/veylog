@@ -15,6 +15,8 @@ ve ne zaman başladı.
 - Log dosyasını kayıtlara ayırır: `[2026-10-24 14:03:11] production.ERROR: ...` biçimindeki
   başlık satırı yeni bir kayıt başlatır; stack trace gibi devam satırları bir sonraki başlığa
   kadar o kayda bağlanır.
+- Laravel'in tarih biçimini (`2026-10-24 14:03:11`) ve Monolog'un varsayılanı olan ISO 8601
+  biçimini (`2026-10-24T14:03:11.123456+03:00`) tanır.
 - Dosya bir kaydın ortasından başlıyorsa, hiçbir kayda ait olmayan bu ilk satırları
   "yetim satır" olarak ayrıca sayar.
 - Logun kapsadığı zaman aralığını gösterir.
@@ -24,6 +26,9 @@ ve ne zaman başladı.
 - Maskelenmiş mesajları [Drain](#nasıl-çalışıyor) algoritmasıyla kalıplara ayırır ve en sık
   tekrar eden kalıpları listeler: `Zamanlanmış görev başladı: kurlar:guncelle` ile
   `Zamanlanmış görev başladı: yedek:al` → `Zamanlanmış görev başladı: <*>`.
+- Geçersiz UTF-8 baytları içeren dosyalarda durmaz; bu baytları `�` ile değiştirip uyarır.
+- Çıktısı başka bir programa yönlendirilebilir (`veylog laravel.log | head`); okuyan program
+  erken kapansa da çökmez.
 
 ```text
 $ veylog ornekler/laravel.log
@@ -114,8 +119,15 @@ veriyor.
 - Drain sözdizimine bakar, anlama bakmaz: `Kullanıcı <SAYI> giriş yaptı` ile
   `Kullanıcı <SAYI> çıkış yaptı` aynı yapıda olduğu için `Kullanıcı <SAYI> <*> yaptı`
   kalıbında birleşir.
+- Kısa mesajlarda maskelenemeyen tek bir değişken bile eşiği geçmeyi engeller:
+  `Yanıt süresi 120ms` ile `Yanıt süresi 95ms` (3 belirtecin 2'si aynı, 0,67 < 0,7) ayrı
+  kalıplar olur.
 - Boşluk içeren bir değer (ör. `Ali Veli`) belirteç sayısını değiştirdiği için aynı kalıptan
   gelen mesajlar farklı kümelere düşebilir.
+- Stack trace henüz kullanılmıyor: aynı mesajla farklı yerlerde fırlatılan iki hata
+  (ör. `Undefined array key "id"`) tek kalıpta birleşir.
+- Aynı dosyada farklı zaman biçimleri ya da saat dilimleri karışırsa zaman aralığı yanlış
+  sıralanabilir.
 - Ayarlar henüz komut satırından değiştirilemiyor.
 - Dosyanın tamamı belleğe okunuyor; çok büyük dosyalar için satır satır okuma ileride eklenecek.
 
@@ -139,16 +151,21 @@ cargo run -- ornekler/laravel.log
 
 # Derlenmiş programla
 ./target/release/veylog /yol/storage/logs/laravel.log
+
+# Sadece ilk 20 satır
+./target/release/veylog /yol/storage/logs/laravel.log | head -20
 ```
 
 ## Proje yapısı
 
 ```text
 src/
-├── main.rs    programın girişi: dosyayı okur, özeti ekrana yazar
+├── main.rs    programın girişi: dosyayı okur, özeti yazar
 ├── kayit.rs   log metnini kayıtlara ayırır: başlık, seviye, mesaj, devam satırları
 ├── maske.rs   mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
 └── drain.rs   Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
+tests/
+└── cli.rs     programı gerçekten çalıştıran testler: argümanlar, hata mesajları, çıkış kodları
 ```
 
 Dış kütüphane olarak yalnızca [regex](https://crates.io/crates/regex) kullanılır.
@@ -158,6 +175,9 @@ Dış kütüphane olarak yalnızca [regex](https://crates.io/crates/regex) kulla
 ```bash
 cargo test
 ```
+
+İki tür test çalışır: `src` içindeki birim testleri her parçayı ayrı ayrı sınar;
+`tests/cli.rs` ise derlenmiş programı çalıştırıp kullanıcının gördüğünü kontrol eder.
 
 ## Örnek log hakkında
 
@@ -173,7 +193,10 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] Çok satırlı kayıtları (stack trace) kayda bağlama, zaman aralığını gösterme
 - [x] Değişken kısımları maskeleme (sayı, IP, e-posta, UUID → `<SAYI>`, `<IP>`...)
 - [x] Drain algoritmasıyla tekrar eden kalıpları bulma
+- [x] Dayanıklı okuma: ISO 8601 zaman, geçersiz UTF-8, yönlendirilen çıktı
+- [ ] Rakama duyarlı benzerlik eşiği: kısa mesajlardaki sayısal değişkenler
 - [ ] Kalıp raporu: en yüksek seviye, ilk/son görülme zamanı, örnek mesaj
+- [ ] Hata parmak izi: istisna sınıfı ve uygulamadaki ilk satır
 - [ ] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı
 - [ ] JSON ve Markdown çıktısı
 - [ ] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar

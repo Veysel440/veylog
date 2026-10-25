@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! [2026-10-24 14:03:11] production.ERROR: Mesaj
+//! [2026-10-24T14:03:11.123456+03:00] production.ERROR: Mesaj   (ISO 8601)
 //! ```
 //!
 //! Başlıktan sonra gelen satırlar (stack trace, çok satırlı mesajlar) bir sonraki
@@ -91,7 +92,8 @@ impl Log<'_> {
     /// En eski ve en yeni kaydın zamanı. Hiç kayıt yoksa None.
     ///
     /// Zamanlar sabit genişlikte ve büyükten küçüğe (yıl, ay, gün, saat...) yazıldığı için
-    /// metin olarak karşılaştırmak, zaman olarak karşılaştırmakla aynı sonucu verir.
+    /// metin olarak karşılaştırmak, zaman olarak karşılaştırmakla aynı sonucu verir. Bunun
+    /// için dosyadaki bütün kayıtların aynı biçimi ve aynı saat dilimini kullanması gerekir.
     pub fn zaman_araligi(&self) -> Option<(&str, &str)> {
         let en_eski = self.kayitlar.iter().map(|kayit| kayit.zaman).min()?;
         let en_yeni = self.kayitlar.iter().map(|kayit| kayit.zaman).max()?;
@@ -161,18 +163,49 @@ fn mesaji_ayir(metin: &str) -> &str {
     mesaj.trim()
 }
 
-/// "2026-10-24 14:03:11" biçiminde mi? (19 karakter: rakamlar, -, boşluk ve :)
+/// Kayıt zamanı geçerli mi? İki biçim kabul edilir:
+///
+/// - Laravel'in varsayılanı: `2026-10-24 14:03:11`
+/// - Monolog'un varsayılanı olan ISO 8601: `2026-10-24T14:03:11+03:00`
+///
+/// Saniyeden sonra kesir (`.123456`) ve saat dilimi (`Z`, `+03:00`, `+0300`) gelebilir.
 fn zaman_gecerli_mi(metin: &str) -> bool {
     let baytlar = metin.as_bytes();
-    if baytlar.len() != 19 {
+    if baytlar.len() < 19 {
         return false;
     }
-    baytlar.iter().enumerate().all(|(sira, &bayt)| match sira {
-        4 | 7 => bayt == b'-',
-        10 => bayt == b' ',
-        13 | 16 => bayt == b':',
-        _ => bayt.is_ascii_digit(),
-    })
+    let (tarih_saat, ek) = baytlar.split_at(19);
+    let tarih_saat_gecerli = tarih_saat
+        .iter()
+        .enumerate()
+        .all(|(sira, &bayt)| match sira {
+            4 | 7 => bayt == b'-',
+            10 => bayt == b' ' || bayt == b'T',
+            13 | 16 => bayt == b':',
+            _ => bayt.is_ascii_digit(),
+        });
+    tarih_saat_gecerli && zaman_eki_gecerli_mi(ek)
+}
+
+/// Saniyeden sonra gelen kısım: isteğe bağlı kesir, ardından isteğe bağlı saat dilimi.
+fn zaman_eki_gecerli_mi(mut ek: &[u8]) -> bool {
+    if let Some(kesir) = ek.strip_prefix(b".") {
+        let rakam_sayisi = kesir
+            .iter()
+            .take_while(|bayt| bayt.is_ascii_digit())
+            .count();
+        if rakam_sayisi == 0 {
+            return false;
+        }
+        ek = &kesir[rakam_sayisi..];
+    }
+    match ek {
+        [] | [b'Z'] => true,
+        [b'+' | b'-', s1, s2, b':', d1, d2] | [b'+' | b'-', s1, s2, d1, d2] => {
+            [s1, s2, d1, d2].iter().all(|bayt| bayt.is_ascii_digit())
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +256,31 @@ mod testler {
         assert!(baslik_ayristir("[2026-10-24] local.INFO: x").is_none());
         assert!(baslik_ayristir("[2026/10/24 14:03:11] local.INFO: x").is_none());
         assert!(baslik_ayristir("[2026-10-24 14:03:1x] local.INFO: x").is_none());
+    }
+
+    #[test]
+    fn iso_8601_ve_kesirli_zamanlar_taninir() {
+        for satir in [
+            "[2026-10-24T14:03:11+03:00] production.ERROR: x",
+            "[2026-10-24T14:03:11.123456+03:00] production.ERROR: x",
+            "[2026-10-24 14:03:11.123456] production.ERROR: x",
+            "[2026-10-24T14:03:11Z] production.ERROR: x",
+            "[2026-10-24T14:03:11+0300] production.ERROR: x",
+        ] {
+            assert!(baslik_ayristir(satir).is_some(), "tanınmadı: {satir}");
+        }
+    }
+
+    #[test]
+    fn bozuk_zaman_ekleri_reddedilir() {
+        for satir in [
+            "[2026-10-24 14:03:11.] local.INFO: x",
+            "[2026-10-24 14:03:11+3] local.INFO: x",
+            "[2026-10-24 14:03:11abc] local.INFO: x",
+            "[2026-10-24X14:03:11] local.INFO: x",
+        ] {
+            assert!(baslik_ayristir(satir).is_none(), "kabul edildi: {satir}");
+        }
     }
 
     #[test]
