@@ -4,9 +4,23 @@ version = "0.1.0"
 edition = "2024"
 # En düşük Rust sürümü: `if let ... && ...` zincirleri 1.88'de kararlı hale geldi
 rust-version = "1.88"
+description = "Laravel log dosyalarını okunabilir bir özete çeviren komut satırı aracı: kalıplar, hata parmak izleri, karşılaştırma ve ani artışlar"
+authors = ["Veysel Tulu"]
+license = "MIT"
+repository = "https://github.com/Veysel440/veylog"
+readme = "README.md"
+keywords = ["laravel", "log", "drain", "cli", "php"]
+categories = ["command-line-utilities", "development-tools::debugging"]
 
 [dependencies]
 regex = "1.13.1"
 
 [dev-dependencies]
 serde_json = "1.0.154"
+
+# Dağıtılan program küçük ve hızlı olsun: bütün program birlikte iyileştirilir (LTO), hata
+# ayıklama sembolleri atılır
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

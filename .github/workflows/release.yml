@@ -1,0 +1,58 @@
+# Bir sürüm etiketi (v0.1.0 gibi) gönderilince GitHub'da bir sürüm açar ve dört sistem için
+# derlenmiş programı ona ekler. Sürüm notu CHANGELOG.md'deki ilgili bölümdür.
+name: Sürüm
+
+on:
+  push:
+    tags:
+      - v[0-9]+.*
+
+permissions:
+  contents: read
+
+jobs:
+  surum-ac:
+    name: Sürümü aç
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          changelog: CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  programlar:
+    name: Program (${{ matrix.target }})
+    needs: surum-ac
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl: statik bağlanır, her Linux dağıtımında çalışır. Program yalnızca Rust kodu
+          # olduğu için Docker'lı `cross` gerekmez; cargo doğrudan derler.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            build-tool: cargo
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: veylog
+          target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build-tool }}
+          tar: unix
+          zip: windows
+          checksum: sha256
+          locked: true
+          token: ${{ secrets.GITHUB_TOKEN }}

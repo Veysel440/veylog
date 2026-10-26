@@ -1,0 +1,2 @@
+# Satır sonları her sistemde LF: Windows CI'da testlerin beklediği metinler bozulmasın
+* text=auto eol=lf

@@ -1,0 +1,5 @@
+# Windows'ta C çalışma zamanı (CRT) programın içine bağlanır. Böylece veylog.exe, Visual C++
+# Redistributable kurulu olmayan bir bilgisayarda da çalışır; vcruntime140.dll aramaz.
+# ripgrep gibi araçlar da aynısını yapar.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
