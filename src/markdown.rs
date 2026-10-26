@@ -11,8 +11,8 @@ use std::io::{self, Write};
 use crate::ani_artis::AniArtislar;
 use crate::karsilastirma::Karsilastirma;
 use crate::rapor::{
-    KALIP_GENISLIGI, KalipSatiri, Ozet, ani_artis_basligi, dilim_araligi, gorunur,
-    karsilastirma_bolumleri, kisalt, ondalik, ondalik_kisa, zaman_goster,
+    Hucreler, KALIP_GENISLIGI, KalipSatiri, Ozet, ZamanGosterimi, ani_artis_basligi, dilim_araligi,
+    gorunur, karsilastirma_bolumleri, kisalt, ondalik, ondalik_kisa, zaman_goster,
 };
 use crate::zaman::sure_yaz;
 
@@ -37,7 +37,7 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
     writeln!(cikti, "- **Kalıplar:** {}", ozet.kalip_cumlesi())?;
 
     let satirlar = ozet.gosterilecek_satirlar();
-    let tek_gun = ozet.tek_gun();
+    let gosterim = ozet.zaman_gosterimi();
     if !satirlar.is_empty() {
         writeln!(cikti)?;
         writeln!(
@@ -51,18 +51,18 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
                 cikti,
                 &[satir.adet.to_string()],
                 satir,
-                (satir.ilk, satir.son),
-                tek_gun,
+                &Hucreler::satirdan(satir),
+                gosterim,
             )?;
         }
         gizlenen_yaz(cikti, ozet.gosterilmeyen())?;
     }
 
     if let Some(karsilastirma) = &ozet.karsilastirma {
-        karsilastirma_yaz(cikti, ozet, karsilastirma, tek_gun)?;
+        karsilastirma_yaz(cikti, ozet, karsilastirma, gosterim)?;
     }
     if let Some(ani_artislar) = &ozet.ani_artislar {
-        ani_artis_yaz(cikti, ozet, ani_artislar, tek_gun)?;
+        ani_artis_yaz(cikti, ozet, ani_artislar, gosterim)?;
     }
     Ok(())
 }
@@ -72,7 +72,7 @@ fn karsilastirma_yaz(
     cikti: &mut impl Write,
     ozet: &Ozet<'_>,
     karsilastirma: &Karsilastirma,
-    tek_gun: bool,
+    gosterim: ZamanGosterimi,
 ) -> io::Result<()> {
     writeln!(cikti)?;
     writeln!(
@@ -121,8 +121,8 @@ fn karsilastirma_yaz(
                 cikti,
                 &[degisim.once.to_string(), sonra],
                 satir,
-                (satir.ilk, satir.son),
-                tek_gun,
+                &Hucreler::satirdan(satir),
+                gosterim,
             )?;
         }
         gizlenen_yaz(cikti, ozet.disarida_kalan(degisimler))?;
@@ -131,12 +131,13 @@ fn karsilastirma_yaz(
 }
 
 /// Ani artış bölümü: başlık ve puanı en yüksek olan artışların tablosu. Zirve hücresinde zirve
-/// dilimin aralığı da yazar: `6 (16:10–16:20)`. İlk ve son, artışın ilk ve son kaydıdır.
+/// dilimin aralığı da yazar: `6 (16:10–16:20)`. Seviye, ilk, son ve örnek artışın
+/// kayıtlarındandır.
 fn ani_artis_yaz(
     cikti: &mut impl Write,
     ozet: &Ozet<'_>,
     ani_artislar: &AniArtislar,
-    tek_gun: bool,
+    gosterim: ZamanGosterimi,
 ) -> io::Result<()> {
     writeln!(cikti)?;
     writeln!(cikti, "### {}", ani_artis_basligi(ani_artislar))?;
@@ -153,45 +154,44 @@ fn ani_artis_yaz(
         let zirve = format!(
             "{} ({})",
             artis.zirve_adet,
-            dilim_araligi(artis.zirve_baslangic, artis.zirve_bitis, tek_gun)
+            dilim_araligi(artis.zirve_baslangic, artis.zirve_bitis, gosterim)
         );
-        let satir = &ozet.analiz.satirlar[artis.satir];
+        let (ilk, son) = (artis.ilk.to_string(), artis.son.to_string());
         satir_yaz(
             cikti,
             &[zirve, ondalik(artis.olagan), ondalik_kisa(artis.puan)],
-            satir,
-            (&artis.ilk.to_string(), &artis.son.to_string()),
-            tek_gun,
+            &ozet.analiz.satirlar[artis.satir],
+            &Hucreler::artistan(artis, &ilk, &son),
+            gosterim,
         )?;
     }
     gizlenen_yaz(cikti, ozet.disarida_kalan(&ani_artislar.artislar))
 }
 
 /// Tablonun bir satırı. `sayilar`: satır başındaki sayı hücreleri (adet ya da önce ve sonra).
-/// `zamanlar`: İlk ve Son hücrelerine yazılacak zamanlar.
+/// Kalıp ve konum `satir`dan, seviye, zamanlar ve örnek `hucreler`den gelir.
 fn satir_yaz(
     cikti: &mut impl Write,
     sayilar: &[String],
     satir: &KalipSatiri<'_>,
-    zamanlar: (&str, &str),
-    tek_gun: bool,
+    hucreler: &Hucreler<'_>,
+    gosterim: ZamanGosterimi,
 ) -> io::Result<()> {
-    let (ilk, son) = zamanlar;
     let kalip_hucreleri = [
-        satir.seviye.ad().to_owned(),
-        zaman_goster(ilk, tek_gun),
-        zaman_goster(son, tek_gun),
+        hucreler.seviye.ad().to_owned(),
+        zaman_goster(hucreler.ilk, gosterim),
+        zaman_goster(hucreler.son, gosterim),
         kod(&kisalt(&gorunur(&satir.kalip), KALIP_GENISLIGI)),
-        ornek(satir),
+        ornek(hucreler.ornek, &satir.kalip),
         konum(satir),
     ];
     // Her hücre aynı kuraldan geçer; sonradan eklenen bir sütun da unutulmaz
-    let hucreler: Vec<String> = sayilar
+    let tum_hucreler: Vec<String> = sayilar
         .iter()
         .chain(&kalip_hucreleri)
         .map(|metin| hucre(metin))
         .collect();
-    writeln!(cikti, "| {} |", hucreler.join(" | "))
+    writeln!(cikti, "| {} |", tum_hucreler.join(" | "))
 }
 
 /// Gösterilmeyen satırlar varsa tablonun altına yazar.
@@ -207,15 +207,16 @@ fn gizlenen_yaz(cikti: &mut impl Write, gizlenen: usize) -> io::Result<()> {
 }
 
 /// Örnek hücresi: kalıp ham mesajla aynıysa boş kalır.
-fn ornek(satir: &KalipSatiri<'_>) -> String {
-    if satir.ornek == satir.kalip {
+fn ornek(ornek: &str, kalip: &str) -> String {
+    if ornek == kalip {
         String::new()
     } else {
-        kod(&kisalt(&gorunur(satir.ornek), KALIP_GENISLIGI))
+        kod(&kisalt(&gorunur(ornek), KALIP_GENISLIGI))
     }
 }
 
-/// Konum hücresi: `app/Services/X.php:88` ErrorException
+/// Konum hücresi: `app/Services/X.php:88` ErrorException. View hatalarında satırsız bir şablon:
+/// `resources/views/vitrin.blade.php` ViewException
 ///
 /// Kısa sınıf adı kod dışında yazılabilir: parmak izi yalnızca harf, rakam, `_`, `\` ve `@`
 /// içeren sınıf adlarını kabul eder.
@@ -223,11 +224,11 @@ fn konum(satir: &KalipSatiri<'_>) -> String {
     match satir.parmak_izi {
         Some(parmak_izi) => match parmak_izi.konum() {
             Some((dosya, satir_no)) => {
-                format!(
-                    "{} {}",
-                    kod(&gorunur(&format!("{dosya}:{satir_no}"))),
-                    parmak_izi.kisa_sinif()
-                )
+                let yer = match satir_no {
+                    Some(satir_no) => format!("{dosya}:{satir_no}"),
+                    None => dosya.into_owned(),
+                };
+                format!("{} {}", kod(&gorunur(&yer)), parmak_izi.kisa_sinif())
             }
             None => format!("uygulama kodunda bulunamadı ({})", parmak_izi.kisa_sinif()),
         },
@@ -270,7 +271,7 @@ fn hucre(metin: &str) -> String {
 #[cfg(test)]
 mod testler {
     use super::*;
-    use crate::ani_artis::deneme_logu;
+    use crate::ani_artis::{deneme_logu, karisik_seviyeli_log};
     use crate::kayit::kayitlari_ayir;
     use crate::rapor::RaporAyarlari;
     use crate::zaman::ZamanNoktasi;
@@ -387,6 +388,26 @@ mod testler {
 … 1 satır daha; tümünü görmek için `--hepsi`
 "#;
         assert!(metin.ends_with(beklenen), "{metin}");
+
+        // Seviye ve örnek de artışın kayıtlarından: satırın seviyesi CRITICAL, örneği
+        // "Kuyruk 2 dolu"
+        let ayarlar = RaporAyarlari {
+            ani_artis: Some(1),
+            ..RaporAyarlari::default()
+        };
+        let metin = markdown_ayarlarla(&karisik_seviyeli_log(), "a.log", &ayarlar);
+        assert!(
+            metin.contains(
+                "| CRITICAL | 10:00:30 | 11:50:30 | `Kuyruk <SAYI> dolu` | `Kuyruk 2 dolu` |  |\n"
+            ),
+            "{metin}"
+        );
+        assert!(
+            metin.ends_with(
+                "| ERROR | 11:00:00 | 11:01:15 | `Kuyruk <SAYI> dolu` | `Kuyruk 3 dolu` |  |\n"
+            ),
+            "{metin}"
+        );
     }
 
     #[test]

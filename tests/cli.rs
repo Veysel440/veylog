@@ -3,8 +3,9 @@
 //! Cargo, derlenmiş programın yolunu `CARGO_BIN_EXE_veylog` ortam değişkeniyle verir.
 
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::{self, Command, Output};
+use std::process::{self, Command, Output, Stdio};
 
 fn veylog(argumanlar: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_veylog"))
@@ -125,7 +126,131 @@ fn utf8_olmayan_dosya_adi_programi_cokertmez() {
 fn olmayan_dosya_hata_verir() {
     let cikti = veylog(&["boyle-bir-dosya-yok.log"]);
     assert_eq!(cikti.status.code(), Some(1));
-    assert!(metin(&cikti.stderr).contains("okunamadı"));
+    assert_eq!(
+        metin(&cikti.stderr),
+        "veylog: boyle-bir-dosya-yok.log okunamadı: dosya bulunamadı\n"
+    );
+}
+
+#[test]
+fn klasor_verilirse_ne_yapilacagi_soylenir() {
+    let cikti = veylog(&["ornekler"]);
+    assert_eq!(cikti.status.code(), Some(1));
+    assert_eq!(
+        metin(&cikti.stderr),
+        "veylog: ornekler okunamadı: bu bir klasör; log dosyasını verin (ör. storage/logs/laravel.log)\n"
+    );
+}
+
+#[test]
+fn bos_dosya_adi_kullanim_hatasidir() {
+    // `veylog "$LOG"` ve LOG tanımsız: adsız bir "okunamadı" hatası yerine
+    let cikti = veylog(&[""]);
+    assert_eq!(cikti.status.code(), Some(2));
+    assert!(metin(&cikti.stderr).starts_with("veylog: dosya adı boş olamaz\n"));
+}
+
+#[test]
+fn standart_girdiden_okunur() {
+    // `zcat laravel-2026-10-24.log.gz | veylog -`
+    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+        .args(["-b", "json", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("veylog çalıştırılamadı");
+    surec
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&fs::read("ornekler/laravel.log").unwrap())
+        .unwrap();
+    let cikti = surec.wait_with_output().unwrap();
+    assert!(cikti.status.success());
+    let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
+    assert_eq!(rapor["dosya"], "<standart girdi>");
+    assert_eq!(rapor["kayit_sayisi"], 59);
+}
+
+#[test]
+fn bom_ilk_kaydi_yutmaz() {
+    // Bazı Windows araçları dosyanın başına UTF-8 BOM'u yazar
+    let yol = gecici_dosya(
+        "bom.log",
+        "\u{feff}[2026-10-24 10:00:00] local.CRITICAL: Veritabanı çöktü\n\
+         [2026-10-24 10:00:05] local.INFO: Tamam\n"
+            .as_bytes(),
+    );
+    let cikti = veylog(&[yol.to_str().unwrap()]);
+    fs::remove_file(&yol).ok();
+
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(stdout.contains("  Kayıt         : 2\n"), "{stdout}");
+    assert!(stdout.contains("  Yetim satır   : 0\n"), "{stdout}");
+    assert!(stdout.contains("\n  CRITICAL     1\n"), "{stdout}");
+
+    // `cat gun1.log gun2.log | veylog -`: ikinci dosyanın BOM'u akışın ortasında
+    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("veylog çalıştırılamadı");
+    surec
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            "\u{feff}[2026-10-24 10:00:00] local.INFO: Birinci gün\n\
+             \u{feff}[2026-10-25 10:00:00] local.CRITICAL: Veritabanı çöktü\n"
+                .as_bytes(),
+        )
+        .unwrap();
+    let cikti = surec.wait_with_output().unwrap();
+    let stdout = metin(&cikti.stdout);
+    assert!(stdout.contains("  Kayıt         : 2\n"), "{stdout}");
+    assert!(stdout.contains("\n  CRITICAL     1\n"), "{stdout}");
+}
+
+#[test]
+fn eksi_sifir_esik_sifir_yazilir() {
+    let cikti = veylog(&["--esik", "-0", "-b", "json", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(stdout.contains("\"esik\": 0,\n"), "{stdout}");
+}
+
+#[test]
+fn rakamsiz_degisken_tek_kalipta_birlesir() {
+    // Kaba kuvvet denemesi: her satırda başka bir kullanıcı adı. Kısa mesajda rakamsız bir
+    // değer Drain'de birleşmez; 100'ü aşınca konum değişken sayılır ve hepsi tek kalıp olur.
+    let mut satirlar = String::new();
+    for sira in 0..150 {
+        let ad: String = [sira / 26, sira]
+            .iter()
+            .map(|basamak| char::from(b'a' + (basamak % 26) as u8))
+            .collect();
+        satirlar.push_str(&format!(
+            "[2026-10-24 10:{:02}:{:02}] local.WARNING: Bilinmeyen kullanıcı: {ad}\n",
+            sira / 60,
+            sira % 60
+        ));
+    }
+    let yol = gecici_dosya("kaba-kuvvet.log", satirlar.as_bytes());
+    let cikti = veylog(&[yol.to_str().unwrap()]);
+    fs::remove_file(&yol).ok();
+
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains("150 farklı mesaj → maskeleyince 150 → Drain ile 1 kalıp"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(" 150  WARNING    10:00:00  10:02:29  Bilinmeyen kullanıcı: <*>\n"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -423,6 +548,116 @@ fn ani_artis_dilimi_denetlenir() {
     let stdout = metin(&cikti.stdout);
     assert!(
         stdout.ends_with("olağan seviyeyi ölçmek için en az 10 dilim gerekir\n"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn json_satirlari_ve_windows_yollari() {
+    // ornekler/karisik.log: Windows'ta (Herd) çalışan bir uygulamanın logu. 10:00'a kadar
+    // Laravel'in metin biçiminde, sonra Monolog'un JSON biçiminde yazılmış.
+    let cikti = veylog(&["--hepsi", "ornekler/karisik.log"]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(stdout.contains("  Kayıt         : 21\n"), "{stdout}");
+    // Windows yolu: köke göre ve ayracı / olarak
+    assert!(
+        stdout.contains(
+            "konum: database/migrations/2026_10_25_090000_create_kuponlar_table.php:11 (QueryException)\n"
+        ),
+        "{stdout}"
+    );
+    // Aynı hata biri metin, biri JSON biçiminde iki kez yazıldı: tek satırda birleşir
+    assert!(
+        stdout.contains(
+            "     2  ERROR      09:20:11  10:15:30  Undefined array key \"kargo_ucreti\"\n"
+        ),
+        "{stdout}"
+    );
+    // JSON kaydının çok satırlı mesajının ilk satırı
+    assert!(
+        stdout.contains("     1  NOTICE     11:30:00  11:30:00  Kupon \"YAZ25\" süresi doldu:\n"),
+        "{stdout}"
+    );
+
+    let cikti = veylog(&["-b", "json", "--hepsi", "ornekler/karisik.log"]);
+    let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
+    let curl = rapor["kaliplar"]["satirlar"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|satir| satir["kalip"].as_str().unwrap().starts_with("cURL"))
+        .unwrap();
+    assert_eq!(curl["adet"], 3);
+    assert_eq!(
+        curl["istisna"],
+        serde_json::json!({
+            "sinif": r"Illuminate\Http\Client\ConnectionException",
+            "dosya": "app/Services/OdemeServisi.php",
+            "satir": 22
+        })
+    );
+}
+
+#[test]
+fn view_hatalari_middleware_ve_kok() {
+    // ornekler/karisik.log'un 09:48–09:58 arası: bir yönetim paneline gelen istekler. Hepsi
+    // `YoneticiMi` middleware'inden geçiyor.
+    let cikti = veylog(&["--hepsi", "ornekler/karisik.log"]);
+    let stdout = metin(&cikti.stdout);
+    // View hatasının konumu şablon; şablonun yolu kalıpta maskelenir
+    assert!(
+        stdout.contains(
+            "     2  ERROR      09:48:21  09:49:05  Route [panel.kampanya.olustur] not defined. (View: <YOL>)\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("konum: resources/views/panel/kampanyalar.blade.php (ViewException)\n"),
+        "{stdout}"
+    );
+    // İç içe şablonda hatanın oluştuğu şablon
+    assert!(
+        stdout.contains("konum: resources/views/partials/urun-karti.blade.php (ViewException)\n"),
+        "{stdout}"
+    );
+    // Tanımsız denetleyici metodu: yığın izindeki tek uygulama satırı middleware'in
+    // `return $next($request);` satırı, o hatanın yeri değil
+    assert!(
+        stdout.contains(
+            "  Call to undefined method App\\Http\\Controllers\\KampanyaController::duzenle()\n                                       konum: uygulama kodunda bulunamadı (Error)\n"
+        ),
+        "{stdout}"
+    );
+    // Yığın izi olmayan ölümcül hata: kök logun başka kayıtlarından bulunur
+    assert!(
+        stdout.contains("konum: app/Http/Controllers/RaporController.php:5 (FatalError)\n"),
+        "{stdout}"
+    );
+
+    // JSON'da şablonun satırı yok: null
+    let cikti = veylog(&["-b", "json", "--hepsi", "ornekler/karisik.log"]);
+    let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
+    let route = rapor["kaliplar"]["satirlar"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|satir| satir["kalip"].as_str().unwrap().starts_with("Route"))
+        .unwrap();
+    assert_eq!(
+        route["istisna"],
+        serde_json::json!({
+            "sinif": r"Illuminate\View\ViewException",
+            "dosya": "resources/views/panel/kampanyalar.blade.php",
+            "satir": null
+        })
+    );
+
+    // Markdown'da da satırsız
+    let cikti = veylog(&["-b", "markdown", "--hepsi", "ornekler/karisik.log"]);
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains("| `resources/views/panel/kampanyalar.blade.php` ViewException |\n"),
         "{stdout}"
     );
 }

@@ -27,8 +27,8 @@ pub struct Zaman {
 impl Zaman {
     /// Bir kaydın zamanından: `2026-10-24 14:03:11` ya da `2026-10-24T14:03:11.123456+03:00`.
     ///
-    /// Kayıt zamanının biçimi kayıt ayrıştırılırken denetlendiği için (`kayit` modülü) en az
-    /// 19 karakter olduğu ve parçaların yerinde rakamlar bulunduğu bilinir.
+    /// Kayıt zamanı kayıt ayrıştırılırken denetlendiği için (`kayit` modülü) en az 19 karakter
+    /// olduğu, parçaların yerinde rakamlar bulunduğu ve takvimde var olan bir an olduğu bilinir.
     pub fn kayittan(zaman: &str) -> Zaman {
         let baytlar = zaman.as_bytes();
         // Parçalar hep rakamdır; olmasaydı 0 olurdu, program çökmezdi
@@ -41,6 +41,20 @@ impl Zaman {
             dakika: parca(14, 16),
             saniye: parca(17, 19),
         }
+    }
+
+    /// Takvimde var olan bir an mı? Ay 1–12, gün o ayın gün sayısı kadar (artık yıllar dahil),
+    /// saat 0–23, dakika ve saniye 0–59.
+    ///
+    /// Biçimi doğru ama takvimde olmayan bir zaman (`2026-02-30`, `24:00:00`) iki anı
+    /// karşılaştırmayı bozar: `Ord` alanları sırayla karşılaştırır, `saniye` ise gün numarasını
+    /// hesaplar. 30 Şubat sıralamada 1 Mart'tan önce gelir ama saniyesi 2 Mart'ınkidir.
+    pub fn takvimde_var_mi(self) -> bool {
+        (1..=12).contains(&self.ay)
+            && (1..=ayin_gun_sayisi(self.yil, self.ay)).contains(&self.gun)
+            && self.saat <= 23
+            && self.dakika <= 59
+            && self.saniye <= 59
     }
 
     /// 1970-01-01 00:00:00'dan bu yana geçen saniye. İki anın farkı aralarındaki süredir.
@@ -503,6 +517,41 @@ mod testler {
         assert_eq!(sure_yaz(12_668), "3 sa 31 dk");
         assert_eq!(sure_yaz(86_400), "1 gün 0 sa");
         assert_eq!(sure_yaz(2 * 86_400 + 3 * 3_600 + 59), "2 gün 3 sa");
+    }
+
+    #[test]
+    fn takvimde_olmayan_anlar_taninir() {
+        for metin in [
+            "2026-10-24 14:03:11",
+            "2024-02-29 00:00:00",
+            "2000-02-29 23:59:59",
+            "0000-01-01 00:00:00",
+            "9999-12-31 23:59:59",
+        ] {
+            assert!(Zaman::kayittan(metin).takvimde_var_mi(), "{metin}");
+        }
+        for metin in [
+            "2026-02-29 10:00:00",
+            "2026-02-30 10:00:00",
+            "1900-02-29 10:00:00",
+            "2026-04-31 10:00:00",
+            "2026-00-10 10:00:00",
+            "2026-13-01 10:00:00",
+            "2026-10-00 10:00:00",
+            "2026-10-24 24:00:00",
+            "2026-10-24 23:60:00",
+            "2026-10-24 23:59:60",
+        ] {
+            assert!(!Zaman::kayittan(metin).takvimde_var_mi(), "{metin}");
+        }
+        // Takvimde olmayan bir an sıralama ile saniyenin çeliştiği yerdir: 30 Şubat 1 Mart'tan
+        // önce sıralanır ama saniyesi daha büyüktür
+        let (otuz_subat, bir_mart) = (
+            Zaman::kayittan("2026-02-30 00:00:00"),
+            Zaman::kayittan("2026-03-01 00:00:00"),
+        );
+        assert!(otuz_subat < bir_mart);
+        assert!(otuz_subat.saniye() > bir_mart.saniye());
     }
 
     #[test]

@@ -128,18 +128,17 @@ impl Karsilastirma {
         // Tam noktadaki kayıt "sonra"dadır: önce [ilk, nokta), sonra [nokta, son]
         let sonrada = |zaman: Zaman| zaman >= nokta;
         let sonra_kayit = zamanlar.iter().filter(|&&zaman| sonrada(zaman)).count();
-        // Farklar pozitiftir: nokta ilk kayıttan sonra ve en geç son kayıtla aynı anda.
-        // Son kaydın saniyesi de sonra yarısına dahil olduğu için bir saniye eklenir.
+        // Son kaydın saniyesi de sonra yarısına dahil olduğu için bir saniye eklenir
         let once = Pencere {
             baslangic: ilk,
             bitis: nokta,
-            saniye: (nokta.saniye() - ilk.saniye()) as usize,
+            saniye: saniye_farki(ilk, nokta),
             kayit_sayisi: zamanlar.len() - sonra_kayit,
         };
         let sonra = Pencere {
             baslangic: nokta,
             bitis: son,
-            saniye: (son.saniye() - nokta.saniye() + 1) as usize,
+            saniye: saniye_farki(nokta, son) + 1,
             kayit_sayisi: sonra_kayit,
         };
         // Sıklık değişmediyse bir kaydın sonraya düşme ihtimali: sonranın süredeki payı
@@ -187,6 +186,16 @@ impl Karsilastirma {
         }
         Ok(sonuc)
     }
+}
+
+/// `bas`'tan `son`'a kadar geçen saniye.
+///
+/// Kayıt zamanları ve karşılaştırma noktası takvimde var olan anlardır (`kayit` ve `zaman`
+/// modülleri denetler); böyle anlarda sıralama ile saniye uyuşur. Bu yüzden `son`, `bas`'tan önce
+/// değilse fark eksi olamaz. `as usize` eksi bir sayıyı sessizce dev bir sayıya çevirirdi;
+/// `try_from` çevirmez ve beklenti bozulursa ne olduğunu söyleyerek durur.
+fn saniye_farki(bas: Zaman, son: Zaman) -> usize {
+    usize::try_from(son.saniye() - bas.saniye()).expect("bitiş başlangıçtan önce olamaz")
 }
 
 #[cfg(test)]
@@ -411,6 +420,28 @@ mod testler {
             karsilastir("", "12:00").unwrap_err(),
             KarsilastirmaHatasi::KayitYok
         );
+    }
+
+    #[test]
+    fn takvimde_olmayan_zaman_sureleri_bozmaz() {
+        // 30 Şubat sıralamada 1 Mart'tan önce gelir ama saniyesi 2 Mart'ınkidir. Başlık
+        // sayılsaydı "önce" yarısı ilk kayıttan geriye giden eksi bir süre olurdu. Takvimde
+        // olmadığı için başlık değildir: ilk kaydın önündeki yetim satır olur.
+        let metin = "[2026-02-30 10:00:00] local.ERROR: Eski hata\n\
+                     [2026-03-01 12:00:00] local.ERROR: Yeni hata\n\
+                     [2026-03-03 12:00:00] local.ERROR: Yeni hata";
+        let log = kayitlari_ayir(metin);
+        assert_eq!((log.kayitlar.len(), log.yetim_satir), (2, 1));
+        let sonuc = karsilastir(metin, "2026-03-02").unwrap();
+        assert_eq!((sonuc.once.saniye, sonuc.sonra.saniye), (43_200, 129_601));
+        assert_eq!(saniye_farki(sonuc.once.baslangic, sonuc.nokta), 43_200);
+    }
+
+    #[test]
+    #[should_panic(expected = "bitiş başlangıçtan önce olamaz")]
+    fn ters_aralik_sessizce_dev_sayiya_donmez() {
+        let zaman = Zaman::kayittan;
+        saniye_farki(zaman("2026-03-02 00:00:00"), zaman("2026-03-01 00:00:00"));
     }
 
     #[test]

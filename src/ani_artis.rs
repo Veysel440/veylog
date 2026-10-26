@@ -16,9 +16,13 @@
 //! eşik kullanılır: artışı sıçrama başlatır, olağana dönüş bitirir. Böylece dakikada 5–8 kayıt
 //! yazan bir arıza, arada eşiğin altında kalan dakikalar yüzünden parçalara bölünmez.
 //!
-//! Yalnızca WARNING ve üstündeki kalıplara bakılır. INFO ve DEBUG kayıtları çoğu zaman trafikle
+//! Yalnızca WARNING ve üstündeki kayıtlar sayılır. INFO ve DEBUG kayıtları çoğu zaman trafikle
 //! birlikte gün içinde inip çıkar; tek bir olağan seviye bunu açıklayamaz ve yoğun saatlerin
-//! her dakikası sıçrama gibi görünür.
+//! her dakikası sıçrama gibi görünür. Seviyeye kalıp satırının değil her kaydın kendisine
+//! bakılır: Drain tek kelimesi farklı iki mesajı birleştirebilir (`Kullanıcı 7 giriş yaptı`
+//! INFO, `Kullanıcı 7 giriş yapamadı` WARNING). Satırın seviyesi en yükseğidir; ona bakılsaydı
+//! INFO trafiğinin her yoğun anı bir WARNING artışı sayılırdı. Artışın seviyesi, örneği, ilk ve
+//! son zamanı da yalnızca sayılan kayıtlardandır.
 
 use std::cmp::Reverse;
 
@@ -45,10 +49,15 @@ pub const EN_UZUN_DILIM: u16 = 1_440;
 pub const EN_DUSUK_SEVIYE: Seviye = Seviye::Warning;
 
 /// Bir kalıbın ani artışı: sayısı olağanın üstünde olan art arda dilimler; en az biri sıçramış.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AniArtis {
     /// Satırın `KalipAnalizi::satirlar` içindeki sırası.
     pub satir: usize,
+    /// Artıştaki kayıtların en yüksek seviyesi.
+    pub seviye: Seviye,
+    /// Artıştaki ilk kaydın maskelenmemiş mesajı. Satırın örneği bir INFO kaydı olabilir; bu
+    /// her zaman sayılan bir kayıttır.
+    pub ornek: String,
     /// Kalıbın olağan seviyesi: dilim başına kayıt sayısının medyanı.
     pub olagan: f64,
     /// Kalıbın olağan dalgalanması: sayıların medyandan mutlak sapmalarının medyanı.
@@ -89,6 +98,10 @@ struct DoluDilim {
     /// Dilimdeki ilk ve son kaydın zamanı.
     ilk: Zaman,
     son: Zaman,
+    /// Dilimdeki ilk kaydın `Log::kayitlar` içindeki sırası.
+    ilk_kayit: usize,
+    /// Dilimdeki kayıtların en yüksek seviyesi.
+    seviye: Seviye,
 }
 
 impl AniArtislar {
@@ -128,15 +141,18 @@ impl AniArtislar {
         }
 
         for (sira, satir) in analiz.satirlar.iter().enumerate() {
-            if satir.seviye < EN_DUSUK_SEVIYE {
-                continue;
-            }
-            // Satırın kayıtları dilimlerine, aynı dilimdekiler zamanlarına göre sıralı
-            let mut kayitlar: Vec<(i64, Zaman)> = satir
+            // Satırın WARNING ve üstündeki kayıtları; dilimlerine, aynı dilimdekiler zamanlarına
+            // (zamanı aynı olanlar logdaki sırasına) göre sıralı. Satırda böyle bir kayıt yoksa
+            // (bütün kayıtları INFO) atlanır.
+            let mut kayitlar: Vec<(i64, Zaman, usize)> = satir
                 .kayitlar
                 .iter()
-                .map(|&kayit| (dilimler[kayit], zamanlar[kayit]))
+                .filter(|&&kayit| log.kayitlar[kayit].seviye() >= EN_DUSUK_SEVIYE)
+                .map(|&kayit| (dilimler[kayit], zamanlar[kayit], kayit))
                 .collect();
+            if kayitlar.is_empty() {
+                continue;
+            }
             kayitlar.sort_unstable();
             // Kaydı olan dilimler. `chunk_by` dilimi aynı olan ardışık kayıtları bir grupta
             // toplar; sıralı oldukları için her grup bir dilimin bütün kayıtlarıdır.
@@ -147,6 +163,12 @@ impl AniArtislar {
                     adet: grup.len(),
                     ilk: grup[0].1,
                     son: grup[grup.len() - 1].1,
+                    ilk_kayit: grup[0].2,
+                    seviye: grup
+                        .iter()
+                        .map(|&(_, _, kayit)| log.kayitlar[kayit].seviye())
+                        .max()
+                        .expect("`chunk_by` boş grup vermez"),
                 })
                 .collect();
             let sayilar: Vec<usize> = dolu.iter().map(|dilim| dilim.adet).collect();
@@ -178,6 +200,12 @@ impl AniArtislar {
                 let (ilk, son) = (grup[0], grup[grup.len() - 1]);
                 sonuc.artislar.push(AniArtis {
                     satir: sira,
+                    seviye: grup
+                        .iter()
+                        .map(|dilim| dilim.seviye)
+                        .max()
+                        .expect("`chunk_by` boş grup vermez"),
+                    ornek: log.kayitlar[ilk.ilk_kayit].mesaj().to_owned(),
                     olagan: olagan.medyan,
                     mad: olagan.mad,
                     baslangic: dilim_basi(ilk.numara),
@@ -207,6 +235,34 @@ impl AniArtislar {
     pub fn yeterli(&self) -> bool {
         self.dilim_sayisi >= EN_AZ_DILIM
     }
+}
+
+/// Rapor ve Markdown testlerinin seviyesi karışık logu. "Kuyruk <SAYI> dolu" kalıbında on
+/// dakikada bir WARNING (10:00:30'dan başlayarak), 10:05'te bir CRITICAL ve iki dilimlik bir
+/// artış: 11:00'de 8 WARNING ve bir ERROR, 11:01'de 4 WARNING. Satırın seviyesi CRITICAL,
+/// örneği ilk kaydı ("Kuyruk 2 dolu"); artışın seviyesi ERROR, örneği "Kuyruk 3 dolu".
+#[cfg(test)]
+pub fn karisik_seviyeli_log() -> String {
+    let mut satirlar = vec!["[2026-10-24 10:05:00] local.CRITICAL: Kuyruk 1 dolu".to_string()];
+    let ilk = Zaman::kayittan("2026-10-24 10:00:30").saniye();
+    for dakika in (0..120).step_by(10) {
+        let an = Zaman::saniyeden(ilk + dakika * 60);
+        satirlar.push(format!("[{an}] local.WARNING: Kuyruk 2 dolu"));
+    }
+    for saniye in (0..40).step_by(5) {
+        satirlar.push(format!(
+            "[2026-10-24 11:00:{saniye:02}] local.WARNING: Kuyruk 3 dolu"
+        ));
+    }
+    satirlar.push("[2026-10-24 11:00:50] local.ERROR: Kuyruk 4 dolu".to_string());
+    for saniye in (0..20).step_by(5) {
+        satirlar.push(format!(
+            "[2026-10-24 11:01:{saniye:02}] local.WARNING: Kuyruk 5 dolu"
+        ));
+    }
+    // Zamana göre sırala; aynı saniyedekiler mesajlarına göre
+    satirlar.sort();
+    satirlar.join("\n")
 }
 
 /// Rapor, JSON ve Markdown testlerinin ortak logu: iki saat (10:00–11:59) ve üç ani artış.
@@ -321,7 +377,7 @@ mod testler {
         // MAD tabanı 1 kayıt: puan = 0,6745 × sayı. 8 ve 12 eşiği geçer (5,4 ve 8,1); 5 geçmez
         // (3,4) ama olağanın (0) üstündedir, artışın parçasıdır. 11:03 boş: artış biter.
         assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
-        let artis = ani.artislar[0];
+        let artis = &ani.artislar[0];
         assert_eq!((artis.olagan, artis.mad), (0.0, 0.0));
         assert_eq!(artis.baslangic.to_string(), "2026-10-24 11:00:00");
         assert_eq!(artis.bitis.to_string(), "2026-10-24 11:03:00");
@@ -373,7 +429,7 @@ mod testler {
         ]);
         let (ani, _) = hesapla(&log_metni(&kayitlar), 1);
         assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
-        let artis = ani.artislar[0];
+        let artis = &ani.artislar[0];
         assert_eq!((artis.olagan, artis.mad), (2.0, 0.0));
         assert_eq!(artis.baslangic.to_string(), "2026-10-24 10:29:00");
         assert_eq!(artis.bitis.to_string(), "2026-10-24 10:32:00");
@@ -401,7 +457,7 @@ mod testler {
         ]);
         let (ani, _) = hesapla(&log_metni(&kayitlar), 1);
         assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
-        let artis = ani.artislar[0];
+        let artis = &ani.artislar[0];
         assert_eq!(artis.baslangic.to_string(), "2026-10-24 10:10:00");
         assert_eq!(artis.bitis.to_string(), "2026-10-24 10:15:00");
         assert_eq!((artis.dilim_sayisi, artis.kayit_sayisi), (5, 27));
@@ -430,7 +486,7 @@ mod testler {
         }
         let (ani, _) = hesapla(&satirlar.join("\n"), 1);
         assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
-        let artis = ani.artislar[0];
+        let artis = &ani.artislar[0];
         assert_eq!((artis.olagan, artis.mad), (5.0, 2.0));
         assert_eq!(artis.zirve_adet, 17);
         assert_eq!(artis.puan, CARPAN * 12.0 / 2.0);
@@ -516,6 +572,100 @@ mod testler {
         assert_eq!(kaliplar, ["Disk dolmak üzere"]);
     }
 
+    /// 10:00'dan başlayan, `dakika_sayisi` dakikalık bir log. Her dakika `adetler(dakika)` kaç
+    /// kayıt yazılacağını söyler: (INFO giriş, WARNING başarısız giriş). Bir dakikanın kayıtları
+    /// birer saniye arayla yazılır.
+    fn giris_logu(dakika_sayisi: i64, adetler: impl Fn(i64) -> (i64, i64)) -> String {
+        let saat_10 = Zaman::kayittan("2026-10-24 10:00:00").saniye();
+        let mut satirlar = Vec::new();
+        for dakika in 0..dakika_sayisi {
+            let (info, warning) = adetler(dakika);
+            for (adet, seviye, mesaj) in [
+                (info, "INFO", "Kullanıcı 8 giriş yaptı"),
+                (warning, "WARNING", "Kullanıcı 7 giriş yapamadı"),
+            ] {
+                for saniye in 0..adet {
+                    let an = Zaman::saniyeden(saat_10 + dakika * 60 + saniye);
+                    satirlar.push(format!("[{an}] local.{seviye}: {mesaj}"));
+                }
+            }
+        }
+        satirlar.join("\n")
+    }
+
+    #[test]
+    fn ayni_kaliptaki_info_kayitlari_sayilmaz() {
+        // "giriş yaptı" (INFO) ve "giriş yapamadı" (WARNING) tek kelimeyle ayrılır; Drain ikisini
+        // tek kalıpta birleştirir ve satırın seviyesi WARNING olur. 10:30'daki 30 kaydın hepsi
+        // INFO: bir WARNING artışı değil. Tek WARNING 11:00'de.
+        let metin = giris_logu(120, |dakika| match dakika {
+            30 => (30, 0),
+            60 => (2, 1),
+            _ => (2, 0),
+        });
+        let (ani, kaliplar) = hesapla(&metin, 1);
+        assert_eq!(kaliplar, ["Kullanıcı <SAYI> giriş <*>"]);
+        assert!(ani.artislar.is_empty(), "{:?}", ani.artislar);
+    }
+
+    #[test]
+    fn info_trafigi_warning_artisini_gizlemez() {
+        // Aynı kalıpta dakikada 5 ile 25 arasında inip çıkan INFO trafiği ve on dakikada bir
+        // WARNING. 11:00'de 8 WARNING: WARNING'lerin olağanı 0, sıçrama açık (puan 5,4).
+        // INFO'lar da sayılsaydı olağan 19, dalgalanma 7 olurdu; 11:00'deki 13 kayıt olağanın
+        // altında kalırdı.
+        let metin = giris_logu(120, |dakika| {
+            let info = 5 + 20 * (dakika % 2);
+            let warning = match dakika {
+                60 => 8,
+                _ if dakika % 10 == 3 => 1,
+                _ => 0,
+            };
+            (info, warning)
+        });
+        let (ani, kaliplar) = hesapla(&metin, 1);
+        assert_eq!(kaliplar, ["Kullanıcı <SAYI> giriş <*>"]);
+        assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
+        let artis = &ani.artislar[0];
+        assert_eq!((artis.olagan, artis.mad), (0.0, 0.0));
+        assert_eq!((artis.zirve_adet, artis.kayit_sayisi), (8, 8));
+        assert_eq!(artis.baslangic.to_string(), "2026-10-24 11:00:00");
+        assert_eq!(artis.puan, CARPAN * 8.0);
+        // Örnek sayılan bir kayıttır; satırın ilk kaydı (bir INFO) değil
+        assert_eq!(artis.ornek, "Kullanıcı 7 giriş yapamadı");
+        assert_eq!(artis.seviye, Seviye::Warning);
+    }
+
+    #[test]
+    fn artisin_seviyesi_ve_ornegi_kendi_kayitlarindan() {
+        // Satırın seviyesi CRITICAL (10:05'teki tek kayıt), örneği ilk kaydı. Artışın ilk
+        // diliminde 8 WARNING, 11:00:30'daki on dakikalık WARNING ve bir ERROR, ikincisinde 4
+        // WARNING var: seviyesi iki dilimin en yükseği (ERROR), örneği ilk kaydı.
+        let metin = karisik_seviyeli_log();
+        let log = kayitlari_ayir(&metin);
+        let analiz = kaliplari_cikar(&log, &RaporAyarlari::default());
+        assert_eq!(analiz.satirlar.len(), 1);
+        assert_eq!(analiz.satirlar[0].seviye, Seviye::Critical);
+        assert_eq!(analiz.satirlar[0].ornek, "Kuyruk 2 dolu");
+
+        let ani = AniArtislar::hesapla(&log, &analiz, 1);
+        assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
+        let artis = &ani.artislar[0];
+        assert_eq!(artis.seviye, Seviye::Error);
+        assert_eq!(artis.ornek, "Kuyruk 3 dolu");
+        assert_eq!(
+            (artis.ilk.to_string(), artis.son.to_string()),
+            (
+                "2026-10-24 11:00:00".to_string(),
+                "2026-10-24 11:01:15".to_string()
+            )
+        );
+        assert_eq!(
+            (artis.dilim_sayisi, artis.kayit_sayisi, artis.zirve_adet),
+            (2, 14, 10)
+        );
+    }
+
     #[test]
     fn olagan_seviye_icin_en_az_on_dilim_gerekir() {
         // 10:00:00–10:08:59: 9 dilim. Kocaman bir patlama bile ani artış sayılmaz.
@@ -585,7 +735,7 @@ mod testler {
         ]);
         let (ani, _) = hesapla(&metin, 1);
         assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
-        let artis = ani.artislar[0];
+        let artis = &ani.artislar[0];
         assert_eq!(artis.baslangic.to_string(), "2026-10-24 23:59:00");
         assert_eq!(artis.bitis.to_string(), "2026-10-25 00:01:00");
         assert_eq!(artis.kayit_sayisi, 16);
@@ -604,7 +754,7 @@ mod testler {
                 ("Kuyruk dolu".into(), 6, "11:30".into(), "11:31".into()),
             ]
         );
-        let yavas = sonuc.0.artislar[1];
+        let yavas = &sonuc.0.artislar[1];
         assert_eq!((yavas.olagan, yavas.mad), (2.0, 0.0));
     }
 
@@ -622,7 +772,7 @@ mod testler {
         let (ani, _) = hesapla(&satirlar.join("\n"), 1);
         assert_eq!(ani.dilim_sayisi, 21);
         assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
-        let artis = ani.artislar[0];
+        let artis = &ani.artislar[0];
         assert_eq!(artis.baslangic.to_string(), "1969-12-31 23:59:00");
         assert_eq!(artis.bitis.to_string(), "1970-01-01 00:00:00");
     }
@@ -659,7 +809,7 @@ mod testler {
         let artislar = ozetle(&sonuc);
         assert_eq!(artislar.len(), 1, "{artislar:?}");
         assert!(artislar[0].0.starts_with("cURL error <SAYI>"));
-        let artis = sonuc.0.artislar[0];
+        let artis = &sonuc.0.artislar[0];
         assert_eq!((artis.zirve_adet, artis.kayit_sayisi), (6, 6));
         assert_eq!(
             (artis.ilk.to_string(), artis.son.to_string()),

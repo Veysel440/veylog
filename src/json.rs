@@ -253,6 +253,7 @@ fn ani_artis_json(ozet: &Ozet<'_>, ani_artislar: &AniArtislar) -> Json {
 }
 
 /// Bir ani artış: kalıp satırının alanları, kalıbın olağan seviyesi ve artışın kendisi.
+/// Satırın alanları (seviye, ilk, son, örnek) bütün kalıbındır; artışınkiler "artis"te.
 fn artis_json(ozet: &Ozet<'_>, artis: &AniArtis) -> Json {
     let mut alanlar = satir_alanlari(&ozet.analiz.satirlar[artis.satir]);
     alanlar.extend([
@@ -265,8 +266,10 @@ fn artis_json(ozet: &Ozet<'_>, artis: &AniArtis) -> Json {
                 ("bitis", zaman(artis.bitis)),
                 ("dilim_sayisi", Json::Sayi(artis.dilim_sayisi)),
                 ("kayit_sayisi", Json::Sayi(artis.kayit_sayisi)),
+                ("seviye", metin(artis.seviye.ad())),
                 ("ilk", zaman(artis.ilk)),
                 ("son", zaman(artis.son)),
+                ("ornek", metin(&artis.ornek)),
                 (
                     "zirve",
                     Json::Nesne(vec![
@@ -288,14 +291,18 @@ fn satir_json(satir: &KalipSatiri<'_>) -> Json {
 }
 
 /// Bir kalıp satırının alanları. İstisnası olmayan satırlarda "istisna" null'dır; istisnanın
-/// uygulama kodunda yeri bulunamadıysa "dosya" ve "satir" null'dır.
+/// uygulama kodunda yeri bulunamadıysa "dosya" ve "satir" null'dır. View hatalarında konum bir
+/// şablondur; şablonun satırı bilinmediği için "satir" null'dır.
 fn satir_alanlari(satir: &KalipSatiri<'_>) -> Vec<(&'static str, Json)> {
     let istisna = match satir.parmak_izi {
         Some(parmak_izi) => {
             let (dosya, satir_no) = match parmak_izi.konum() {
                 // u32 her zaman usize'a sığar (Rust'ın desteklediği bütün sistemler 32 ya da
                 // 64 bit); `as` burada bilgi kaybettirmez
-                Some((dosya, satir_no)) => (metin(dosya), Json::Sayi(satir_no as usize)),
+                Some((dosya, satir_no)) => (
+                    metin(&dosya),
+                    satir_no.map_or(Json::Yok, |satir_no| Json::Sayi(satir_no as usize)),
+                ),
                 None => (Json::Yok, Json::Yok),
             };
             Json::Nesne(vec![
@@ -552,8 +559,10 @@ mod testler {
                 "bitis": "2026-10-24 16:20:00",
                 "dilim_sayisi": 1,
                 "kayit_sayisi": 6,
+                "seviye": "ERROR",
                 "ilk": "2026-10-24 16:10:02",
                 "son": "2026-10-24 16:16:02",
+                "ornek": "cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat",
                 "zirve": {
                     "baslangic": "2026-10-24 16:10:00",
                     "bitis": "2026-10-24 16:20:00",
@@ -594,8 +603,10 @@ mod testler {
                 "bitis": "2026-10-24 10:33:00",
                 "dilim_sayisi": 3,
                 "kayit_sayisi": 22,
+                "seviye": "ERROR",
                 "ilk": "2026-10-24 10:30:30",
                 "son": "2026-10-24 10:32:36",
+                "ornek": "Kuyruk dolu",
                 "zirve": {
                     "baslangic": "2026-10-24 10:31:00",
                     "bitis": "2026-10-24 10:32:00",

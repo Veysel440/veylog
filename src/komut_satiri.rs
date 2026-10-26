@@ -6,6 +6,7 @@
 //! veylog --bicim json --hepsi storage/logs/laravel.log
 //! veylog --karsilastir 15:00 storage/logs/laravel.log
 //! veylog --ani-artis 1 storage/logs/laravel.log
+//! zcat laravel-2026-10-24.log.gz | veylog -
 //! ```
 //!
 //! Ayrıştırma kuralları:
@@ -13,7 +14,8 @@
 //!   sonuncusu geçerlidir.
 //! - Değer boşlukla (`--esik 0,8`), `=` ile (`--esik=0,8`) ya da kısa seçeneklerde bitişik
 //!   (`-n20`) verilebilir.
-//! - Tek başına `-` ve `--`'dan sonraki her şey dosya adıdır: `veylog -- -garip-ad.log`
+//! - Tek başına `-` ve `--`'dan sonraki her şey dosya adıdır: `veylog -- -garip-ad.log`. `-`
+//!   adlı dosya ise standart girdidir (okunması `main`'in işidir).
 //! - Türkçe karakterli yazımlar da geçerlidir: `--eşik`, `--sıralama önem`.
 
 use std::ffi::OsString;
@@ -122,6 +124,8 @@ pub enum SecenekHatasi {
     DosyaYok,
     /// İkinci bir dosya adı verilmiş; yalnızca bir log dosyası okunur.
     FazlaDosya(String),
+    /// Dosya adı boş: `veylog "$LOG"` ve LOG tanımsız.
+    BosDosyaAdi,
 }
 
 impl fmt::Display for SecenekHatasi {
@@ -148,6 +152,7 @@ impl fmt::Display for SecenekHatasi {
                 f,
                 "fazladan argüman: {fazla} (yalnızca bir log dosyası verilebilir)"
             ),
+            SecenekHatasi::BosDosyaAdi => write!(f, "dosya adı boş olamaz"),
         }
     }
 }
@@ -182,6 +187,11 @@ where
                 metin.to_owned()
             }
             _ => {
+                // Boş bir ad hiçbir dosyayı göstermez; okunamadı hatası (ya da fazladan
+                // argüman hatası) adsız kalırdı
+                if arguman.is_empty() {
+                    return Err(SecenekHatasi::BosDosyaAdi);
+                }
                 if dosya.is_some() {
                     return Err(SecenekHatasi::FazlaDosya(
                         arguman.to_string_lossy().into_owned(),
@@ -276,14 +286,16 @@ Seçenekler:
                           kaybolan ve artan kalıplar. Zaman: 15:00, 15:00:30, 2026-10-24
                           ya da \"2026-10-24 15:00\". Yalnızca saat verilirse logun son günü.
   -a, --ani-artis <dakika>
-                          Logu bu uzunlukta dilimlere böl ve {seviye} ve üstündeki
-                          kalıpların olağan seviyesinden sıçradığı anları bul. Dilim 1 ile
-                          {EN_UZUN_DILIM} dakika arası; 1 verilirse her dakika ayrı sayılır.
+                          Logu bu uzunlukta dilimlere böl; her kalıbın
+                          {seviye} ve üstündeki kayıtlarının olağan seviyesinden sıçradığı
+                          anları bul. Dilim 1 ile {EN_UZUN_DILIM} dakika arası; 1 verilirse her
+                          dakika ayrı sayılır.
   -h, --yardim            Bu yardımı göster.
   -V, --surum             Sürümü göster.
 
-Seçenekler dosya adından önce ya da sonra yazılabilir. Değer boşlukla ya da \"=\" ile
-verilir (--esik 0,8 ya da --esik=0,8); ondalık ayracı virgül de olabilir, nokta da.
+Dosya yerine - verilirse log standart girdiden okunur. Seçenekler dosya adından önce ya da
+sonra yazılabilir. Değer boşlukla ya da \"=\" ile verilir (--esik 0,8 ya da --esik=0,8), kısa
+seçeneklerde bitişik de yazılabilir (-n20); ondalık ayracı virgül de olabilir, nokta da.
 Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biçim, --karşılaştır,
 --ani-artış). --ilk her biçimde ve her bölümde geçerlidir; JSON'da bütün satırlar için
 --hepsi. --siralama kalıp tablosunun ve karşılaştırmanın sırasını belirler; ani artışlar
@@ -300,6 +312,7 @@ puanı en yüksek olan başta olacak şekilde dizilir.
   veylog --bicim markdown storage/logs/laravel.log > rapor.md
   veylog --karsilastir 15:00 storage/logs/laravel.log
   veylog --ani-artis 1 storage/logs/laravel.log
+  zcat laravel-2026-10-24.log.gz | veylog -
 ",
         surum = env!("CARGO_PKG_VERSION"),
         esik = ondalik(varsayilan.drain.benzerlik_esigi),
@@ -355,8 +368,9 @@ fn deger_almaz(ad: &str, bitisik: Option<&str>) -> Result<(), SecenekHatasi> {
 fn esik_ayristir(ad: &str, deger: &str) -> Result<f64, SecenekHatasi> {
     match deger.replace(',', ".").parse::<f64>() {
         // "NaN" ve "inf" de f64 olarak ayrıştırılır. NaN hiçbir sayıyla karşılaştırılamadığı
-        // için aralık denetimi ikisini de reddeder.
-        Ok(esik) if (0.0..=1.0).contains(&esik) => Ok(esik),
+        // için aralık denetimi ikisini de reddeder. "-0" aralıktadır (−0 = 0) ama raporda
+        // "-0" diye yazılırdı: `abs` işaretini atar.
+        Ok(esik) if (0.0..=1.0).contains(&esik) => Ok(esik.abs()),
         _ => Err(gecersiz(
             ad,
             deger,
@@ -653,6 +667,7 @@ mod testler {
     #[test]
     fn cizgiyle_baslayan_dosya_adlari_okunabilir() {
         assert_eq!(ozet(&["--", "--esik"]).dosya, PathBuf::from("--esik"));
+        // Tek başına "-" de dosya adı olarak geçer; `main` onu standart girdi sayar
         assert_eq!(ozet(&["-"]).dosya, PathBuf::from("-"));
         // "--"dan sonra seçenek de olsa dosya adıdır; ikinci dosya adı hatadır
         assert_eq!(
@@ -684,6 +699,19 @@ mod testler {
     }
 
     #[test]
+    fn eksi_sifir_esik_sifirdir() {
+        for deger in ["-0", "-0,0", "0"] {
+            let esik = ozet(&["--esik", deger, "a.log"])
+                .rapor
+                .drain
+                .benzerlik_esigi;
+            assert_eq!(esik, 0.0, "{deger}");
+            // -0,0 == 0,0 doğrudur; işaret ayrıca denetlenir
+            assert!(esik.is_sign_positive(), "{deger}");
+        }
+    }
+
+    #[test]
     fn gecersiz_degerler_reddedilir() {
         for argumanlar in [
             &["--esik", "1,5"][..],
@@ -709,6 +737,11 @@ mod testler {
     #[test]
     fn eksik_fazla_ve_bilinmeyen_argumanlar_reddedilir() {
         assert_eq!(hata(&[]), SecenekHatasi::DosyaYok);
+        assert_eq!(hata(&[""]), SecenekHatasi::BosDosyaAdi);
+        assert_eq!(hata(&["", "a.log"]), SecenekHatasi::BosDosyaAdi);
+        // Boş ad ikinci sıradaysa da: "fazladan argüman: " diye adsız bir hata olmaz
+        assert_eq!(hata(&["a.log", ""]), SecenekHatasi::BosDosyaAdi);
+        assert_eq!(hata(&[""]).to_string(), "dosya adı boş olamaz");
         assert_eq!(
             hata(&["a.log", "b.log"]),
             SecenekHatasi::FazlaDosya("b.log".to_owned())
@@ -801,8 +834,11 @@ mod testler {
         assert!(metin.contains("-k, --karsilastir <zaman>"));
         // Seviye ve en uzun dilim sabitlerden okunur
         assert!(metin.contains("-a, --ani-artis <dakika>"));
-        assert!(metin.contains("WARNING ve üstündeki"));
-        assert!(metin.contains("Dilim 1 ile\n                          1440 dakika arası"));
+        assert!(metin.contains("WARNING ve üstündeki kayıtlarının"));
+        assert!(metin.contains("Dilim 1 ile 1440 dakika arası"));
+        // Kısa seçeneğin bitişik değeri ve standart girdi de anlatılır
+        assert!(metin.contains("(-n20)"));
+        assert!(metin.contains("Dosya yerine - verilirse log standart girdiden okunur."));
         for siralama in Siralama::HEPSI {
             assert!(metin.contains(siralama.ad()), "{}", siralama.ad());
         }

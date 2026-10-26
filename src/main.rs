@@ -4,6 +4,7 @@ mod ani_artis;
 mod drain;
 mod istatistik;
 mod json;
+mod json_okuyucu;
 mod karsilastirma;
 mod kayit;
 mod komut_satiri;
@@ -16,12 +17,16 @@ mod zaman;
 use std::borrow::Cow;
 use std::env;
 use std::fs;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
+use std::path::Path;
 use std::process;
 
 use kayit::kayitlari_ayir;
 use komut_satiri::{Bicim, KULLANIM, Komut};
 use rapor::{Ozet, gorunur};
+
+/// Dosya adı yerine `-` verilince raporda gösterilen ad.
+const STANDART_GIRDI: &str = "<standart girdi>";
 
 fn main() {
     // `args_os`: argümanları işletim sisteminin verdiği ham haliyle alır. `args` ise geçerli
@@ -51,16 +56,34 @@ fn main() {
             process::exit(2);
         }
     };
-    let yol = &secenekler.dosya;
+    // `-` standart girdidir: `zcat laravel-2026-10-24.log.gz | veylog -`
+    let standart_girdi = secenekler.dosya.as_os_str() == "-";
+    let yol = if standart_girdi {
+        Path::new(STANDART_GIRDI)
+    } else {
+        secenekler.dosya.as_path()
+    };
     // Yolun mesajlarda gösterilecek hali: geçersiz UTF-8 baytları �, kontrol karakterleri
     // sembol olur (Linux'ta bir dosya adı ESC de içerebilir)
     let yol_metni = yol.display().to_string();
     let gosterilen_yol = gorunur(&yol_metni);
 
-    let baytlar = match fs::read(yol) {
+    let okunan = if standart_girdi {
+        let mut baytlar = Vec::new();
+        io::stdin()
+            .lock()
+            .read_to_end(&mut baytlar)
+            .map(|_| baytlar)
+    } else {
+        dosyayi_oku(yol)
+    };
+    let baytlar = match okunan {
         Ok(baytlar) => baytlar,
         Err(hata) => {
-            eprintln!("{gosterilen_yol} okunamadı: {hata}");
+            eprintln!(
+                "veylog: {gosterilen_yol} okunamadı: {}",
+                okuma_hatasi(&hata)
+            );
             process::exit(1);
         }
     };
@@ -73,7 +96,6 @@ fn main() {
             "Uyarı: {gosterilen_yol} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi."
         );
     }
-
     let log = kayitlari_ayir(&icerik);
     // Özet bir kez hesaplanır; biçim yalnızca nasıl yazılacağını belirler. Karşılaştırma
     // noktası logun dışındaysa bu, seçeneğin bu dosyaya uymadığı bir kullanım hatasıdır.
@@ -96,6 +118,27 @@ fn main() {
     yazma_sonucunu_denetle(yazildi.and_then(|()| cikti.flush()));
 }
 
+/// Log dosyasını okur. Bir klasör verildiyse okumaya çalışmaz: Linux'ta bunun hatası "Is a
+/// directory", Windows'ta "Access is denied" olurdu; ikincisi yanıltıcıdır.
+fn dosyayi_oku(yol: &Path) -> io::Result<Vec<u8>> {
+    if yol.is_dir() {
+        return Err(io::Error::from(io::ErrorKind::IsADirectory));
+    }
+    fs::read(yol)
+}
+
+/// Okuma hatasının açıklaması: sık görülenler Türkçe, ötekiler işletim sisteminin mesajıyla.
+fn okuma_hatasi(hata: &io::Error) -> Cow<'static, str> {
+    match hata.kind() {
+        io::ErrorKind::NotFound => "dosya bulunamadı".into(),
+        io::ErrorKind::PermissionDenied => "okuma izni yok".into(),
+        io::ErrorKind::IsADirectory => {
+            "bu bir klasör; log dosyasını verin (ör. storage/logs/laravel.log)".into()
+        }
+        _ => hata.to_string().into(),
+    }
+}
+
 /// Çıktı yazılamadıysa nedenini söyler ve 1 koduyla çıkar.
 ///
 /// Çıktıyı okuyan program erken kapanırsa (ör. `veylog laravel.log | head`) yazma BrokenPipe
@@ -104,7 +147,7 @@ fn yazma_sonucunu_denetle(sonuc: io::Result<()>) {
     if let Err(hata) = sonuc
         && hata.kind() != io::ErrorKind::BrokenPipe
     {
-        eprintln!("Çıktı yazılamadı: {hata}");
+        eprintln!("veylog: çıktı yazılamadı: {hata}");
         process::exit(1);
     }
 }
