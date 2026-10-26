@@ -4,6 +4,7 @@
 //! veylog [SEÇENEKLER] <log-dosyası>
 //! veylog --esik 0,8 --ilk 20 --siralama yeni storage/logs/laravel.log
 //! veylog --bicim json --hepsi storage/logs/laravel.log
+//! veylog --karsilastir 15:00 storage/logs/laravel.log
 //! ```
 //!
 //! Ayrıştırma kuralları:
@@ -19,17 +20,19 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
+use crate::zaman::ZamanNoktasi;
 
 /// Kısa kullanım satırı; hata mesajlarının altında da gösterilir.
 pub const KULLANIM: &str = "Kullanım: veylog [SEÇENEKLER] <log-dosyası>";
 
 /// Bilinen uzun seçenekler. Yazım hatası yapıldığında öneri bu listeden seçilir.
-const UZUN_SECENEKLER: [&str; 9] = [
+const UZUN_SECENEKLER: [&str; 10] = [
     "--esik",
     "--ilk",
     "--hepsi",
     "--siralama",
     "--bicim",
+    "--karsilastir",
     "--yardim",
     "--surum",
     "--help",
@@ -208,6 +211,10 @@ where
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
                 bicim = bicim_ayristir(ad, &deger)?;
             }
+            "-k" | "--karsilastir" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                rapor.karsilastir = Some(karsilastir_ayristir(ad, &deger)?);
+            }
             "-h" | "--yardim" | "--help" => {
                 deger_almaz(ad, bitisik)?;
                 return Ok(Komut::Yardim);
@@ -257,15 +264,21 @@ Seçenekler:
       --hepsi             Tablonun tamamını göster.
   -s, --siralama <ölçüt>  Tablonun sırası. [varsayılan: {siralama}]
 {siralamalar}  -b, --bicim <ad>        Çıktının biçimi. [varsayılan: {bicim}]
-{bicimler}  -h, --yardim            Bu yardımı göster.
+{bicimler}  -k, --karsilastir <zaman>
+                          Logu bu anda ikiye böl ve iki yarıyı karşılaştır: yeni çıkan,
+                          kaybolan ve artan kalıplar. Zaman: 15:00, 15:00:30, 2026-10-24
+                          ya da \"2026-10-24 15:00\". Yalnızca saat verilirse logun son günü.
+  -h, --yardim            Bu yardımı göster.
   -V, --surum             Sürümü göster.
 
 Seçenekler dosya adından önce ya da sonra yazılabilir. Değer boşlukla ya da \"=\" ile
 verilir (--esik 0,8 ya da --esik=0,8); ondalık ayracı virgül de olabilir, nokta da.
-Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biçim).
---ilk ve --siralama her biçimde geçerlidir; JSON'da bütün satırlar için --hepsi.
+Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biçim, --karşılaştır).
+--ilk ve --siralama her biçimde ve karşılaştırmanın her bölümünde geçerlidir; JSON'da
+bütün satırlar için --hepsi.
 
-Çıkış kodları: 0 başarılı, 1 dosya okunamadı ya da çıktı yazılamadı, 2 kullanım hatası.
+Çıkış kodları: 0 başarılı, 1 dosya okunamadı ya da çıktı yazılamadı, 2 kullanım hatası
+(karşılaştırma noktasının logun dışında kalması da).
 
 Örnekler:
   veylog storage/logs/laravel.log
@@ -273,6 +286,7 @@ Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biç
   veylog --siralama yeni --hepsi storage/logs/laravel.log
   veylog --bicim json --hepsi storage/logs/laravel.log | jq '.kaliplar.satirlar[0]'
   veylog --bicim markdown storage/logs/laravel.log > rapor.md
+  veylog --karsilastir 15:00 storage/logs/laravel.log
 ",
         surum = env!("CARGO_PKG_VERSION"),
         esik = ondalik(varsayilan.drain.benzerlik_esigi),
@@ -376,6 +390,18 @@ fn bicim_ayristir(ad: &str, deger: &str) -> Result<Bicim, SecenekHatasi> {
     })
 }
 
+/// `--karsilastir`: bir zaman. Logun aralığına uyup uymadığı dosya okununca denetlenir.
+fn karsilastir_ayristir(ad: &str, deger: &str) -> Result<ZamanNoktasi, SecenekHatasi> {
+    ZamanNoktasi::ayristir(deger).ok_or_else(|| {
+        // Biçimi doğru ama takvimde olmayan bir tarih de (2026-02-29) buraya düşer
+        gecersiz(
+            ad,
+            deger,
+            "geçerli bir tarih ya da saat olmalı (ör. 15:00, 15:00:30, 2026-10-24, \"2026-10-24 15:00\")",
+        )
+    })
+}
+
 fn gecersiz(secenek: &str, deger: &str, beklenen: impl Into<String>) -> SecenekHatasi {
     SecenekHatasi::GecersizDeger {
         secenek: secenek.to_owned(),
@@ -463,6 +489,39 @@ mod testler {
         assert_eq!(secenekler.rapor.ilk, Some(VARSAYILAN_ILK));
         assert_eq!(secenekler.rapor.siralama, Siralama::Onem);
         assert_eq!(secenekler.bicim, Bicim::Metin);
+        assert_eq!(secenekler.rapor.karsilastir, None);
+    }
+
+    #[test]
+    fn karsilastirma_noktasi_okunur() {
+        let saat_15 = ZamanNoktasi::ayristir("15:00");
+        for argumanlar in [
+            &["--karsilastir", "15:00", "a.log"][..],
+            &["-k", "15:00", "a.log"],
+            &["-k15:00", "a.log"],
+            &["--karşılaştır=15:00", "a.log"],
+        ] {
+            assert_eq!(
+                ozet(argumanlar).rapor.karsilastir,
+                saat_15,
+                "{argumanlar:?}"
+            );
+        }
+        assert_eq!(
+            ozet(&["--karsilastir", "2026-10-24 15:00", "a.log"])
+                .rapor
+                .karsilastir,
+            ZamanNoktasi::ayristir("2026-10-24T15:00")
+        );
+        assert_eq!(
+            hata(&["--karsilastir", "25:00", "a.log"]).to_string(),
+            "--karsilastir için geçersiz değer \"25:00\": geçerli bir tarih ya da saat olmalı (ör. 15:00, 15:00:30, 2026-10-24, \"2026-10-24 15:00\")"
+        );
+        // 2026 artık yıl değil
+        assert!(matches!(
+            hata(&["-k", "2026-02-29", "a.log"]),
+            SecenekHatasi::GecersizDeger { .. }
+        ));
     }
 
     #[test]
@@ -622,6 +681,7 @@ mod testler {
             ("--hepis", Some("--hepsi")),
             ("--Esik", Some("--esik")),
             ("--verison", Some("--version")),
+            ("--karsilastr", Some("--karsilastir")),
             ("--top", None),
             ("--all", None),
         ] {
@@ -680,6 +740,7 @@ mod testler {
         assert!(metin.contains("[varsayılan: 0,7]"));
         assert!(metin.contains("[varsayılan: 10]"));
         assert!(metin.contains("[varsayılan: metin]"));
+        assert!(metin.contains("-k, --karsilastir <zaman>"));
         for siralama in Siralama::HEPSI {
             assert!(metin.contains(siralama.ad()), "{}", siralama.ad());
         }

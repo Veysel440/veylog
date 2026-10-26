@@ -8,7 +8,12 @@
 
 use std::io::{self, Write};
 
-use crate::rapor::{KALIP_GENISLIGI, KalipSatiri, Ozet, gorunur, kisalt, zaman_goster};
+use crate::karsilastirma::Karsilastirma;
+use crate::rapor::{
+    KALIP_GENISLIGI, KalipSatiri, Ozet, gorunur, karsilastirma_bolumleri, kisalt, ondalik_kisa,
+    zaman_goster,
+};
+use crate::zaman::sure_yaz;
 
 /// Özeti Markdown olarak yazar. `--ilk` ve `--siralama` burada da geçerlidir.
 pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
@@ -31,8 +36,8 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
     writeln!(cikti, "- **Kalıplar:** {}", ozet.kalip_cumlesi())?;
 
     let satirlar = ozet.gosterilecek_satirlar();
+    let tek_gun = ozet.tek_gun();
     if !satirlar.is_empty() {
-        let tek_gun = ozet.tek_gun();
         writeln!(cikti)?;
         writeln!(
             cikti,
@@ -41,30 +46,106 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
         // ---: sütunu sağa yaslar
         writeln!(cikti, "|---:|---|---|---|---|---|---|")?;
         for satir in satirlar {
-            let hucreler = [
-                satir.adet.to_string(),
-                satir.seviye.ad().to_owned(),
-                zaman_goster(satir.ilk, tek_gun),
-                zaman_goster(satir.son, tek_gun),
-                kod(&kisalt(&gorunur(&satir.kalip), KALIP_GENISLIGI)),
-                ornek(satir),
-                konum(satir),
-            ];
-            // Her hücre aynı kuraldan geçer; sonradan eklenen bir sütun da unutulmaz
-            writeln!(
-                cikti,
-                "| {} |",
-                hucreler.map(|metin| hucre(&metin)).join(" | ")
-            )?;
+            satir_yaz(cikti, &[satir.adet.to_string()], satir, tek_gun)?;
         }
-        let gizlenen = ozet.gosterilmeyen();
-        if gizlenen > 0 {
-            writeln!(cikti)?;
-            writeln!(
-                cikti,
-                "… {gizlenen} satır daha; tümünü görmek için `--hepsi`"
-            )?;
+        gizlenen_yaz(cikti, ozet.gosterilmeyen())?;
+    }
+
+    if let Some(karsilastirma) = &ozet.karsilastirma {
+        karsilastirma_yaz(cikti, ozet, karsilastirma, tek_gun)?;
+    }
+    Ok(())
+}
+
+/// Karşılaştırma bölümü: iki yarının özeti ve yeni çıkan, kaybolan, artan kalıpların tabloları.
+fn karsilastirma_yaz(
+    cikti: &mut impl Write,
+    ozet: &Ozet<'_>,
+    karsilastirma: &Karsilastirma,
+    tek_gun: bool,
+) -> io::Result<()> {
+    writeln!(cikti)?;
+    writeln!(
+        cikti,
+        "### Karşılaştırma: {} öncesi ve sonrası",
+        karsilastirma.nokta
+    )?;
+    writeln!(cikti)?;
+    for (ad, pencere) in [
+        ("Önce", &karsilastirma.once),
+        ("Sonra", &karsilastirma.sonra),
+    ] {
+        writeln!(
+            cikti,
+            "- **{ad}:** {} → {} · {} · {} kayıt, saatte {}",
+            pencere.baslangic,
+            pencere.bitis,
+            sure_yaz(pencere.saniye),
+            pencere.kayit_sayisi,
+            ondalik_kisa(pencere.saatlik(pencere.kayit_sayisi))
+        )?;
+    }
+
+    for (baslik, degisimler) in karsilastirma_bolumleri(karsilastirma) {
+        writeln!(cikti)?;
+        if degisimler.is_empty() {
+            writeln!(cikti, "#### {baslik}: yok")?;
+            continue;
         }
+        writeln!(cikti, "#### {baslik}: {}", degisimler.len())?;
+        writeln!(cikti)?;
+        writeln!(
+            cikti,
+            "| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |"
+        )?;
+        writeln!(cikti, "|---:|---:|---|---|---|---|---|---|")?;
+        for degisim in ozet.sinirla(degisimler) {
+            // Artanlarda sonraki sayının yanına kaç kat sık görüldüğü yazılır
+            let sonra = if degisim.once > 0 && degisim.sonra > 0 {
+                format!("{} ({} kat)", degisim.sonra, ondalik_kisa(degisim.kat))
+            } else {
+                degisim.sonra.to_string()
+            };
+            let satir = &ozet.analiz.satirlar[degisim.satir];
+            satir_yaz(cikti, &[degisim.once.to_string(), sonra], satir, tek_gun)?;
+        }
+        gizlenen_yaz(cikti, ozet.disarida_kalan(degisimler))?;
+    }
+    Ok(())
+}
+
+/// Tablonun bir satırı. `sayilar`: satır başındaki sayı hücreleri (adet ya da önce ve sonra).
+fn satir_yaz(
+    cikti: &mut impl Write,
+    sayilar: &[String],
+    satir: &KalipSatiri<'_>,
+    tek_gun: bool,
+) -> io::Result<()> {
+    let kalip_hucreleri = [
+        satir.seviye.ad().to_owned(),
+        zaman_goster(satir.ilk, tek_gun),
+        zaman_goster(satir.son, tek_gun),
+        kod(&kisalt(&gorunur(&satir.kalip), KALIP_GENISLIGI)),
+        ornek(satir),
+        konum(satir),
+    ];
+    // Her hücre aynı kuraldan geçer; sonradan eklenen bir sütun da unutulmaz
+    let hucreler: Vec<String> = sayilar
+        .iter()
+        .chain(&kalip_hucreleri)
+        .map(|metin| hucre(metin))
+        .collect();
+    writeln!(cikti, "| {} |", hucreler.join(" | "))
+}
+
+/// Gösterilmeyen satırlar varsa tablonun altına yazar.
+fn gizlenen_yaz(cikti: &mut impl Write, gizlenen: usize) -> io::Result<()> {
+    if gizlenen > 0 {
+        writeln!(cikti)?;
+        writeln!(
+            cikti,
+            "… {gizlenen} satır daha; tümünü görmek için `--hepsi`"
+        )?;
     }
     Ok(())
 }
@@ -135,17 +216,75 @@ mod testler {
     use super::*;
     use crate::kayit::kayitlari_ayir;
     use crate::rapor::RaporAyarlari;
+    use crate::zaman::ZamanNoktasi;
     use std::path::Path;
 
     const ORNEK_LOG: &str = include_str!("../ornekler/laravel.log");
 
-    /// Logun Markdown raporu.
+    /// Logun varsayılan ayarlarla Markdown raporu.
     fn markdown(log_metni: &str, yol: &str) -> String {
+        markdown_ayarlarla(log_metni, yol, &RaporAyarlari::default())
+    }
+
+    fn markdown_ayarlarla(log_metni: &str, yol: &str, ayarlar: &RaporAyarlari) -> String {
         let log = kayitlari_ayir(log_metni);
-        let ozet = Ozet::hesapla(Path::new(yol), log_metni, &log, &RaporAyarlari::default());
+        let ozet = Ozet::hesapla(Path::new(yol), log_metni, &log, ayarlar).unwrap();
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         String::from_utf8(cikti).unwrap()
+    }
+
+    /// Örnek logun, verilen anda bölünmüş karşılaştırmalı raporu. Kısa kalsın diye `--ilk 2`.
+    fn karsilastirmali(nokta: &str) -> String {
+        let ayarlar = RaporAyarlari {
+            karsilastir: ZamanNoktasi::ayristir(nokta),
+            ilk: Some(2),
+            ..RaporAyarlari::default()
+        };
+        markdown_ayarlarla(ORNEK_LOG, "ornekler/laravel.log", &ayarlar)
+    }
+
+    #[test]
+    fn karsilastirma_tablolari() {
+        // Her bölüm ayrı bir tablo; yalnızca artanda sonraki sayının yanında kat yazılır
+        let beklenen = r#"
+### Karşılaştırma: 2026-10-24 16:11:00 öncesi ve sonrası
+
+- **Önce:** 2026-10-24 08:59:58 → 2026-10-24 16:11:00 · 7 sa 11 dk · 39 kayıt, saatte 5,4
+- **Sonra:** 2026-10-24 16:11:00 → 2026-10-24 18:31:07 · 2 sa 20 dk · 20 kayıt, saatte 8,6
+
+#### Yeni çıkanlar (yalnızca sonra): 3
+
+| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |
+|---:|---:|---|---|---|---|---|---|
+| 0 | 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22` RedisException |
+| 0 | 1 | INFO | 16:24:10 | 16:24:10 | `Ödeme sağlayıcısı yeniden yanıt veriyor` |  |  |
+
+… 1 satır daha; tümünü görmek için `--hepsi`
+
+#### Kaybolanlar (yalnızca önce): 11
+
+| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |
+|---:|---:|---|---|---|---|---|---|
+| 1 | 0 | ERROR | 09:47:12 | 09:47:12 | `Attempt to read property "ad" on null` |  | `app/Http/Controllers/KategoriController.php:54` ErrorException |
+| 1 | 0 | ERROR | 11:30:44 | 11:30:44 | `App\Jobs\FaturaGonder has been attempted too many times.` |  | uygulama kodunda bulunamadı (MaxAttemptsExceededException) |
+
+… 9 satır daha; tümünü görmek için `--hepsi`
+
+#### Artanlar (sonra ≥ 2 kat sık, tesadüf ihtimali < %1): 1
+
+| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |
+|---:|---:|---|---|---|---|---|---|
+| 1 | 5 (15,4 kat) | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64` ConnectionException |
+"#;
+        let metin = karsilastirmali("16:11");
+        assert!(metin.ends_with(beklenen), "{metin}");
+
+        // Boş bölüm tablo yerine "yok" yazar
+        assert!(
+            karsilastirmali("15:00")
+                .ends_with("\n#### Artanlar (sonra ≥ 2 kat sık, tesadüf ihtimali < %1): yok\n")
+        );
     }
 
     #[test]

@@ -281,6 +281,74 @@ fn hata_mesajlarindaki_argumanlar_temizlenir() {
 }
 
 #[test]
+fn karsilastirma_raporu() {
+    // Örnek logda 15:00'te yeni sürüm yayına alındı: öncesi ve sonrası
+    let cikti = veylog(&["--karsilastir", "15:00", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains("\nKarşılaştırma: 2026-10-24 15:00:00 öncesi ve sonrası\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\nYeni çıkanlar (yalnızca sonra): 7\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\nKaybolanlar (yalnızca önce): 10\n"),
+        "{stdout}"
+    );
+    // Yayından iki dakika sonra başlayan hata yeni çıkanlar arasında
+    assert!(
+        stdout.contains(
+            "\n     0      4  ERROR      15:02:11  16:58:12  Undefined array key \"kargo_ucreti\"\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.ends_with("\nArtanlar (sonra ≥ 2 kat sık, tesadüf ihtimali < %1): yok\n"),
+        "{stdout}"
+    );
+
+    // JSON: 16:11'de bölünce ödeme zaman aşımı 1'den 5'e çıkıyor
+    let cikti = veylog(&["-b", "json", "-k", "16:11", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
+    let artan = &rapor["karsilastirma"]["artan"];
+    assert_eq!(artan["kalip_sayisi"], 1);
+    assert_eq!(
+        (
+            &artan["satirlar"][0]["once"],
+            &artan["satirlar"][0]["sonra"]
+        ),
+        (&1.into(), &5.into())
+    );
+}
+
+#[test]
+fn karsilastirma_noktasi_logun_disindaysa_kullanim_hatasi_verir() {
+    let cikti = veylog(&["--karsilastir", "07:00", "ornekler/laravel.log"]);
+    assert_eq!(cikti.status.code(), Some(2));
+    assert!(cikti.stdout.is_empty());
+    let stderr = metin(&cikti.stderr);
+    assert!(
+        stderr.contains(
+            "veylog: karşılaştırma noktası 2026-10-24 07:00:00 logun içinde değil: kayıtlar 2026-10-24 08:59:58 ile 2026-10-24 18:31:07 arasında"
+        ),
+        "{stderr}"
+    );
+
+    // Zaman geçersizse dosya okunmadan reddedilir
+    let cikti = veylog(&["-k", "25:00", "ornekler/laravel.log"]);
+    assert_eq!(cikti.status.code(), Some(2));
+    let stderr = metin(&cikti.stderr);
+    assert!(
+        stderr.contains("veylog: -k için geçersiz değer \"25:00\""),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn iso_8601_zamanli_log_okunur() {
     let yol = gecici_dosya(
         "iso.log",

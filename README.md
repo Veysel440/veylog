@@ -8,7 +8,7 @@ Bir Laravel uygulamasının `storage/logs/laravel.log` dosyası binlerce satıra
 Aynı hata yüzlerce kez tekrarlanır, stack trace'ler satır sayısını şişirir ve gerçekten
 önemli olan kayıtlar bu kalabalıkta kaybolur. veylog'un amacı bu dosyayı birkaç saniyede
 okunabilir bir özete çevirmek: kaç kayıt var, hangi seviyede, hangi hatalar tekrar ediyor,
-ne zaman başladı ve kodun neresinde oluşuyor.
+ne zaman başladı, kodun neresinde oluşuyor ve bir dağıtımdan sonra ne değişti.
 
 ## Şu an ne yapıyor?
 
@@ -34,6 +34,9 @@ ne zaman başladı ve kodun neresinde oluşuyor.
 - Her satır için en yüksek seviyeyi, ilk ve son görülme zamanını, maskelenmemiş bir örnek
   mesajı ve hatanın konumunu gösterir. Tablo önem sırasına göre dizilir: en ciddi hatalar
   en üstte.
+- Logu bir anda ikiye bölüp iki yarıyı [karşılaştırır](#zaman-aralıklarını-karşılaştırma):
+  o andan sonra yeni çıkan, kaybolan ve belirgin şekilde artan kalıplar
+  (`--karsilastir 15:00`). Artışın tesadüf olup olmadığını bir istatistik testiyle sınar.
 - Benzerlik eşiği, tablonun uzunluğu, sırası ve biçimi [komut satırından](#kullanım)
   değiştirilebilir: `--esik 0,8`, `--ilk 20`, `--hepsi`, `--siralama adet`, `--bicim json`.
   Yazım hatalarında öneri verir.
@@ -94,7 +97,8 @@ Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp (eşik 0
 sonra başlayan `kargo_ucreti` hatası, 16:10–16:16 arasındaki ödeme zaman aşımları ve
 17:05'teki Redis çöküşü. `Attempt to read property "ad" on null` ise iki ayrı satırda
 görünüyor: mesajları aynı ama biri kategori sayfasında, diğeri ürün sayfasında oluşan iki
-ayrı hata.
+ayrı hata. `--karsilastir 15:00` aynı günü deploy öncesi ve sonrası diye ikiye ayırır
+([aşağıda](#zaman-aralıklarını-karşılaştırma)).
 
 ## Nasıl çalışıyor?
 
@@ -104,6 +108,7 @@ laravel.log
   → maskele           27 farklı mesaj
   → Drain             23 kalıp
   → parmak izi        24 grup
+  → karşılaştırma     isteğe bağlı (--karsilastir): yeni çıkan, kaybolan, artan
   → özet              metin, JSON ya da Markdown olarak yazılır
 ```
 
@@ -261,6 +266,158 @@ alanında) yazar. Üç sıralama vardır (`--siralama`):
 Bütün sıralamalar kararlıdır: ölçütleri eşit olan satırlar logda ilk görüldükleri sırada
 kalır. Örnek logda `--siralama yeni` günü sondan başa anlatır: 17:07'de toparlanan Redis,
 17:05'teki çöküşü, 16:10'daki ödeme zaman aşımları...
+
+### Zaman aralıklarını karşılaştırma
+
+"Dağıtımdan sonra ne değişti?" sorusu için log bir anda ikiye bölünür: `--karsilastir 15:00`.
+Önce yarısı ilk kayıttan o ana kadar, sonra yarısı o andan son kayda kadar sürer; tam o
+andaki kayıt sonraya sayılır. Kalıplar bütün log üzerinde bir kez çıkarılır, sonra her tablo
+satırının kayıtları iki yarıya sayılır ve satır üç bölümden birine girer:
+
+| Bölüm | Şart |
+|---|---|
+| Yeni çıkanlar | Yalnızca sonra görülen kalıplar |
+| Kaybolanlar | Yalnızca önce görülen kalıplar |
+| Artanlar | İkisinde de görülen ve sonra en az 2 kat sık görülen kalıplar; sonra yarısında en az 2 kaydı olmalı ve artış tesadüf olmamalı |
+
+Örnek logda 15:00'te bölünce dağıtımdan sonra başlayan `kargo_ucreti` hatası "yeni
+çıkanlar" arasındadır. Ödeme zaman aşımlarının hepsi 15:00'ten sonra olduğu için onlar da
+yenidir; zaman aşımlarının ortasında, 16:11'de bölünce artan olarak görünürler:
+
+```text
+$ veylog --karsilastir 16:11 --ilk 1 ornekler/laravel.log
+...
+Karşılaştırma: 2026-10-24 16:11:00 öncesi ve sonrası
+  önce  : 08:59:58 → 16:11:00   7 sa 11 dk    39 kayıt, saatte 5,4
+  sonra : 16:11:00 → 18:31:07   2 sa 20 dk    20 kayıt, saatte 8,6
+
+Yeni çıkanlar (yalnızca sonra): 3
+  önce  sonra  seviye     ilk       son       kalıp
+     0      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]
+                                              örnek: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
+                                              konum: app/Http/Middleware/HizSiniri.php:22 (RedisException)
+  … 2 satır daha; tümünü görmek için --hepsi
+
+Kaybolanlar (yalnızca önce): 11
+  önce  sonra  seviye     ilk       son       kalıp
+     1      0  ERROR      09:47:12  09:47:12  Attempt to read property "ad" on null
+                                              konum: app/Http/Controllers/KategoriController.php:54 (ErrorException)
+  … 10 satır daha; tümünü görmek için --hepsi
+
+Artanlar (sonra ≥ 2 kat sık, tesadüf ihtimali < %1): 1
+  önce  sonra  seviye     ilk       son       kalıp
+     1      5  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
+                                              artış: saatte 0,1 → 2,1 (15,4 kat)
+                                              örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
+                                              konum: app/Services/OdemeServisi.php:64 (ConnectionException)
+```
+
+`--ilk` her bölüme ayrı uygulanır; `--siralama` bölümlerin içindeki sırayı belirler.
+Markdown çıktısında her bölüm ayrı bir tablodur ve artanların "Sonra" sütununda kat da yazar:
+`5 (15,4 kat)`.
+
+**Sıklık saat başına sayılır.** İki yarı farklı uzunlukta olabilir: 6 saatte 3 kez ile 1
+saatte 3 kez aynı şey değildir. Bu yüzden kayıt sayıları değil, saatlik sıklıklar
+karşılaştırılır:
+
+```text
+kat = (b / Ts) / (a / Tö)      a, b: öncedeki ve sonradaki kayıt sayısı
+                               Tö, Ts: iki yarının süresi
+```
+
+Süreler saniye hassasiyetindedir; son kaydın saniyesi de sonra yarısına sayılır
+(Ts = son − nokta + 1 sn).
+
+**Tesadüf mü?** 16:11'de "Ödeme sağlayıcısı yanıt vermedi" kalıbı da 1 kayıttan 2'ye çıkar
+ve saatlik sıklığı 6 kat artar. Ama toplam 3 kayıt tesadüfen de böyle dağılabilir. Bunu ayırt
+etmek için iki Poisson sıklığını karşılaştıran koşullu binom testi kullanılır (Przyborowski ve
+Wilenski, 1940):
+
+1. Sıklık değişmediyse bir kalıbın n = a + b kaydının her biri, sonra yarısına o yarının
+   süredeki payı kadar ihtimalle düşer: p₀ = Ts / (Tö + Ts).
+2. Sonraya düşen kayıt sayısı Binom(n, p₀) dağılımına uyar. En az gözlenen b kadarının
+   tesadüfen sonraya düşme ihtimali, yani p değeri, P(X ≥ b)'dir.
+3. p değeri %1'in altındaysa "sıklık değişmedi" varsayımı bu gözlemi açıklayamaz: artış
+   tesadüf değildir.
+
+16:11'de p₀ = 8 408 / 34 270 ≈ 0,245:
+
+| Kalıp | Önce → sonra | Kat | p değeri | Sonuç |
+|---|---|---|---|---|
+| cURL error (ödeme zaman aşımı) | 1 → 5 | 15,4 | 0,0042 | artan |
+| Ödeme sağlayıcısı yanıt vermedi | 1 → 2 | 6,2 | 0,151 | tesadüf olabilir |
+
+Bu test kesindir ama temkinlidir: yanlış alarm oranı %1'i geçmez, çoğu zaman altında kalır
+([Krishnamoorthy ve Thomson, 2004](https://userweb.ucs.louisiana.edu/~kxk4695/JSPI-04.pdf)).
+Python'da statsmodels'in
+[`test_poisson_2indep`](https://www.statsmodels.org/dev/generated/statsmodels.stats.rates.test_poisson_2indep.html)
+fonksiyonu `method="exact-cond"` ile aynı testi yapar ve aynı sonucu verir.
+
+Üç şartın her biri bir hatayı önler:
+
+- **En az 2 kat:** yalnızca p değerine bakılsa, çok kayıtta küçük farklar da "tesadüf değil"
+  çıkar. Eşit yarılarda 1 000 → 1 200 kayıt tesadüf değildir (p ≈ 0,00001), ama %20'lik bir
+  artışı trafikteki küçük bir değişim de yapar.
+- **p değeri %1'in altında:** yalnızca kata bakılsa az kayıtlı kalıplardaki gürültü
+  listelenir (yukarıdaki 1 → 2).
+- **Sonra yarısında en az 2 kayıt:** tek kayıttan sıklık çıkarılamaz. Nokta logun sonuna çok
+  yakınsa sonra yarısı birkaç saniye sürer ve oraya düşen tek bir kayıt yüzlerce kat artış
+  gibi görünür. Son kayıt ise pencerenin sonunu kendisi belirlediği için sonraya her zaman
+  düşer.
+
+Yeni çıkan ve kaybolanlar için ek şart yoktur: ilk kez görülen bir hata tek kayıtla bile
+önemlidir. Onların p değeri de hesaplanıp JSON'a yazılır (yeni için p₀ᵇ, kaybolan için
+(1 − p₀)ᵃ), ama listeyi filtrelemez.
+
+İstatistik için kütüphane kullanılmadı. Binom dağılımının kuyruğu terim terim toplanır; çok
+küçük olasılıklar (yaklaşık 10⁻³⁰⁸'in altı) `f64`'te sıfıra yuvarlanacağı için terimlerin
+logaritmaları tutulur. Sonuçlar [scipy](https://scipy.org)'nin `binom.sf` fonksiyonuyla
+karşılaştırılarak test edilir.
+
+**Zaman.** İki an arasındaki süre için tarih, 1970-01-01'den bu yana geçen güne çevrilir.
+Bunun için Howard Hinnant'ın
+[`days_from_civil`](https://howardhinnant.github.io/date_algorithms.html) algoritması
+kullanılır: yıl Mart'ta başlıyormuş gibi sayılır, böylece Şubat yılın son ayı olur ve artık
+gün yılın sonuna düşer. `--karsilastir` şu yazılışları kabul eder:
+
+- `15:00` ya da `15:00:30`: tarih logun son kaydından alınır.
+- `2026-10-24`: günün başı.
+- `"2026-10-24 15:00"` ya da `2026-10-24T15:00`.
+
+Takvimde olmayan bir an (`2026-02-29`, `24:00`) reddedilir. Nokta ilk kayıtta ya da
+öncesindeyse, ya da son kayıttan sonraysa yarılardan biri boş kalacağı için veylog hata
+verir (çıkış kodu 2).
+
+**JSON.** Karşılaştırma `karsilastirma` alanındadır; alan yalnızca `--karsilastir` verilince
+eklenir:
+
+```bash
+veylog --bicim json --karsilastir 16:11 ornekler/laravel.log | jq '.karsilastirma.artan.satirlar[] | {kalip, once, sonra, kat, p_degeri}'
+```
+
+```json
+{
+  "kalip": "cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> bytes received (see <URL>) for <URL>",
+  "once": 1,
+  "sonra": 5,
+  "kat": 15.379400570884872,
+  "p_degeri": 0.004243352322045974
+}
+```
+
+- `nokta`, `once` ve `sonra`: bölme anı ile iki yarının başlangıcı, bitişi, süresi
+  (`saniye`) ve kayıt sayısı. Zamanlar logdaki biçimden bağımsız olarak
+  `2026-10-24 16:11:00` biçimindedir.
+- `artis_kati`, `anlamlilik`, `en_az_kayit`: "artan" şartları.
+- `yeni`, `kaybolan`, `artan`: her biri `kalip_sayisi`, `gosterilmeyen` ve `satirlar`
+  içerir. Satırlar tablo satırının alanlarına ek olarak `once`, `sonra`, `kat` ve
+  `p_degeri` taşır. Yenilerde kat sonsuzdur; JSON'da sonsuz olmadığı için `null` yazılır.
+
+Benzer bir özellik Sumo Logic'in
+[LogCompare](https://www.sumologic.com/help/docs/search/behavior-insights/logcompare/)'ıdır:
+iki zaman aralığının kalıplarını karşılaştırır, yenileri "New", kaybolanları "Gone" diye
+işaretler. Değişimi kalıbın toplam loglar içindeki payıyla ölçer; veylog ise saatlik sıklığı
+kullanır, böylece "saatte 0,1 → 2,1" doğrudan okunur.
 
 ### Komut satırı
 
@@ -491,7 +648,16 @@ Laravel tarafı için bir ipucu: kullanıcıdan gelen değeri mesaja gömmek yer
 - Windows yolları (`C:\laragon\www\...`) henüz tanınmıyor: vendor klasörü ayırt edilemediği
   için konum, istisnanın fırlatıldığı yer olur.
 - Aynı dosyada farklı zaman biçimleri ya da saat dilimleri karışırsa zaman aralığı ve
-  `--siralama yeni` yanlış sıralanabilir.
+  `--siralama yeni` yanlış sıralanabilir. `--karsilastir` iki biçimi de doğru okur ama saat
+  dilimini yok sayar.
+- Karşılaştırma sıklığı saat başına ölçer. Trafik iki katına çıkarsa her kalıp iki kat sık
+  görünür; veylog bunu yük artışından ayırt edemez.
+- Her kalıp ayrı ayrı sınanır. %1 eşiği ve 2 kat şartı yanlış alarmı az tutar ama
+  sıfırlamaz; çok kalıplı bir logda arada bir tesadüfi bir "artan" görülebilir.
+- Test, kayıtların zamana rastgele serpildiğini varsayar. Zamanlanmış görevler gibi düzenli
+  olaylar ve tek bir anda yığılan patlamalar bu varsayıma uymaz.
+- Log tek bir noktada ikiye bölünür; iki ayrı dosya ya da iki keyfi aralık
+  karşılaştırılamaz.
 - ANSI renk kodları (`␛[31m`) rakam içerdiği için Drain onları değişken sayar; renk kodlu
   kısa mesajlar aynı uzunluktaki başka mesajlarla birleşebilir.
 - Yazı yönünü değiştiren Unicode karakterleri (ör. U+202E, "Trojan Source") temizlenmez.
@@ -528,6 +694,7 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `--hepsi` | Tablonun tamamını göster. | |
 | `-s`, `--siralama <ölçüt>` | Tablonun sırası: `onem`, `adet` ya da `yeni` ([ayrıntılar](#kalıp-raporu)). | `onem` |
 | `-b`, `--bicim <ad>` | Çıktının biçimi: `metin`, `json` ya da `markdown` ([ayrıntılar](#json-ve-markdown-çıktısı)). | `metin` |
+| `-k`, `--karsilastir <zaman>` | Logu bu anda ikiye böl ve iki yarıyı karşılaştır: yeni çıkan, kaybolan ve artan kalıplar. Zaman: `15:00`, `15:00:30`, `2026-10-24` ya da `"2026-10-24 15:00"` ([ayrıntılar](#zaman-aralıklarını-karşılaştırma)). | |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
 
@@ -547,13 +714,16 @@ veylog --bicim json --hepsi storage/logs/laravel.log | jq '.kaliplar.satirlar[0]
 # Markdown: GitHub issue'suna yapıştırmak için
 veylog --bicim markdown storage/logs/laravel.log > rapor.md
 
+# 15:00'teki dağıtımdan önce ve sonra: yeni çıkan, kaybolan ve artan hatalar
+veylog --karsilastir 15:00 storage/logs/laravel.log
+
 # Derlemeden çalıştırırken: cargo'nun seçenekleriyle karışmasın diye önce --
 cargo run -- --ilk 5 ornekler/laravel.log
 ```
 
 Çıkış kodları: `0` başarılı, `1` dosya okunamadı ya da çıktı yazılamadı, `2` kullanım hatası
-(bilinmeyen seçenek, geçersiz değer, eksik dosya adı). Böylece veylog'u çağıran bir betik
-hatanın türünü ayırt edebilir.
+(bilinmeyen seçenek, geçersiz değer, eksik dosya adı, logun dışında kalan bir karşılaştırma
+noktası). Böylece veylog'u çağıran bir betik hatanın türünü ayırt edebilir.
 
 ```text
 $ veylog --esk 0,8 laravel.log
@@ -566,18 +736,21 @@ Ayrıntılar için: veylog --yardim
 
 ```text
 src/
-├── main.rs         programın girişi: dosyayı okur, özeti istenen biçimde yazar, çıkış kodlarını belirler
-├── komut_satiri.rs komut satırı: seçenekler, yardım metni, hata mesajları
-├── kayit.rs        log metnini kayıtlara ayırır: başlık, seviye, mesaj, bağlam, devam satırları
-├── maske.rs        mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
-├── drain.rs        Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
-├── parmak_izi.rs   hata parmak izi: istisna sınıfı ve uygulama kodundaki ilk satır
-├── rapor.rs        özet: sayılar, seviyeler, kalıp tablosu, sıralamalar; metin çıktısı ve
-│                   kontrol karakterlerinin temizlenmesi
-├── json.rs         JSON çıktısı: kütüphanesiz JSON yazıcı
-└── markdown.rs     Markdown çıktısı: GitHub'a yapıştırılabilir tablo
+├── main.rs          programın girişi: dosyayı okur, özeti istenen biçimde yazar, çıkış kodlarını belirler
+├── komut_satiri.rs  komut satırı: seçenekler, yardım metni, hata mesajları
+├── kayit.rs         log metnini kayıtlara ayırır: başlık, seviye, mesaj, bağlam, devam satırları
+├── maske.rs         mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
+├── drain.rs         Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
+├── parmak_izi.rs    hata parmak izi: istisna sınıfı ve uygulama kodundaki ilk satır
+├── rapor.rs         özet: sayılar, seviyeler, kalıp tablosu, sıralamalar; metin çıktısı ve
+│                    kontrol karakterlerinin temizlenmesi
+├── karsilastirma.rs iki zaman aralığının karşılaştırılması: yeni çıkan, kaybolan, artan kalıplar
+├── zaman.rs         tarih ve saat: --karsilastir değerini ayrıştırır, iki an arasındaki süreyi hesaplar
+├── istatistik.rs    binom dağılımının kuyruğu: bir artışın tesadüf olup olmadığı
+├── json.rs          JSON çıktısı: kütüphanesiz JSON yazıcı
+└── markdown.rs      Markdown çıktısı: GitHub'a yapıştırılabilir tablo
 tests/
-└── cli.rs          programı gerçekten çalıştıran testler: argümanlar, biçimler, hata mesajları, çıkış kodları
+└── cli.rs           programı gerçekten çalıştıran testler: argümanlar, biçimler, hata mesajları, çıkış kodları
 ```
 
 Program yalnızca [regex](https://crates.io/crates/regex) kütüphanesini kullanır. Testler JSON
@@ -595,7 +768,9 @@ cargo test
 `tests/cli.rs` ise derlenmiş programı çalıştırıp kullanıcının gördüğünü kontrol eder. JSON
 çıktısı serde_json ile ayrıştırılır, Markdown tablosunun satırları sayılır ve kontrol
 karakterleriyle dolu bir logda, üç biçimin hiçbirine tek bir kontrol karakterinin
-sızmadığı denetlenir.
+sızmadığı denetlenir. İstatistik ve tarih hesapları scipy ve Python'un `datetime` modülüyle
+hesaplanmış değerlerle sınanır; karşılaştırma bölümünün metin ve Markdown çıktısı beklenen
+metinle karakter karakter karşılaştırılır.
 
 ## Örnek log hakkında
 
@@ -618,5 +793,5 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı, sıralama
 - [x] JSON ve Markdown çıktısı
 - [x] Terminal güvenliği: logdaki kontrol karakterleri terminale komut olarak ulaşmaz
-- [ ] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar
+- [x] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar
 - [ ] Ani hata artışlarını yakalama (medyan + MAD)

@@ -7,6 +7,7 @@
 
 use std::io::{self, Write};
 
+use crate::karsilastirma::{ANLAMLILIK, ARTIS_KATI, Degisim, EN_AZ_KAYIT, Karsilastirma, Pencere};
 use crate::rapor::{KalipSatiri, Ozet};
 
 /// Bir JSON değeri. Nesnelerde alanlar eklendikleri sırayla yazılır.
@@ -132,7 +133,7 @@ fn ozet_json(ozet: &Ozet<'_>) -> Json {
         .collect();
     let analiz = &ozet.analiz;
 
-    Json::Nesne(vec![
+    let mut alanlar = vec![
         ("surum", metin(env!("CARGO_PKG_VERSION"))),
         ("dosya", metin(&ozet.dosya)),
         ("satir_sayisi", Json::Sayi(ozet.satir_sayisi)),
@@ -157,12 +158,72 @@ fn ozet_json(ozet: &Ozet<'_>) -> Json {
                 ("satirlar", Json::Dizi(satirlar)),
             ]),
         ),
+    ];
+    // Karşılaştırma yalnızca istendiyse yazılır; normal raporun biçimi değişmez
+    if let Some(karsilastirma) = &ozet.karsilastirma {
+        alanlar.push(("karsilastirma", karsilastirma_json(ozet, karsilastirma)));
+    }
+    Json::Nesne(alanlar)
+}
+
+/// Karşılaştırmanın JSON'u: nokta, iki yarı, "artan" eşikleri ve üç liste. Listeler en fazla
+/// `--ilk` kadar satır içerir; "gosterilmeyen" dışarıda kalanları sayar.
+fn karsilastirma_json(ozet: &Ozet<'_>, karsilastirma: &Karsilastirma) -> Json {
+    let liste = |degisimler: &[Degisim]| {
+        let satirlar = ozet
+            .sinirla(degisimler)
+            .iter()
+            .map(|degisim| degisim_json(ozet, degisim))
+            .collect();
+        Json::Nesne(vec![
+            ("kalip_sayisi", Json::Sayi(degisimler.len())),
+            ("gosterilmeyen", Json::Sayi(ozet.disarida_kalan(degisimler))),
+            ("satirlar", Json::Dizi(satirlar)),
+        ])
+    };
+    Json::Nesne(vec![
+        ("nokta", Json::Metin(karsilastirma.nokta.to_string())),
+        ("once", pencere_json(&karsilastirma.once)),
+        ("sonra", pencere_json(&karsilastirma.sonra)),
+        ("artis_kati", Json::Ondalik(ARTIS_KATI)),
+        ("anlamlilik", Json::Ondalik(ANLAMLILIK)),
+        ("en_az_kayit", Json::Sayi(EN_AZ_KAYIT)),
+        ("yeni", liste(&karsilastirma.yeni)),
+        ("kaybolan", liste(&karsilastirma.kaybolan)),
+        ("artan", liste(&karsilastirma.artan)),
     ])
 }
 
-/// Tablodaki bir satırın JSON'u. İstisnası olmayan satırlarda "istisna" null'dır; istisnanın
-/// uygulama kodunda yeri bulunamadıysa "dosya" ve "satir" null'dır.
+fn pencere_json(pencere: &Pencere) -> Json {
+    Json::Nesne(vec![
+        ("baslangic", Json::Metin(pencere.baslangic.to_string())),
+        ("bitis", Json::Metin(pencere.bitis.to_string())),
+        ("saniye", Json::Sayi(pencere.saniye)),
+        ("kayit_sayisi", Json::Sayi(pencere.kayit_sayisi)),
+    ])
+}
+
+/// Karşılaştırmadaki bir satır: kalıp satırının alanları ve iki yarıdaki sayıları.
+fn degisim_json(ozet: &Ozet<'_>, degisim: &Degisim) -> Json {
+    let mut alanlar = satir_alanlari(&ozet.analiz.satirlar[degisim.satir]);
+    alanlar.extend([
+        ("once", Json::Sayi(degisim.once)),
+        ("sonra", Json::Sayi(degisim.sonra)),
+        // Yenilerde kat sonsuzdur; JSON'da sonsuz olmadığı için null yazılır
+        ("kat", Json::Ondalik(degisim.kat)),
+        ("p_degeri", Json::Ondalik(degisim.p_degeri)),
+    ]);
+    Json::Nesne(alanlar)
+}
+
+/// Tablodaki bir satırın JSON'u.
 fn satir_json(satir: &KalipSatiri<'_>) -> Json {
+    Json::Nesne(satir_alanlari(satir))
+}
+
+/// Bir kalıp satırının alanları. İstisnası olmayan satırlarda "istisna" null'dır; istisnanın
+/// uygulama kodunda yeri bulunamadıysa "dosya" ve "satir" null'dır.
+fn satir_alanlari(satir: &KalipSatiri<'_>) -> Vec<(&'static str, Json)> {
     let istisna = match satir.parmak_izi {
         Some(parmak_izi) => {
             let (dosya, satir_no) = match parmak_izi.konum() {
@@ -180,7 +241,7 @@ fn satir_json(satir: &KalipSatiri<'_>) -> Json {
         None => Json::Yok,
     };
 
-    Json::Nesne(vec![
+    vec![
         ("adet", Json::Sayi(satir.adet)),
         ("seviye", metin(satir.seviye.ad())),
         ("ilk", metin(satir.ilk)),
@@ -188,7 +249,7 @@ fn satir_json(satir: &KalipSatiri<'_>) -> Json {
         ("kalip", metin(&satir.kalip)),
         ("ornek", metin(satir.ornek)),
         ("istisna", istisna),
-    ])
+    ]
 }
 
 fn metin(metin: &str) -> Json {
@@ -200,6 +261,7 @@ mod testler {
     use super::*;
     use crate::kayit::kayitlari_ayir;
     use crate::rapor::RaporAyarlari;
+    use crate::zaman::ZamanNoktasi;
     use std::path::Path;
 
     const ORNEK_LOG: &str = include_str!("../ornekler/laravel.log");
@@ -213,7 +275,8 @@ mod testler {
     /// Örnek logun JSON raporu, serde_json ile ayrıştırılmış olarak.
     fn ornek_rapor(ayarlar: &RaporAyarlari) -> serde_json::Value {
         let log = kayitlari_ayir(ORNEK_LOG);
-        let ozet = Ozet::hesapla(Path::new("ornekler/laravel.log"), ORNEK_LOG, &log, ayarlar);
+        let ozet =
+            Ozet::hesapla(Path::new("ornekler/laravel.log"), ORNEK_LOG, &log, ayarlar).unwrap();
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         // Geçerli bir JSON değilse burada hata verir
@@ -317,6 +380,60 @@ mod testler {
         let kalip = kayit["kalip"].as_str().unwrap();
         assert_eq!(kalip.chars().count(), 257);
         assert!(kalip.ends_with("values <*> <EPOSTA>, <ZAMAN>, <ZAMAN>))"));
+    }
+
+    #[test]
+    fn karsilastirma_istenirse_yazilir() {
+        // İstenmediyse alan hiç yok: normal raporun biçimi değişmez
+        let normal = ornek_rapor(&RaporAyarlari::default());
+        assert!(normal.get("karsilastirma").is_none());
+
+        let rapor = ornek_rapor(&RaporAyarlari {
+            karsilastir: ZamanNoktasi::ayristir("16:11"),
+            ..RaporAyarlari::default()
+        });
+        let karsilastirma = &rapor["karsilastirma"];
+        assert_eq!(karsilastirma["nokta"], "2026-10-24 16:11:00");
+        // `json!`: serde_json'un JSON yazımına benzeyen makrosu; karşılaştırmak için bir değer üretir
+        assert_eq!(
+            karsilastirma["once"],
+            serde_json::json!({
+                "baslangic": "2026-10-24 08:59:58",
+                "bitis": "2026-10-24 16:11:00",
+                "saniye": 25_862,
+                "kayit_sayisi": 39
+            })
+        );
+        assert_eq!(
+            karsilastirma["sonra"],
+            serde_json::json!({
+                "baslangic": "2026-10-24 16:11:00",
+                "bitis": "2026-10-24 18:31:07",
+                "saniye": 8_408,
+                "kayit_sayisi": 20
+            })
+        );
+        assert_eq!(karsilastirma["artis_kati"], 2.0);
+        assert_eq!(karsilastirma["anlamlilik"], 0.01);
+        assert_eq!(karsilastirma["en_az_kayit"], 2);
+        assert_eq!(karsilastirma["yeni"]["kalip_sayisi"], 3);
+        // Varsayılan --ilk 10: on bir kaybolanın onu yazılır, biri sayılır
+        let kaybolan = &karsilastirma["kaybolan"];
+        assert_eq!(kaybolan["kalip_sayisi"], 11);
+        assert_eq!(kaybolan["satirlar"].as_array().unwrap().len(), 10);
+        assert_eq!(kaybolan["gosterilmeyen"], 1);
+        assert_eq!(kaybolan["satirlar"][0]["kat"], 0.0);
+        // Yenide kat sonsuz; JSON'da sonsuz olmadığı için null
+        assert!(karsilastirma["yeni"]["satirlar"][0]["kat"].is_null());
+
+        let artan = &karsilastirma["artan"]["satirlar"][0];
+        assert_eq!(
+            (&artan["adet"], &artan["once"], &artan["sonra"]),
+            (&6.into(), &1.into(), &5.into())
+        );
+        // scipy.stats.binom.sf(4, 6, 8408 / 34270)
+        let p_degeri = artan["p_degeri"].as_f64().unwrap();
+        assert!((p_degeri - 0.00424335232204597).abs() < 1e-15);
     }
 
     #[test]

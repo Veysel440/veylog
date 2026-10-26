@@ -1,13 +1,16 @@
 //! veylog: Laravel log dosyalarını özetleyen komut satırı aracı.
 
 mod drain;
+mod istatistik;
 mod json;
+mod karsilastirma;
 mod kayit;
 mod komut_satiri;
 mod markdown;
 mod maske;
 mod parmak_izi;
 mod rapor;
+mod zaman;
 
 use std::borrow::Cow;
 use std::env;
@@ -71,8 +74,15 @@ fn main() {
     }
 
     let log = kayitlari_ayir(&icerik);
-    // Özet bir kez hesaplanır; biçim yalnızca nasıl yazılacağını belirler
-    let ozet = Ozet::hesapla(yol, &icerik, &log, &secenekler.rapor);
+    // Özet bir kez hesaplanır; biçim yalnızca nasıl yazılacağını belirler. Karşılaştırma
+    // noktası logun dışındaysa bu, seçeneğin bu dosyaya uymadığı bir kullanım hatasıdır.
+    let ozet = match Ozet::hesapla(yol, &icerik, &log, &secenekler.rapor) {
+        Ok(ozet) => ozet,
+        Err(hata) => {
+            eprintln!("veylog: {hata}");
+            process::exit(2);
+        }
+    };
 
     let mut cikti = BufWriter::new(io::stdout().lock());
     let yazildi = match secenekler.bicim {
