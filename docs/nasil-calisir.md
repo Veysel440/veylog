@@ -1,0 +1,521 @@
+# Nasıl çalışır
+
+Bu belge veylog'un bir log dosyasını adım adım nasıl özetlediğini, her adımın gerekçesini
+ve gerçek loglarda nasıl sınandığını anlatır. Örnekler depodaki kurgusal loglardandır
+(`ornekler/`). Karşılaştırma ve ani artışların istatistiği ayrı bir belgede:
+[karşılaştırma ve ani artışlar](karsilastirma-ve-ani-artis.md).
+
+```text
+laravel.log
+  → kayıtlara ayır    59 kayıt, 45 farklı mesaj
+  → maskele           27 farklı mesaj
+  → Drain             23 kalıp
+  → parmak izi        24 grup
+  → karşılaştırma     isteğe bağlı (--karsilastir): yeni çıkan, kaybolan, artan
+  → ani artışlar      isteğe bağlı (--ani-artis): olağan seviyesinden sıçrayan anlar
+  → özet              metin, JSON ya da Markdown olarak yazılır
+```
+
+## Kayıtlara ayırma
+
+Bir Laravel kaydı bir başlık satırıyla başlar:
+
+```text
+[2026-10-24 14:03:11] production.ERROR: Mesaj {"bağlam":"..."}
+[2026-10-24T14:03:11.123456+03:00] production.ERROR: Mesaj
+```
+
+Başlıktan sonra gelen satırlar (stack trace, çok satırlı mesajlar) bir sonraki başlığa kadar o
+kayda aittir. Dosya bir kaydın ortasından başlıyorsa (log döndürüldüğünde olur), hiçbir kayda
+ait olmayan ilk satırlar "yetim satır" olarak ayrıca sayılır. Her satır tam olarak bir yere
+gider: başlık, devam ya da yetim.
+
+- Zaman Laravel'in biçiminde (`2026-10-24 14:03:11`) ya da Monolog'un varsayılanı ISO 8601
+  biçiminde olabilir; saniyeden sonra kesir ve saat dilimi gelebilir.
+- Biçimi doğru ama takvimde olmayan bir zaman (`2026-02-30`, `24:00:00`) başlık sayılmaz.
+  Laravel böyle bir zaman yazmaz; ama mesajlar satır sonu içerebildiği için loglanan bir
+  kullanıcı girdisindeki bir satır başlık gibi görünebilir. Kabul edilseydi süre hesapları
+  bozulurdu: 30 Şubat sıralamada 1 Mart'tan önce gelir ama saniyesi 2 Mart'ınkidir.
+- Dosyanın başındaki UTF-8 BOM (bazı Windows araçları yazar) atılır; atılmasa ilk satır `[`
+  ile başlamaz ve ilk kayıt kaybolurdu.
+- Geçersiz UTF-8 baytları dosyanın tamamını reddetmek yerine `�` ile değiştirilir ve bir
+  uyarı yazılır.
+- Dosya adı yerine `-` verilirse log standart girdiden okunur:
+  `zcat laravel-2026-10-24.log.gz | veylog -`.
+
+## JSON satırları
+
+Laravel'de bir kanalın biçimlendiricisi Monolog'un `JsonFormatter`'ı yapılırsa her kayıt tek
+satırlık bir JSON nesnesi olur. Logları toplayan servisler (Loki, Elasticsearch, CloudWatch)
+bu biçimi kolay okur:
+
+```php
+// config/logging.php
+'single' => [
+    'driver' => 'single',
+    'path' => storage_path('logs/laravel.log'),
+    'formatter' => Monolog\Formatter\JsonFormatter::class,
+    // Yığın izi de yazılsın: parmak izinin konumu için gerekir
+    'formatter_with' => ['includeStacktraces' => true],
+],
+```
+
+```text
+{"message":"Kullanıcı 57 giriş yaptı","context":{"ip":"203.0.113.99"},"level":200,"level_name":"INFO","channel":"local","datetime":"2026-10-25T10:02:05.635543+00:00","extra":{}}
+```
+
+veylog bir satırı şu şartlarla kayıt sayar: `{` ile başlar, baştan sona geçerli bir JSON
+nesnesidir ve `datetime` (geçerli bir zaman), `level_name` (bilinen bir seviye) ve `message`
+alanları vardır. Biri eksikse satır, metin biçimindeki gibi bir önceki kaydın devam satırıdır.
+İki biçim aynı dosyada karışık olabilir: kanalın biçimlendiricisi değiştirilince eski kayıtlar
+metin, yenileri JSON olarak kalır.
+
+- Mesajın kaçışları çözülür (`\"` → `"`, `\u00e7` → `ç`) ve metin biçimindeki gibi yalnızca
+  ilk satırı alınır. Böylece aynı hata iki biçimde de aynı kalıba düşer.
+- İstisna bağlamda bir nesnedir: sınıfı `class`, fırlatıldığı yer `file` (`/yol/Dosya.php:26`),
+  çağrılar `trace` alanındadır ve parmak izi metin biçimindeki kuralla bulunur. `trace` yalnızca
+  `includeStacktraces` açıksa yazılır; kapalıysa yalnızca fırlatıldığı yer bilinir.
+- Kanal (`channel`) ve `extra` kullanılmaz.
+
+`ornekler/karisik.log` bu durumu anlatır: Windows'ta Herd ile çalışan uydurma bir mağazanın
+kanalı 10:00'da JSON'a geçirilmiş.
+
+```text
+$ veylog --ilk 4 ornekler/karisik.log
+ornekler/karisik.log: 683 satır
+  Kayıt         : 21
+...
+     2  ERROR      09:05:40  09:06:02  SQLSTATE[HY000] [<SAYI>] Connection refused (Connection: mysql_yok, Host: <IP>,…
+                                       örnek: SQLSTATE[HY000] [2002] Connection refused (Connection: mysql_yok, Host: …
+                                       konum: database/migrations/2026_10_25_090000_create_kuponlar_table.php:11 (QueryException)
+     2  ERROR      09:20:11  10:15:30  Undefined array key "kargo_ucreti"
+                                       konum: app/Services/SepetHesaplayici.php:10 (ErrorException)
+  … 9 satır daha; tümünü görmek için --hepsi
+```
+
+`kargo_ucreti` hatasının 09:20'deki kaydı metin, 10:15'teki kaydı JSON biçimindedir; ikisi aynı
+satırda birleşir. Migration hatasının konumu ise Windows yolundan bulunmuştur
+([aşağıda](#windows-yolları)).
+
+**Okuyucu.** JSON'u yazarken olduğu gibi okurken de kütüphane kullanılmadı. Okuyucu
+[RFC 8259](https://www.rfc-editor.org/rfc/rfc8259)'u izler ve özyinelemeli inişle çalışır: her
+değer türü için bir fonksiyon vardır; bir nesne okunurken içindeki değerler için aynı
+fonksiyonlar çağrılır.
+
+- Okunan değerler satırdan ödünç alınır. Metinler tırnakların arasındaki ham halleriyle
+  tutulur, kaçışları yalnızca gerektiğinde çözülür; kaçış yoksa kopya da yoktur (`Cow`).
+- `\u` kaçışları UTF-16 birimidir: U+FFFF'in üstündeki karakterler (emoji gibi) iki birimle, bir
+  vekil (surrogate) çiftiyle yazılır: `\ud83d\ude80` → 🚀.
+- İç içe en fazla 127 dizi ya da nesne okunur. Sınır olmasa `[[[[...` diye on binlerce düzey
+  açan tek bir log satırı yığını taşırıp programı çökertebilirdi.
+
+Doğruluğu [serde_json](https://crates.io/crates/serde_json) ile karşılaştırılarak denetlenir:
+2 000 rastgele değer (sıkışık ve girintili yazılışlarıyla), elle seçilmiş geçerli ve geçersiz
+metinler ve Laravel'in yazdığı loglardaki 17 944 satır iki okuyucuda aynı sonucu verir. İki
+bilinen fark var, ikisi de RFC'ye göre geçerli metinlerde: `f64`'e sığmayan bir sayıyı
+(`1E400`) serde_json çeviremediği için reddeder, veylog sayıları çevirmediği için kabul eder.
+Eşi olmayan bir vekil kaçışını (`"\ud800"`) serde_json reddeder, veylog `�` olarak okur.
+Monolog ikisini de yazmaz.
+
+## Maskeleme
+
+Değişken kısımlar düzenli ifadelerle şu sırayla yer tutuculara çevrilir: URL, dosya yolu,
+e-posta, UUID, zaman, IP, sayı. Sıra önemlidir: geniş yapılar önce, tek tek sayılar en son
+yakalanır. Yoksa `10.0.3.12` bir IP olarak değil, sayılara bölünmüş olarak maskelenirdi. URL
+boşlukta, kapanan parantezde, tırnakta ve açılı ayraçta biter: `value "https://..." is
+invalid` içindeki kapanış tırnağı maskeye katılmaz.
+
+Dosya yolları `<YOL>` olur. Laravel bir Blade hatasının mesajının sonuna şablonun tam yolunu
+ekler:
+
+```text
+Route [panel.kampanya.olustur] not defined. (View: C:\Users\İrem\Herd\magaza\resources\views\panel\kampanyalar.blade.php)
+→ Route [panel.kampanya.olustur] not defined. (View: <YOL>)
+```
+
+Yol maskelenmese aynı hata her şablon için, hatta projeyi açan her bilgisayar için ayrı bir
+kalıp olurdu; tablodaki kalıp da 80 karakterde, şablonun adına gelmeden kesilirdi. Hangi
+şablon olduğu konum sütununda yazar ([aşağıda](#view-hataları)). Bu ekin yolu `.php)` ile
+bittiği için boşluk içerse de (`C:\Users\Ali Veli\Herd\...`) tamamı maskelenir.
+
+Öteki yollar: Windows'ta bir yol sürücü harfiyle başlar (`C:\`, `C:/`). Linux ve macOS'ta `/`
+ile başlayan bir yol ancak bir dosya uzantısıyla bitiyorsa maskelenir
+(`/var/www/magaza/app/X.php`): böylece `GET /api/urunler/15` gibi URL yolları kalıpta kalır.
+
+## Drain
+
+Kalıp çıkarma için He ve arkadaşlarının
+[Drain](https://jiemingzhu.github.io/pub/pjhe_icws2017.pdf) algoritması (ICWS 2017) kullanılır.
+Mesajlar teker teker işlenir:
+
+1. Mesaj boşluklardan belirteçlere bölünür.
+2. Sabit derinlikli bir ağaçta önce belirteç sayısına, sonra ilk belirtece göre dal seçilir.
+   İçinde rakam olan belirteçler ve dolmuş bir düğüme gelen yeni belirteçler ortak `<*>`
+   dalına gider. Böylece her mesaj bütün kalıplarla değil, yalnızca birkaç adayla
+   karşılaştırılır.
+3. Varılan yapraktaki her kalıp için benzerlik hesaplanır: aynı konumda aynı olan
+   belirteçlerin oranı.
+4. En iyi benzerlik eşiği geçerse mesaj o kümeye katılır ve kalıpta farklı olan konumlar
+   `<*>` olur; geçmezse yeni bir küme açılır.
+
+```text
+Zamanlanmış görev başladı: kurlar:guncelle
+Zamanlanmış görev başladı: yedek:al
+→ 4 belirtecin 3'ü aynı: 3/4 = 0,75 ≥ 0,7
+→ Zamanlanmış görev başladı: <*>
+```
+
+| Ayar | Varsayılan | Açıklama |
+|---|---|---|
+| Önek derinliği | 1 | Kaç baş belirtece göre dallanılacağı. Laravel hata mesajlarında değişken çoğu zaman ikinci sıradadır (`View [x] not found.`), bu yüzden yalnızca ilk belirteç kullanılır. |
+| Benzerlik eşiği | 0,7 | Bir mesajın kümeye katılması için gereken en düşük benzerlik. `--esik` ile değiştirilebilir. |
+| En fazla çocuk | 100 | Bir düğümün en fazla dal sayısı; dolunca yeni belirteçler `<*>` dalına gider. Bir yaprakta bundan fazla değer alan konum [değişkendir](#değişken-konumlar). |
+| Esnek eşik | açık | Eşik, büyük ihtimalle değişken olan farklılıkların oranında gevşer (aşağıda). |
+
+Eşiğin örnek logdaki etkisi:
+
+| Eşik | Kalıp | Etkisi |
+|---|---|---|
+| 0,4 | 22 | İki farklı yavaş SQL sorgusu anlamsız tek bir kalıpta birleşir. |
+| **0,7** | 23 | Sorgular ayrı kalır; zamanlanmış görevler birleşir. |
+| 0,8 | 25 | `giriş` ve `çıkış` ayrılır, ama zamanlanmış görevler de ayrılır. |
+
+Yanlışlıkla birleştirilen yeni bir hata eski bir kalıbın içinde kaybolacağı için varsayılan
+eşik temkinli seçildi.
+
+### Esnek eşik
+
+Sabit bir eşik kısa mesajlarda sorun çıkarır: `Yanıt süresi 120ms` ile `Yanıt süresi 95ms`
+mesajlarında 3 belirtecin 2'si aynıdır (0,67 < 0,7) ve her değer ayrı bir kalıp olur. Eşiği
+düşürmek ise uzun mesajlarda farklı SQL sorgularını birleştirir. Bunun yerine eşik, büyük
+ihtimalle değişken olan farklılıkların oranında gevşer:
+
+```text
+eşik = 0,7 × (n − değişken fark) / n
+```
+
+Burada `değişken fark`, farklı olan (ya da kalıpta `<*>` olan) ve iki şarttan birini sağlayan
+konumların sayısıdır: iki tarafında da rakam var (kalıpta `<*>` varsa mesajın tarafında) ya
+da konum yaprakta [değişken](#değişken-konumlar). Rakam fikri Drain'in
+[genişletilmiş sürümünden](https://arxiv.org/pdf/1806.04356) gelir: içinde rakam olan
+belirteçler büyük ihtimalle değişkendir.
+
+| Mesajlar | Değişken fark | Eşik | Benzerlik | Sonuç |
+|---|---|---|---|---|
+| `Yanıt süresi 120ms` / `95ms` | 1 | 0,47 | 0,67 | Birleşir: `Yanıt süresi <*>` |
+| `Yanıt süresi 120ms` / `uzun` | 0 | 0,70 | 0,67 | Ayrı kalır: rakam yalnızca bir tarafta |
+| `Ödeme alındı` / `Ödeme reddedildi` | 0 | 0,70 | 0,50 | Ayrı kalır |
+| `S3 yüklemesi tamamlandı` / `başarısız` | 0 | 0,70 | 0,67 | Ayrı kalır |
+
+Makaledeki formülden farkı, bütün rakamlı belirteçleri değil yalnızca iki tarafında da rakam
+olan **farklılıkları** saymasıdır. `S3` gibi rakam içeren ama sabit olan bir kelime eşiği
+gevşetmez; `Unauthenticated.` ile `kullanici42` gibi yalnızca birinde rakam olan iki mesaj da
+birleşmez.
+
+Kümelerin eşikleri böylece farklı olabilir. Mesaj, eşiği geçen kümelerin en benzerine katılır
+(eşitlikte Drain'deki gibi daha çok `<*>` içeren, yani daha genel kalıba): en benzer küme
+eşiği geçmese de bir başkası geçebilir. Esnek eşik kapalıyken eşik herkes için aynıdır ve bu
+kural klasik Drain'in kuralıyla aynı sonucu verir.
+
+Gevşemenin iki sınırı vardır:
+
+- **Tutunacak yer.** Hiçbir belirteci tutmayan bir birleşme, ancak bütün farklılıkların iki
+  tarafında da rakam varsa olur (`a1b2 c3d4` ile `e5f6 g7h8`). Tek ortak yanı bir değişken
+  konum olan iki mesaj birleşmez.
+- **Tek kelimelik mesajlar.** Bütün tek belirteçli mesajlar (`Unauthenticated.`,
+  `odeme.basarisiz`) aynı yapraktadır; orada değişken konum aranmaz. Rakamsız olanlar yalnızca
+  birebir aynıysa birleşir, rakamlı olanlar (kimlikler, özetler) tek bir `<*>` kümesinde
+  toplanır. Böylece binlerce farklı olay adı olsa da her mesaj en fazla iki kümeyle
+  karşılaştırılır.
+
+Kalıptaki `<*>` içeride boşluk içeren bir işaretle tutulur; belirteçler boşluklardan
+bölündüğü için mesajdaki hiçbir kelimeyle karışmaz. Mesajda yazılı bir `<*>` bu yüzden
+sıradan bir kelimedir ve birebir aynı mesajlar birleşir. Karışsaydı her biri ayrı bir küme
+açar, 20 bin satırlık bir log yaklaşık 10 saniye sürerdi.
+
+### Değişken konumlar
+
+Rakam içermeyen bir değer kısa mesajlarda birleşmez. Kaba kuvvetle giriş denenen bir
+uygulamanın logu:
+
+```text
+[2026-10-24 03:12:07] production.WARNING: Bilinmeyen kullanıcı: ahmet
+[2026-10-24 03:12:07] production.WARNING: Bilinmeyen kullanıcı: admin
+[2026-10-24 03:12:08] production.WARNING: Bilinmeyen kullanıcı: root
+```
+
+Üç belirtecin ikisi aynıdır (0,67 < 0,7) ve rakam yoktur: her ad ayrı bir küme açar. 40 bin
+denemelik bir log 40 bin satırlık bir tabloya dönüşür; üstelik her yeni mesaj yapraktaki
+bütün kümelerle karşılaştırıldığı için süre mesaj sayısının karesiyle artar (bu kural
+eklenmeden önce yaklaşık bir dakika).
+
+Drain'in 2. adımdaki dolu düğüm kuralı (en fazla 100 dal) yaprakta da uygulanır: bir
+yapraktaki kümelerin kalıplarında bir konum **100'den fazla farklı belirteç** aldıysa o konum
+değişkendir ve oradaki farklılıklar rakamlı farklılıklar gibi eşiği gevşetir. Kalıp
+`Bilinmeyen kullanıcı: <*>` olur ve yaprak büyümeyi bırakır.
+
+Konumun değişken olduğu ancak 101. değer görülünce anlaşılır; o zamana kadar açılmış 100
+küme ayrı kalırdı. Bu yüzden böyle bir konum bulunursa mesajlar bu bilgiyle bir kez daha,
+baştan kümelenir. Değişken konum yoksa (logların çoğunda) tek tur yeter. Sonuç: 40 bin
+deneme tek bir satırda, saniyenin dörtte birinde.
+
+Sınırın 100 olması temkinlidir: `Ödeme alındı` ile `Ödeme reddedildi` gibi farklı olaylar
+aynı konumda yüz farklı kelime almaz. Sayım da ancak bir yaprakta 100'den fazla küme olunca
+başlar; yaprakların çoğunda hiç yapılmaz. Değerlerin kendisi değil 64 bitlik özetleri
+saklanır: yalnızca kaç farklı değer görüldüğü önemlidir.
+
+İlk belirteci rakamlı mesajların ortak `<*>` dalında birbiriyle ilgisiz mesajlar yan yana
+durur. Orada bir mesaj ailesinden öğrenilen değişken konum, başka bir mesajı ancak öteki
+konumları da tutuyorsa birleştirir: 101 farklı adla `Kod7 dosyası <*>` kalıbı oluşsa da
+`Rapor dosyası hazır` ona katılmaz, çünkü `Rapor` ile `Kod7`'nin yalnızca birinde rakam var.
+
+Geliştirme sırasında [Drain3](https://github.com/logpai/Drain3) (Python, 0.9.11) ile
+karşılaştırıldı. Depodaki örnek loglarda, iki gerçek geliştirme logunda ve 20 bin ile 124 bin
+mesaj arasındaki üç sentetik logda birebir aynı kümeleri ve kalıpları veriyor. Esnek eşik
+açıkken de: eşiğin gevşemesi bu loglarda hiçbir birleşmeyi değiştirmiyor. Esnek eşik
+Drain3'ten yalnızca eşiği gevşeten farklılıklarda (iki tarafında da rakam olan ya da 100'den
+fazla değer alan bir konumda) ayrılır; 40 bin farklı kullanıcı adlı logda olduğu gibi.
+
+Esnek eşik kapalıyken bilinen farklar, gerçek loglarda görülmeyen girdilerdedir: Drain3
+rakamı Unicode'a göre tanır (`²`, `٣`), belirteçleri Python'un `split()`'iyle böler (`\x1c`
+gibi ayırıcılar da boşluk sayılır) ve mesajda yazılı bir `<*>`'ı joker sayar.
+
+## Hata parmak izi
+
+Aynı PHP mesajı kodun birçok yerinden gelebilir: `Attempt to read property "ad" on null`
+hem kategori sayfasında hem ürün sayfasında oluşabilir. Drain yalnızca mesaja baktığı için
+bunları tek kalıpta birleştirir, oysa bunlar iki ayrı hatadır.
+[Sentry](https://docs.sentry.io/concepts/data-management/event-grouping/) gibi hata takip
+araçları bu yüzden hataları mesajla değil, stack trace'in uygulamaya ait kısmıyla tanır.
+veylog bunun sade bir halini kullanır: istisna sınıfı ve uygulama kodundaki ilk satır.
+
+Laravel bir istisnayı loglarken bağlama sınıfını, fırlatıldığı yeri ve stack trace'i yazar
+(satırlar kısaltıldı):
+
+```text
+[2026-10-24 09:14:20] production.ERROR: SQLSTATE[23000]: ... {"exception":"[object] (Illuminate\\Database\\UniqueConstraintViolationException(code: 23000): ... at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php:819)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php(779): ...
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php(3780): ...
+#2 /var/www/magaza/app/Http/Controllers/KayitController.php(38): Illuminate\\Database\\Eloquent\\Model->save()
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): ...
+#4 /var/www/magaza/public/index.php(17): ...
+#5 {main}
+"}
+```
+
+Parmak izi şöyle çıkarılır:
+
+1. Bağlamda `[object] (Sınıf(code: ...` başlığı aranır; buradan istisna sınıfı alınır.
+   Mesaj çok satırlıysa bağlam bir sonraki satırlardan birinde başlar.
+2. Başlık `[stacktrace]` satırına kadar sürer, çünkü istisna mesajı da çok satırlı olabilir.
+   Son satırının sonundaki `at dosya:satır` istisnanın fırlatıldığı yerdir.
+3. Stack trace'in çerçeveleri (`#2 dosya(satır): çağrı`) okunur. `[previous exception]` ile
+   başlayan kısım bu istisnaya yol açan önceki istisnadır; okunmaz.
+4. Proje kökü, `/vendor/` içeren ilk yoldan bulunur (`/var/www/magaza/`) ve yollardan
+   silinir; hiçbir yolda vendor yoksa `/storage/framework/views/` içeren ilk yoldan. Böylece
+   her dağıtımda klasör adı değişse de (`releases/20261024/`) konum aynı kalır. Sıra
+   önemlidir: sıfır kesintili dağıtımlarda (Forge, Envoyer, Deployer) `storage` bütün
+   dağıtımların paylaştığı bir klasördür ve derlenmiş şablonun yolu dağıtımın klasörünün
+   dışındadır; yığın izinde vendor'dan önce gelse de kök vendor'dan bulunur. Kaydın kendi
+   yollarında ikisi de yoksa, örneğin yığın izi olmayan ölümcül bir hatada, logun başka
+   kayıtlarında bulunan kökler denenir.
+5. Adaylar içten dışa taranır: önce fırlatıldığı yer, sonra onu çağıranlar. `vendor/` ve
+   `storage/framework/views/` altında olmayan, giriş noktası da (`artisan`,
+   `public/index.php`, eski Laravel'lerde `server.php`) olmayan ilk dosya seçilir.
+   Middleware'in isteği bir sonraki adıma ilettiği satır atlanır.
+
+Örnekteki istisna vendor'da fırlatıldı; uygulama kodundaki ilk satır `#2`'dir:
+`app/Http/Controllers/KayitController.php:38 (UniqueConstraintViolationException)`. Hata
+tamamen vendor içinde oluştuysa, örneğin bir kuyruk işinin deneme hakkı bittiyse, konum
+"uygulama kodunda bulunamadı" olarak gösterilir.
+
+Parmak izi Drain'in kalıplarını yalnızca **böler**: aynı kalıptaki kayıtlar farklı yerlerden
+geliyorsa ayrı satırlarda görünür. Aynı yerden gelen farklı kalıplar ise birleştirilmez,
+çünkü bir yardımcı fonksiyondaki tek bir `throw` birbirinden bağımsız birçok hatanın ortak
+yeri olabilir.
+
+### Middleware
+
+Bir route middleware'inden geçen her istekte, sonraki adımlarda oluşan her hatanın yığın
+izinde middleware'in `return $next($request);` satırı da bulunur. Denetleyicide tanımsız bir
+metot çağrıldıysa (`Call to undefined method ...::duzenle()`) uygulama kodundaki tek satır
+budur; ama hatanın yeri orası değildir, istek yalnızca oradan geçmiştir. Yığın izinin her
+satırı o satırda yapılan çağrıyı da yazar ve bu satırdaki çağrı, Laravel'in Pipeline'ındaki
+bir closure'dır:
+
+```text
+#3 /var/www/magaza/app/Http/Middleware/YoneticiMi.php(13): Illuminate\\Pipeline\\Pipeline->Illuminate\\Pipeline\\{closure}()
+```
+
+PHP 8.4'ten beri closure'ın adında nerede tanımlandığı da yazar:
+`Illuminate\\Pipeline\\Pipeline->{closure:Illuminate\\Pipeline\\Pipeline::carry():184}`. İki
+yazılış da tanınır ve bu satırlar aday sayılmaz. Middleware'in başka bir çağrısı (ör.
+`abort_if()`) hatanın yeri olabileceği için atlanmaz.
+
+### View hataları
+
+Blade şablonundaki bir hata `ViewException` olarak loglanır ve Laravel mesajın sonuna
+şablonun yolunu ekler: `Undefined variable $urun (View: /var/www/magaza/resources/views/vitrin.blade.php)`.
+Hata, şablonun PHP'ye derlenmiş halinde (`storage/framework/views/8748fa....php`) oluşur; o
+dosyanın adı bir özettir ve satırı Blade dosyasındaki satıra karşılık gelmez. Şablondaki bir
+`route()` hatası da yanıt hazırlanırken, denetleyici döndükten sonra oluştuğu için yığın
+izinde denetleyici bulunmaz. Bu yüzden view hatalarının konumu şablonun kendisidir, satır
+numarası olmadan. Şablon başka bir şablonun içindeyse Laravel her düzey için bir `(View: ...)`
+ekler; ilki hatanın oluştuğu şablondur. Şablon bir paketin vendor klasöründeyse uygulama kodu
+sayılmaz ve yığın izine bakılır.
+
+```text
+$ veylog --ilk 8 ornekler/karisik.log
+...
+     2  ERROR      09:48:21  09:49:05  Route [panel.kampanya.olustur] not defined. (View: <YOL>)
+                                       örnek: Route [panel.kampanya.olustur] not defined. (View: C:\Users\İrem\Herd\ma…
+                                       konum: resources/views/panel/kampanyalar.blade.php (ViewException)
+     1  ERROR      09:52:37  09:52:37  Call to undefined method App\Http\Controllers\KampanyaController::duzenle()
+                                       konum: uygulama kodunda bulunamadı (Error)
+     1  ERROR      09:55:10  09:55:10  Undefined variable $urun (View: <YOL>) (View: <YOL>)
+                                       örnek: Undefined variable $urun (View: C:\Users\İrem\Herd\magaza\resources\view…
+                                       konum: resources/views/partials/urun-karti.blade.php (ViewException)
+     1  ERROR      09:57:44  09:57:44  Trait "App\Traits\Disariaktarilabilir" not found
+                                       konum: app/Http/Controllers/RaporController.php:5 (FatalError)
+  … 5 satır daha; tümünü görmek için --hepsi
+```
+
+Son satırdaki ölümcül hatanın yığın izi yoktur (`#0 {main}`); yalnızca fırlatıldığı yer
+bilinir ve orada vendor geçmez. Kök, logun diğer kayıtlarından bulunur.
+
+**Derlenmiş şablonlar** uygulama kodu sayılmaz. Şablondaki sıradan bir hata `ViewException`
+olarak loglandığı için derlenmiş şablonda kalan hatalar yalnızca ölümcül hatalardır
+(`Maximum execution time of 30 seconds exceeded`); onların yeri de rastgeledir: süre o an
+nerede dolduysa orasıdır. Böylece aynı zaman aşımı, bir kez şablonda bir kez vendor'da
+yakalansa da tek satırda kalır.
+
+Kişisel bir Laravel projesinin 13 MB'lık geliştirme logunda (699 kayıt) 282 view hatasının
+hepsi kendi şablonunu gösteriyor; middleware'e bağlanmıyor. Tanımsız bir denetleyici metodunu
+çağıran 53 kayıt "uygulama kodunda bulunamadı" diyor (eksik metot mesajda yazıyor) ve süre
+sınırına takılan 9 ölümcül hata tek satırda toplanıyor.
+
+### Windows yolları
+
+Herd ya da Laragon'da yolların ayracı `\`'dir ve bağlam JSON olduğu için logda `\\` diye
+yazılır: `C:\\Users\\İrem\\Herd\\magaza\\vendor\\...`. Proje kökü `\\vendor\\`'dan da bulunur;
+konum gösterilirken kaçış çözülür ve ayraç `/` olur:
+`database/migrations/2026_10_25_090000_create_kuponlar_table.php:11`. Giriş noktası da
+(`public\\index.php`) aynı yolla tanınır. Gerçek bir geliştirme logunda migration hatalarının
+konumu böylece migration dosyası olarak bulundu; önceden vendor'daki `Connection.php:822`
+görünüyordu.
+
+## Kalıp raporu
+
+Drain yalnızca metinle ilgilenir; seviyeyi, zamanı ve stack trace'i bilmez. Rapor, Drain'in
+her mesaj için bulduğu kümeyi kaydın parmak iziyle birlikte kullanır: ikisi de aynı olan
+kayıtlar tablonun bir satırını oluşturur. Her satıra şu bilgiler eklenir:
+
+- **seviye:** satırdaki kayıtların en önemlisi.
+- **ilk / son:** ilk ve son görülme zamanı. Tek günlük logda yalnızca saat, birden çok günü
+  kapsayan logda ay ve gün de (`10-23 23:59:58`), birden çok yıla yayılan logda yıl da
+  (`2025-07-23 08:37:53`) gösterilir. Zamanlar metin olarak değil tarih olarak
+  karşılaştırılır; aynı logdaki iki zaman biçimi (`2026-10-24 10:00:00` ve
+  `2026-10-24T09:00:00+00:00`) doğru sıralanır.
+- **örnek:** satırdaki ilk kaydın maskelenmemiş mesajı; `<SAYI>` ve `<*>`'ın arkasındaki
+  gerçek değerleri gösterir. Kalıp ham mesajla aynıysa gösterilmez.
+- **konum:** kayıtlar bir istisnadan geliyorsa uygulama kodundaki ilk satır ve istisna
+  sınıfı. Dosya yolu kısaltılmaz; birçok editörün terminalinde `dosya:satır` tıklanarak
+  açılabilir.
+
+Tablo varsayılan olarak önem sırasına göre dizilir: önce seviye, aynı seviyede adet. İlk 10
+satır gösterilir; gösterilmeyen satır sayısı tablonun altında (JSON'da `gosterilmeyen`
+alanında) yazar. Sayı sütunları en uzun sayıya göre genişler; 12 345 kayıtlı bir kalıp tabloyu
+kaydırmaz. Üç sıralama vardır (`--siralama`):
+
+| Sıralama | Ölçüt | Ne zaman işe yarar? |
+|---|---|---|
+| `onem` | Seviye, aynı seviyede adet | Önce neyi düzeltmeli? |
+| `adet` | Adet, aynı adette seviye | Logu en çok ne dolduruyor? |
+| `yeni` | İlk görülme zamanı (en yeni önce), aynı anda seviye | Son dağıtımdan sonra ne çıktı? |
+
+Bütün sıralamalar kararlıdır: ölçütleri eşit olan satırlar logda ilk görüldükleri sırada
+kalır. Örnek logda `--siralama yeni` günü sondan başa anlatır: 17:07'de toparlanan Redis,
+17:05'teki çöküşü, 16:10'daki ödeme zaman aşımları...
+
+## Komut satırı
+
+Argümanlar için yaygın bir kütüphane ([clap](https://crates.io/crates/clap)) yerine küçük
+bir ayrıştırıcı yazıldı. clap projeye 17 kütüphane ekliyor, mesajları İngilizce ve Türkçedeki
+gibi virgüllü ondalık sayıları (`0,8`) tanımıyor. Kendi ayrıştırıcımız şu kuralları izler:
+
+- Seçenekler dosya adından önce ya da sonra gelebilir. Aynı seçenek iki kez yazılırsa
+  sonuncusu geçerlidir (`--ilk 5 --hepsi` hepsini gösterir).
+- Değer boşlukla (`--esik 0,8`), `=` ile (`--esik=0,8`) ya da kısa seçeneklerde bitişik
+  (`-n20`) verilebilir.
+- `--`'dan sonraki her şey dosya adıdır: `veylog -- -garip-ad.log`. Tek başına `-` standart
+  girdidir; `-` adlı bir dosya `./-` diye verilir.
+- Türkçe karakterli yazımlar da geçerlidir: `--eşik`, `--sıralama önem`, `--biçim`, `--yardım`.
+- Argümanlar işletim sisteminin verdiği ham haliyle (`OsString`) okunur. Linux'ta bir dosya
+  adı geçerli UTF-8 olmayabilir; program böyle bir adla da çökmez. Boş bir dosya adı
+  (`veylog "$LOG"`, LOG tanımsız) kullanım hatasıdır.
+- Tanınmayan bir seçeneğe en çok benzeyen seçenek önerilir. Benzerlik
+  [Levenshtein uzaklığıyla](https://en.wikipedia.org/wiki/Levenshtein_distance) ölçülür:
+  birini ötekine çevirmek için gereken en az harf ekleme, silme ya da değiştirme sayısı
+  (`--esk` → `--esik`: 1). Yanlış öneri vermemek için 5 harften kısa adlarda en fazla 1,
+  uzunlarda en fazla 2 harf farka izin verilir.
+- Okuma hataları Türkçe anlatılır: `dosya bulunamadı`, `okuma izni yok`, bir klasör
+  verildiyse `bu bir klasör; log dosyasını verin`.
+
+## Terminal güvenliği
+
+Log mesajları güvenilmez metindir: bir form alanı, bir URL ya da bir HTTP başlığı olduğu
+gibi loga düşebilir. Laravel mesajı dosyaya ham yazar; bağlam dizisi ise JSON olduğu için
+kaçışlıdır. Laravel 13.38'de:
+
+```php
+$ad = "Ali\e[1A\e[2K";   // kullanıcının forma yazdığı ad
+Log::info("Kullanıcı kaydoldu: $ad", ['ad' => $ad]);
+```
+
+```text
+[2026-10-26 08:31:30] local.INFO: Kullanıcı kaydoldu: Ali␛[1A␛[2K {"ad":"Ali\u001b[1A\u001b[2K"}
+```
+
+(Burada ␛, dosyadaki ham ESC baytını gösteriyor.)
+
+Terminal, ESC ile başlayan dizileri yazı olarak değil komut olarak okur: `\e[1A` imleci bir
+satır yukarı alır, `\e[2K` o satırı siler. CR (`\r`) imleci satır başına götürür, ardından
+gelen yazı öncekinin üstüne yazılır. Böyle bir mesaj olduğu gibi terminale yazılırsa
+kendinden önceki satırları silebilir; bir log özetinde bu, en önemli hatanın ekrandan
+kaybolması demektir. Şu üç satırlık log (␛ ve ␍ yine ham baytları gösteriyor), veylog'un
+önceki bir sürümünde CRITICAL satırını ve tablo başlığını ekrandan siliyordu:
+
+```text
+[2026-10-24 10:00:00] local.CRITICAL: Veritabani coktu
+[2026-10-24 10:00:01] local.INFO: Giris ␛[1A␛[2K␛[1A␛[2Kyapildi
+[2026-10-24 10:00:02] local.INFO: Odeme tamam␍HATA: kart reddedildi
+```
+
+Metin ve Markdown çıktısı bu yüzden logdan ve dosya adından gelen her metni temizler:
+
+```text
+     1  CRITICAL   10:00:00  10:00:00  Veritabani coktu
+     1  INFO       10:00:01  10:00:01  Giris ␛[1A␛[2K␛[1A␛[2Kyapildi
+     1  INFO       10:00:02  10:00:02  Odeme tamam HATA: kart reddedildi
+                                       örnek: Odeme tamam␍HATA: kart reddedildi
+```
+
+- U+0000–U+001F arasındaki kontrol karakterleri, Unicode'un "Control Pictures" bloğunda aynı
+  sırayla dizilmiş sembollerine çevrilir (U+2400 + kod): ESC → ␛, CR → ␍, sekme → ␉. Bir
+  karakter yine tek karakter kalır; tablonun hizası bozulmaz.
+- DEL (U+007F) → ␡. C1 karakterlerinin (U+0080–U+009F) sembolü yoktur, `\u{9b}` diye
+  yazılır; VTE tabanlı terminaller, kitty ve WezTerm bunları da komut olarak okur.
+- Kullanıcının yazdığı argümanları geri yazan hata mesajları da aynı temizlikten geçer.
+- JSON'da veri kaybı yoktur: ham mesaj kaçışlarıyla eksiksiz yazılır (`\u001b`), okuyan
+  program aslını alır.
+
+Bu bilinen bir açık sınıfıdır ([CWE-150](https://cwe.mitre.org/data/definitions/150.html)).
+Terminal emülatörlerinde bu yolla bulunan açıklar için
+[ANSI Terminal security in 2023 and finding 10 CVEs](https://dgl.cx/2023/09/ansi-terminal-security),
+bir log kütüphanesindeki karşılığı için Rust'ın tracing-subscriber kütüphanesinde düzeltilen
+[CVE-2025-58160](https://advisories.gitlab.com/cargo/tracing-subscriber/CVE-2025-58160/)
+incelenebilir.
+
+Laravel tarafı için bir ipucu: kullanıcıdan gelen değeri mesaja gömmek yerine bağlama koyun
+(`Log::info('Kullanıcı kaydoldu', ['ad' => $ad])`); bağlam JSON olarak kaçışlı yazılır.
