@@ -1,12 +1,17 @@
 # veylog
 
 [![CI](https://github.com/Veysel440/veylog/actions/workflows/ci.yml/badge.svg)](https://github.com/Veysel440/veylog/actions/workflows/ci.yml)
+[![Sürüm](https://img.shields.io/github/v/release/Veysel440/veylog?label=s%C3%BCr%C3%BCm)](https://github.com/Veysel440/veylog/releases/latest)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Lisans: MIT](https://img.shields.io/badge/lisans-MIT-blue.svg)](LICENSE)
 
 **Laravel log dosyalarını saniyenin altında okunabilir bir özete çeviren komut satırı aracı.**
 Rust ile yazıldı; tek bir çalıştırılabilir dosyadır, projeye paket eklemek ya da PHP kurmak
 gerekmez.
+
+[Kurulum](#kurulum) · [Kullanım](#kullanım) · [Örnekler](#örnekler) ·
+[Nasıl çalışır](#nasıl-çalışır) · [Tasarım kararları](#tasarım-kararları) ·
+[Performans](#performans) · [Sınırlamalar](#sınırlamalar) · [English](#english)
 
 `storage/logs/laravel.log` kısa sürede binlerce satıra ulaşır: aynı hata yüzlerce kez
 tekrarlanır, stack trace'ler satır sayısını şişirir, gerçekten önemli olan kayıt kalabalıkta
@@ -107,19 +112,32 @@ Windows için derlenmiş program bulunur; Rust kurmak gerekmez.
 | macOS (Intel) | `veylog-x86_64-apple-darwin.tar.gz` |
 | Windows (x86_64) | `veylog-x86_64-pc-windows-msvc.zip` |
 
-Linux'ta (WSL dahil):
+Her arşivin yanında SHA-256 özeti (`.sha256`) de yayımlanır. Linux'ta (WSL dahil) indirme,
+doğrulama ve kurulum:
 
 ```bash
 curl -LO https://github.com/Veysel440/veylog/releases/latest/download/veylog-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/Veysel440/veylog/releases/latest/download/veylog-x86_64-unknown-linux-musl.sha256
+sha256sum -c veylog-x86_64-unknown-linux-musl.sha256
 tar -xzf veylog-x86_64-unknown-linux-musl.tar.gz
 sudo mv veylog /usr/local/bin/
 veylog --surum
 ```
 
-macOS'ta dosya adındaki hedefi değiştirmek yeterlidir; arşiv tarayıcıyla indirildiyse
-macOS ilk çalıştırmada uyarabilir: `xattr -d com.apple.quarantine veylog`. Windows'ta zip'in
-içindeki `veylog.exe`, `PATH`'teki bir klasöre konur; Visual C++ çalışma zamanı gibi ek bir
-kurulum gerekmez. Her arşivin yanında SHA-256 özeti (`.sha256`) de yayımlanır.
+macOS'ta dosya adlarındaki hedefi değiştirmek yeterlidir; özet `shasum -a 256 -c` ile
+doğrulanır. Arşiv tarayıcıyla indirildiyse macOS ilk çalıştırmada uyarabilir:
+`xattr -d com.apple.quarantine veylog`.
+
+Windows'ta (PowerShell):
+
+```powershell
+Invoke-WebRequest https://github.com/Veysel440/veylog/releases/latest/download/veylog-x86_64-pc-windows-msvc.zip -OutFile veylog.zip
+Expand-Archive veylog.zip -DestinationPath veylog
+.\veylog\veylog.exe --surum
+```
+
+`veylog.exe` tek başına çalışır; Visual C++ çalışma zamanı gibi ek bir kurulum gerekmez. Her
+klasörden çalıştırmak için `veylog` klasörünü `PATH`'e ekleyin.
 
 ### Cargo ile
 
@@ -347,8 +365,9 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
   çevirmek, bir sınırı kaydırmak, bir kuralı silmek) testlerin yakaladığı denetlendi; son
   geliştirme adımlarında denenen 84 mutasyonun 83'ü yakalandı. Kalan biri sonucu hiç
   değiştirmeyen (eşdeğer) bir mutasyondu.
-- **CI:** `main` dalına her gönderimde ve her PR'da Linux, macOS ve Windows'ta testler;
-  `rustfmt`, `clippy -D warnings` ve en düşük Rust sürümü (1.88).
+- **CI/CD:** `main` dalına her gönderimde ve her PR'da Linux, macOS ve Windows'ta testler;
+  `rustfmt`, `clippy -D warnings` ve en düşük Rust sürümü (1.88). Her sürüm etiketinde dört
+  sistem için programlar derlenir ve SHA-256 özetleriyle otomatik yayımlanır.
 - **Gerçek loglar:** iki kişisel Laravel projesinin geliştirme logları (13 MB'a kadar) ve
   Laravel 13 ile gerçekten fırlatılan istisnalarla üretilmiş loglar. Örnek loglar
   (`ornekler/`) kurgusaldır; IP adresleri dokümantasyon aralıklarından, e-postalar `.test`
@@ -401,9 +420,21 @@ ornekler/            kurgusal örnek loglar
 
 Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md).
 
+## Katkı
+
+Hata bildirimleri ve öneriler için bir [issue](https://github.com/Veysel440/veylog/issues)
+açabilirsiniz. Bir log biçimi tanınmıyorsa, kişisel bilgileri çıkarılmış kısa bir örnek
+çok yardımcı olur. Pull request'lerde şu komutların temiz geçmesi beklenir:
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
 ## Lisans
 
-[MIT](LICENSE)
+[MIT](LICENSE) © 2026 Veysel Tulu
 
 ## English
 
@@ -415,4 +446,7 @@ the template), compares two time ranges with an exact conditional binomial test,
 sudden spikes with median/MAD-based modified z-scores. It reads Laravel's text format and
 Monolog's JSON lines, handles Windows paths, and writes text, JSON or Markdown. Its only
 dependency is `regex`; the JSON reader and writer, statistics and argument parser are
-hand-written and tested against serde_json, scipy and Drain3. The interface is in Turkish.
+hand-written and tested against serde_json, scipy and Drain3. Prebuilt binaries for Linux
+(static), macOS and Windows are on the
+[Releases](https://github.com/Veysel440/veylog/releases/latest) page. The interface is in
+Turkish.
