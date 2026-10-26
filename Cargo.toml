@@ -11,6 +11,8 @@ repository = "https://github.com/Veysel440/veylog"
 readme = "README.md"
 keywords = ["laravel", "log", "drain", "cli", "php"]
 categories = ["command-line-utilities", "development-tools::debugging"]
+# crates.io'ya yüklenecek dosyalar; CI ayarları ve depo dosyaları pakete girmez
+include = ["src/", "tests/", "ornekler/", "docs/", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [dependencies]
 regex = "1.13.1"

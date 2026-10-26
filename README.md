@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/Veysel440/veylog/actions/workflows/ci.yml/badge.svg)](https://github.com/Veysel440/veylog/actions/workflows/ci.yml)
 [![Sürüm](https://img.shields.io/github/v/release/Veysel440/veylog?label=s%C3%BCr%C3%BCm)](https://github.com/Veysel440/veylog/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/veylog.svg)](https://crates.io/crates/veylog)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Lisans: MIT](https://img.shields.io/badge/lisans-MIT-blue.svg)](LICENSE)
 
@@ -141,13 +142,15 @@ klasörden çalıştırmak için `veylog` klasörünü `PATH`'e ekleyin.
 
 ### Cargo ile
 
-[Rust](https://rustup.rs) 1.88 ya da daha yenisi kuruluysa:
+[Rust](https://rustup.rs) 1.88 ya da daha yenisi kuruluysa
+[crates.io](https://crates.io/crates/veylog)'dan:
 
 ```bash
-cargo install --git https://github.com/Veysel440/veylog --locked
+cargo install veylog --locked
 ```
 
-Program `~/.cargo/bin` klasörüne kurulur; rustup bu klasörü `PATH`'e ekler.
+Program `~/.cargo/bin` klasörüne kurulur; rustup bu klasörü `PATH`'e ekler. Henüz sürüme
+girmemiş son değişiklikler için: `cargo install --git https://github.com/Veysel440/veylog --locked`
 
 ### Kaynaktan
 
@@ -416,7 +419,6 @@ ornekler/            kurgusal örnek loglar
 - [ ] Dosyayı satır satır okumak: bellek kullanımı dosyanın boyutundan bağımsız olsun
 - [ ] Birden çok dosyayı ve `.gz` arşivlerini doğrudan okumak
 - [ ] Saat dilimlerini hesaba katmak
-- [ ] [crates.io](https://crates.io)'da yayımlamak
 
 Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md).
 

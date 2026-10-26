@@ -43,7 +43,7 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 
 - Terminal için tablo, betikler için JSON, GitHub için Markdown.
 - Linux (statik), macOS ve Windows için derlenmiş programlar; Windows'ta ek bir çalışma zamanı
-  gerekmez.
+  gerekmez. Rust kuruluysa crates.io'dan: `cargo install veylog`.
 - Logdaki kontrol karakterleri terminale ulaşmaz.
 - Türkçe komut satırı: virgüllü ondalık sayılar, Türkçe karakterli seçenek adları, yazım
   hatalarına öneri, ayırt edilebilir çıkış kodları.
