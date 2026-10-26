@@ -120,6 +120,19 @@ impl<'a> ParmakIzi<'a> {
             .rsplit_once('\\')
             .map_or(self.sinif, |(_, kisa)| kisa)
     }
+
+    /// Sınıfın tam adı, JSON kaçışı çözülmüş olarak: `Illuminate\Database\QueryException`
+    ///
+    /// Log'da `\` işareti `\\` diye yazılır; sınıf adında başka kaçış olamayacağı için
+    /// yalnızca bu çözülür.
+    pub fn sinif(&self) -> String {
+        self.sinif.replace("\\\\", "\\")
+    }
+
+    /// Uygulama kodundaki yer: dosya ve satır. Hata tamamen vendor içindeyse None.
+    pub fn konum(&self) -> Option<(&'a str, u32)> {
+        self.konum.map(|konum| (konum.dosya, konum.satir))
+    }
 }
 
 /// Raporda gösterilen hali: `app/Services/SepetHesaplayici.php:88 (ErrorException)`
@@ -362,6 +375,19 @@ mod testler {
         assert_eq!(
             sinif_bul(r#"{"exception":"[object] (class@anonymous(code: 0): x"#),
             Some("class@anonymous")
+        );
+    }
+
+    #[test]
+    fn tam_sinif_adi_ve_konum_okunur() {
+        let parmak_izi = iz(VENDORDA_FIRLATILAN).unwrap();
+        assert_eq!(
+            parmak_izi.sinif(),
+            r"Illuminate\Database\UniqueConstraintViolationException"
+        );
+        assert_eq!(
+            parmak_izi.konum(),
+            Some(("app/Http/Controllers/KayitController.php", 38))
         );
     }
 

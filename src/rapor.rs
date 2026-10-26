@@ -4,7 +4,14 @@
 //! kaydı maskeleyip Drain'e verir, sonra kaydı iki şeye göre bir gruba ekler: Drain'in
 //! döndürdüğü küme numarası ve kaydın parmak izi. Aynı kalıptaki kayıtlar kodun farklı
 //! yerlerinden geliyorsa böylece ayrı satırlarda görünür.
+//!
+//! Özet (`Ozet`) bir kez hesaplanır; metin, JSON ve Markdown çıktıları aynı özeti yazar.
+//!
+//! Logdan gelen metinler (mesajlar, yollar) güvenilmezdir: kullanıcının bir forma yazdığı şey
+//! olduğu gibi loga düşebilir. Metin ve Markdown çıktısı bu metinleri `gorunur` işlevinden
+//! geçirir; içlerindeki kontrol karakterleri terminale komut olarak ulaşmaz.
 
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Write};
@@ -17,8 +24,8 @@ use crate::parmak_izi::ParmakIzi;
 
 /// Tabloda varsayılan olarak gösterilecek satır sayısı.
 pub const VARSAYILAN_ILK: usize = 10;
-/// Uzun kalıplar ve örnekler bu kadar karakterden sonra kesilir.
-const KALIP_GENISLIGI: usize = 80;
+/// Uzun kalıplar ve örnekler bu kadar karakterden sonra kesilir (metin ve Markdown).
+pub const KALIP_GENISLIGI: usize = 80;
 
 /// Tablonun sırası.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,48 +216,110 @@ pub fn kaliplari_cikar<'a>(log: &Log<'a>, ayarlar: &RaporAyarlari) -> KalipAnali
     }
 }
 
-/// Özeti verilen yere yazar: ekrana (stdout) ya da testlerde bir bayt dizisine.
-pub fn ozet_yaz(
-    cikti: &mut impl Write,
-    yol: &Path,
-    icerik: &str,
-    log: &Log<'_>,
-    ayarlar: &RaporAyarlari,
-) -> io::Result<()> {
-    let zaman_araligi = log.zaman_araligi();
+/// Raporun bütün bilgileri. Bir kez hesaplanır; metin, JSON ve Markdown çıktıları aynı özeti
+/// farklı biçimlerde yazar. Böylece üç biçimdeki sayılar hep aynıdır.
+pub struct Ozet<'a> {
+    /// Dosyanın yolu, ekranda gösterileceği haliyle.
+    pub dosya: String,
+    pub satir_sayisi: usize,
+    pub kayit_sayisi: usize,
+    pub devam_satiri_sayisi: usize,
+    pub yetim_satir_sayisi: usize,
+    /// En eski ve en yeni kaydın zamanı; hiç kayıt yoksa None.
+    pub zaman_araligi: Option<(&'a str, &'a str)>,
+    /// Her seviyeden kaç kayıt var; en önemli seviye başta.
+    pub seviyeler: Vec<(Seviye, usize)>,
+    pub analiz: KalipAnalizi<'a>,
+    pub ayarlar: RaporAyarlari,
+}
 
-    // `display`: dosya adı geçerli UTF-8 değilse bozuk baytlar � olarak yazılır
-    writeln!(cikti, "{}: {} satır", yol.display(), icerik.lines().count())?;
-    writeln!(cikti, "  Kayıt         : {}", log.kayitlar.len())?;
-    writeln!(cikti, "  Devam satırı  : {}", log.devam_satiri_sayisi())?;
-    writeln!(cikti, "  Yetim satır   : {}", log.yetim_satir)?;
-    if let Some((en_eski, en_yeni)) = zaman_araligi {
+impl<'a> Ozet<'a> {
+    /// Logu özetler. Özet, logdan ödünç aldığı zamanlar ve mesajlar yüzünden en fazla logu
+    /// ödünç aldığı süre kadar (`'a`) yaşayabilir.
+    pub fn hesapla(
+        yol: &Path,
+        icerik: &str,
+        log: &'a Log<'_>,
+        ayarlar: &RaporAyarlari,
+    ) -> Ozet<'a> {
+        Ozet {
+            // `display`: dosya adı geçerli UTF-8 değilse bozuk baytlar � olarak yazılır
+            dosya: yol.display().to_string(),
+            satir_sayisi: icerik.lines().count(),
+            kayit_sayisi: log.kayitlar.len(),
+            devam_satiri_sayisi: log.devam_satiri_sayisi(),
+            yetim_satir_sayisi: log.yetim_satir,
+            zaman_araligi: log.zaman_araligi(),
+            // BTreeMap seviyeleri küçükten büyüğe tutar; en önemlisi başta olsun diye ters çevir
+            seviyeler: log.seviye_sayilari().into_iter().rev().collect(),
+            analiz: kaliplari_cikar(log, ayarlar),
+            ayarlar: ayarlar.clone(),
+        }
+    }
+
+    /// Bütün kayıtlar aynı gündeyse tabloda saat yeter, değilse tarih de gösterilir.
+    pub fn tek_gun(&self) -> bool {
+        self.zaman_araligi
+            .is_some_and(|(en_eski, en_yeni)| en_eski[..10] == en_yeni[..10])
+    }
+
+    /// Tabloda gösterilecek satırlar: en fazla `--ilk` kadar.
+    pub fn gosterilecek_satirlar(&self) -> &[KalipSatiri<'a>] {
+        let satirlar = &self.analiz.satirlar;
+        // None (--hepsi): sınır yok
+        let sinir = self.ayarlar.ilk.unwrap_or(usize::MAX);
+        &satirlar[..satirlar.len().min(sinir)]
+    }
+
+    /// `--ilk` sınırı yüzünden gösterilmeyen satır sayısı.
+    pub fn gosterilmeyen(&self) -> usize {
+        self.analiz.satirlar.len() - self.gosterilecek_satirlar().len()
+    }
+
+    /// Kalıp çıkarmanın adımları tek cümlede: "45 farklı mesaj → maskeleyince 27 → ..."
+    pub fn kalip_cumlesi(&self) -> String {
+        let analiz = &self.analiz;
+        format!(
+            "{} farklı mesaj → maskeleyince {} → Drain ile {} kalıp (eşik {}) → parmak iziyle {} grup",
+            analiz.ham_mesaj_sayisi,
+            analiz.maskeli_mesaj_sayisi,
+            analiz.kalip_sayisi,
+            ondalik(self.ayarlar.drain.benzerlik_esigi),
+            analiz.satirlar.len()
+        )
+    }
+}
+
+/// Özeti terminal için düz metin olarak yazar: ekrana (stdout) ya da testlerde bir bayt dizisine.
+///
+/// Logdan ve dosya adından gelen her metin `gorunur`dan geçer. Sayılar, seviye adları ve
+/// (biçimi denetlenmiş) zamanlar kontrol karakteri içeremez.
+pub fn metin_yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
+    writeln!(
+        cikti,
+        "{}: {} satır",
+        gorunur(&ozet.dosya),
+        ozet.satir_sayisi
+    )?;
+    writeln!(cikti, "  Kayıt         : {}", ozet.kayit_sayisi)?;
+    writeln!(cikti, "  Devam satırı  : {}", ozet.devam_satiri_sayisi)?;
+    writeln!(cikti, "  Yetim satır   : {}", ozet.yetim_satir_sayisi)?;
+    if let Some((en_eski, en_yeni)) = ozet.zaman_araligi {
         writeln!(cikti, "  Zaman aralığı : {en_eski} → {en_yeni}")?;
     }
 
     writeln!(cikti)?;
     writeln!(cikti, "Seviyeler:")?;
-    // En önemli seviye en üstte görünsün diye ters sırada yaz
-    for (seviye, adet) in log.seviye_sayilari().iter().rev() {
+    for (seviye, adet) in &ozet.seviyeler {
         writeln!(cikti, "  {:<10}{adet:>4}", seviye.ad())?;
     }
 
-    let analiz = kaliplari_cikar(log, ayarlar);
     writeln!(cikti)?;
-    writeln!(
-        cikti,
-        "Kalıplar: {} farklı mesaj → maskeleyince {} → Drain ile {} kalıp (eşik {}) → parmak iziyle {} grup",
-        analiz.ham_mesaj_sayisi,
-        analiz.maskeli_mesaj_sayisi,
-        analiz.kalip_sayisi,
-        ondalik(ayarlar.drain.benzerlik_esigi),
-        analiz.satirlar.len()
-    )?;
+    writeln!(cikti, "Kalıplar: {}", ozet.kalip_cumlesi())?;
 
-    if !analiz.satirlar.is_empty() {
-        // Bütün kayıtlar aynı gündeyse saat yeter, değilse tarih de gösterilir
-        let tek_gun =
-            zaman_araligi.is_some_and(|(en_eski, en_yeni)| en_eski[..10] == en_yeni[..10]);
+    let satirlar = ozet.gosterilecek_satirlar();
+    if !satirlar.is_empty() {
+        let tek_gun = ozet.tek_gun();
         let zaman_genisligi = if tek_gun { 8 } else { 14 };
         // Örnek ve konum satırları, kalıp sütununun hizasından başlasın
         let girinti = " ".repeat(2 + 4 + 2 + 9 + 2 + zaman_genisligi + 2 + zaman_genisligi + 2);
@@ -260,9 +329,7 @@ pub fn ozet_yaz(
             "  {:>4}  {:<9}  {:<zaman_genisligi$}  {:<zaman_genisligi$}  kalıp",
             "adet", "seviye", "ilk", "son"
         )?;
-        // None (--hepsi): sınır yok
-        let gosterilecek = ayarlar.ilk.unwrap_or(usize::MAX);
-        for satir in analiz.satirlar.iter().take(gosterilecek) {
+        for satir in satirlar {
             writeln!(
                 cikti,
                 "  {:>4}  {:<9}  {:<zaman_genisligi$}  {:<zaman_genisligi$}  {}",
@@ -270,24 +337,29 @@ pub fn ozet_yaz(
                 satir.seviye.ad(),
                 zaman_goster(satir.ilk, tek_gun),
                 zaman_goster(satir.son, tek_gun),
-                kisalt(&satir.kalip, KALIP_GENISLIGI)
+                // Önce temizle, sonra kısalt: genişlik ekranda görünen karakterlerle sayılsın
+                kisalt(&gorunur(&satir.kalip), KALIP_GENISLIGI)
             )?;
             // Kalıp maskelenmiş ya da <*> içeriyorsa arkasındaki gerçek değerleri göster
             if satir.ornek != satir.kalip {
                 writeln!(
                     cikti,
                     "{girinti}örnek: {}",
-                    kisalt(satir.ornek, KALIP_GENISLIGI - 7)
+                    kisalt(&gorunur(satir.ornek), KALIP_GENISLIGI - 7)
                 )?;
             }
             // Kayıtlar bir istisnadan geliyorsa nerede oluştuğunu göster. Dosya yolu
             // kısaltılmaz: terminalde tıklanıp doğrudan açılabilsin.
             if let Some(parmak_izi) = satir.parmak_izi {
-                writeln!(cikti, "{girinti}konum: {parmak_izi}")?;
+                writeln!(
+                    cikti,
+                    "{girinti}konum: {}",
+                    gorunur(&parmak_izi.to_string())
+                )?;
             }
         }
         // Gösterilmeyen satırlar varsa söyle; yoksa kullanıcı tablonun bittiğini sanır
-        let gizlenen = analiz.satirlar.len().saturating_sub(gosterilecek);
+        let gizlenen = ozet.gosterilmeyen();
         if gizlenen > 0 {
             writeln!(
                 cikti,
@@ -295,9 +367,7 @@ pub fn ozet_yaz(
             )?;
         }
     }
-
-    // Tamponda kalan son satırlar burada yazılır; varsa hatası da burada ortaya çıkar
-    cikti.flush()
+    Ok(())
 }
 
 /// Ondalık sayıyı Türkçedeki gibi virgülle yazar: 0.7 → "0,7"
@@ -310,7 +380,7 @@ pub fn ondalik(sayi: f64) -> String {
 ///
 /// Kayıt zamanlarının ilk 19 karakteri her zaman geçerli bir tarih-saat olduğu ve bu
 /// karakterler ASCII olduğu için bayt konumlarıyla dilimlemek güvenlidir.
-fn zaman_goster(zaman: &str, tek_gun: bool) -> String {
+pub fn zaman_goster(zaman: &str, tek_gun: bool) -> String {
     if tek_gun {
         zaman[11..19].to_string()
     } else {
@@ -322,12 +392,48 @@ fn zaman_goster(zaman: &str, tek_gun: bool) -> String {
 ///
 /// Bayt değil karakter sayılır: "ş" gibi Türkçe harfler UTF-8'de 2 bayttır ve bir harfi
 /// ortasından kesmeye çalışmak programı çökertir.
-fn kisalt(metin: &str, sinir: usize) -> String {
+pub fn kisalt(metin: &str, sinir: usize) -> String {
     if metin.chars().count() <= sinir {
         return metin.to_string();
     }
     let kisa: String = metin.chars().take(sinir - 1).collect();
     format!("{kisa}…")
+}
+
+/// Metindeki kontrol karakterlerini görünür sembollere çevirir: ESC → ␛, CR → ␍, sekme → ␉
+///
+/// Terminal, ESC (U+001B) ile başlayan dizileri yazı olarak değil komut olarak okur: renk
+/// değiştirir, ekranı siler, imleci taşır, pencere başlığını değiştirir. Bir log mesajı bunları
+/// içeriyorsa rapor, terminalde mesajı yazanın istediği gibi görünür: önceki satırlar silinip
+/// bir hata gizlenebilir. CR (U+000D) imleci satır başına götürür, ardından gelen yazı öncekinin
+/// üstüne yazılır; BS (U+0008) harf harf geri gider.
+///
+/// - U+0000–U+001F: Unicode'un "Control Pictures" bloğunda aynı sırayla dizilmiş sembolleri
+///   vardır, U+2400'den başlar: sembol = U+2400 + kod. Bir karakter yine tek karakter olur.
+/// - U+007F (DEL): ␡
+/// - U+0080–U+009F (C1 kontrol karakterleri): sembolleri yoktur, `\u{9b}` diye yazılır. VTE
+///   tabanlı terminaller, kitty ve WezTerm bunları da komut olarak okur.
+///
+/// Metinde kontrol karakteri yoksa (neredeyse her zaman) kopya oluşturulmaz: `Cow::Borrowed`.
+pub fn gorunur(metin: &str) -> Cow<'_, str> {
+    if !metin.chars().any(char::is_control) {
+        return Cow::Borrowed(metin);
+    }
+    let mut sonuc = String::with_capacity(metin.len());
+    for harf in metin.chars() {
+        match harf {
+            '\u{0}'..='\u{1f}' => {
+                let sembol = char::from_u32(0x2400 + u32::from(harf))
+                    .expect("U+2400–U+241F arası geçerli karakterlerdir");
+                sonuc.push(sembol);
+            }
+            '\u{7f}' => sonuc.push('␡'),
+            // Geriye kalan kontrol karakterleri C1'dir
+            kontrol if kontrol.is_control() => sonuc.extend(kontrol.escape_unicode()),
+            diger => sonuc.push(diger),
+        }
+    }
+    Cow::Owned(sonuc)
 }
 
 #[cfg(test)]
@@ -336,6 +442,15 @@ mod testler {
     use crate::kayit::kayitlari_ayir;
 
     const ORNEK_LOG: &str = include_str!("../ornekler/laravel.log");
+
+    /// Kontrol karakterleriyle dolu bir log: satır başı (CR), ekran silme ve renk (ESC), geri
+    /// silme (BS), C1 CSI (U+009B) ve yığın izindeki bir yolda pencere başlığı dizisi (ESC ] … BEL).
+    const KONTROLLU_LOG: &str = "\
+[2026-10-24 10:00:00] local.ERROR: Odeme tamam\rHATA: kart reddedildi
+[2026-10-24 10:00:01] local.INFO: \u{1b}[2J\u{1b}[31mEkran temizlendi\u{1b}[0m
+[2026-10-24 10:00:02] local.WARNING: Gizli\u{8}\u{8}\u{8}\u{8}\u{8}Acik ve \u{9b}31m C1
+[2026-10-24 10:00:03] local.ERROR: Bozuk yol bulundu {\"exception\":\"[object] (RuntimeException(code: 0): Bozuk yol bulundu at /var/www/app/K\u{1b}]0;baslik\u{7}otu.php:5)\"}
+";
 
     #[test]
     fn kisa_metin_oldugu_gibi_kalir() {
@@ -346,6 +461,99 @@ mod testler {
     fn uzun_metin_karakterden_kesilir() {
         // 5 karakter: 4 harf + "…". "Ş" ve "ü" 2'şer bayt olsa da harf bölünmez.
         assert_eq!(kisalt("Şüpheli giriş", 5), "Şüph…");
+    }
+
+    #[test]
+    fn kontrol_karakterleri_sembole_cevrilir() {
+        assert_eq!(
+            gorunur("Ödeme\rHATA\t\u{1b}[31mkırmızı\u{8}\u{0}"),
+            "Ödeme␍HATA␉␛[31mkırmızı␈␀"
+        );
+        // Sınırlar: U+001F son C0 karakteri, boşluk ve ~ kontrol değil, U+007F DEL,
+        // U+0080–U+009F C1, U+00A0 (bölünmez boşluk) kontrol değil
+        assert_eq!(
+            gorunur("\u{1f} ~\u{7f}\u{80}\u{9f}\u{a0}"),
+            "␟ ~␡\\u{80}\\u{9f}\u{a0}"
+        );
+        // Kontrol karakteri yoksa kopya oluşturulmaz
+        assert!(matches!(
+            gorunur("Şüpheli giriş"),
+            Cow::Borrowed("Şüpheli giriş")
+        ));
+        assert!(matches!(gorunur(""), Cow::Borrowed("")));
+    }
+
+    #[test]
+    fn metin_raporu_terminale_kontrol_karakteri_gondermez() {
+        let log = kayitlari_ayir(KONTROLLU_LOG);
+        let ozet = Ozet::hesapla(
+            Path::new("kötü\u{1b}[2J.log"),
+            KONTROLLU_LOG,
+            &log,
+            &RaporAyarlari::default(),
+        );
+        let mut cikti = Vec::new();
+        metin_yaz(&mut cikti, &ozet).unwrap();
+        let metin = String::from_utf8(cikti).unwrap();
+
+        // Satır sonları dışında tek bir kontrol karakteri bile kalmamalı
+        let kalanlar: Vec<char> = metin
+            .chars()
+            .filter(|&harf| harf.is_control() && harf != '\n')
+            .collect();
+        assert!(kalanlar.is_empty(), "{kalanlar:?}");
+
+        // Her alan ayrı ayrı: dosya adı, örnek, kalıp, konum
+        assert!(metin.starts_with("kötü␛[2J.log: 4 satır\n"), "{metin}");
+        assert!(
+            metin.contains("örnek: Odeme tamam␍HATA: kart reddedildi\n"),
+            "{metin}"
+        );
+        assert!(
+            metin.contains("  ␛[2J␛[31mEkran temizlendi␛[0m\n"),
+            "{metin}"
+        );
+        assert!(
+            metin.contains("  Gizli␈␈␈␈␈Acik ve \\u{9b}31m C1\n"),
+            "{metin}"
+        );
+        assert!(
+            metin.contains("konum: /var/www/app/K␛]0;baslik␇otu.php:5 (RuntimeException)\n"),
+            "{metin}"
+        );
+    }
+
+    #[test]
+    fn genislik_temizlenmis_metinle_sayilir() {
+        // 79 harf ve bir C1 karakteri: ham hali tam 80 karakter, sığar. Temizlenmiş hali 85
+        // karakter (`\u{9b}`), kısaltılmalı. Önce kısaltıp sonra temizlemek satırı taşırırdı.
+        let metin = format!("[2026-10-24 10:00:00] local.INFO: {}\u{9b}", "a".repeat(79));
+        let log = kayitlari_ayir(&metin);
+        let rapor = metin_raporu(&log, &RaporAyarlari::default());
+        assert!(
+            rapor.contains(&format!("  {}…\n", "a".repeat(79))),
+            "{rapor}"
+        );
+    }
+
+    #[test]
+    fn cok_gunlu_logda_tarih_de_gosterilir() {
+        // Aynı ayın iki ayrı günü: yalnızca ay değil gün de karşılaştırılmalı
+        let metin = "[2026-10-24 23:59:59] local.ERROR: Gece yarısı hatası\n\
+                     [2026-10-25 00:00:01] local.ERROR: Gece yarısı hatası";
+        let log = kayitlari_ayir(metin);
+        let ozet = Ozet::hesapla(Path::new("a.log"), metin, &log, &RaporAyarlari::default());
+        assert!(!ozet.tek_gun());
+
+        let mut cikti = Vec::new();
+        metin_yaz(&mut cikti, &ozet).unwrap();
+        let rapor = String::from_utf8(cikti).unwrap();
+        assert!(
+            rapor.contains(
+                "\n     2  ERROR      10-24 23:59:59  10-25 00:00:01  Gece yarısı hatası\n"
+            ),
+            "{rapor}"
+        );
     }
 
     #[test]
@@ -566,7 +774,7 @@ mod testler {
     fn ozet_ornek_log_icin_dogru_yazilir() {
         let log = kayitlari_ayir(ORNEK_LOG);
 
-        let metin = ozet(&log, &RaporAyarlari::default());
+        let metin = metin_raporu(&log, &RaporAyarlari::default());
 
         assert!(metin.starts_with("ornek.log: 203 satır\n"));
         assert!(metin.contains("\nSeviyeler:\n  CRITICAL     2\n  ERROR       16\n"));
@@ -590,7 +798,7 @@ mod testler {
     fn ilk_ve_hepsi_tablonun_uzunlugunu_belirler() {
         let log = kayitlari_ayir(ORNEK_LOG);
 
-        let ilk_uc = ozet(
+        let ilk_uc = metin_raporu(
             &log,
             &RaporAyarlari {
                 ilk: Some(3),
@@ -602,7 +810,7 @@ mod testler {
         assert!(ilk_uc.contains("kargo_ucreti"));
         assert!(!ilk_uc.contains("SQLSTATE"));
 
-        let hepsi = ozet(
+        let hepsi = metin_raporu(
             &log,
             &RaporAyarlari {
                 ilk: None,
@@ -615,10 +823,30 @@ mod testler {
         assert!(!ilk_uc.contains("Sepet önbellekten okundu"));
     }
 
-    /// Özeti ekran yerine bir bayt dizisine yazar ve metin olarak döndürür.
-    fn ozet(log: &Log<'_>, ayarlar: &RaporAyarlari) -> String {
+    #[test]
+    fn ozet_sayilari_ve_gosterilecek_satirlar() {
+        let log = kayitlari_ayir(ORNEK_LOG);
+        let ozet = Ozet::hesapla(
+            Path::new("ornek.log"),
+            ORNEK_LOG,
+            &log,
+            &RaporAyarlari::default(),
+        );
+
+        assert_eq!(ozet.satir_sayisi, 203);
+        assert_eq!(ozet.kayit_sayisi, 59);
+        assert!(ozet.tek_gun());
+        assert_eq!(ozet.seviyeler[0], (Seviye::Critical, 2));
+        assert_eq!(ozet.seviyeler.last(), Some(&(Seviye::Debug, 3)));
+        assert_eq!(ozet.gosterilecek_satirlar().len(), 10);
+        assert_eq!(ozet.gosterilmeyen(), 14);
+    }
+
+    /// Metin raporunu ekran yerine bir bayt dizisine yazar ve metin olarak döndürür.
+    fn metin_raporu(log: &Log<'_>, ayarlar: &RaporAyarlari) -> String {
+        let ozet = Ozet::hesapla(Path::new("ornek.log"), ORNEK_LOG, log, ayarlar);
         let mut cikti = Vec::new();
-        ozet_yaz(&mut cikti, Path::new("ornek.log"), ORNEK_LOG, log, ayarlar).unwrap();
+        metin_yaz(&mut cikti, &ozet).unwrap();
         String::from_utf8(cikti).unwrap()
     }
 }

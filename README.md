@@ -34,8 +34,14 @@ ne zaman başladı ve kodun neresinde oluşuyor.
 - Her satır için en yüksek seviyeyi, ilk ve son görülme zamanını, maskelenmemiş bir örnek
   mesajı ve hatanın konumunu gösterir. Tablo önem sırasına göre dizilir: en ciddi hatalar
   en üstte.
-- Benzerlik eşiği, tablonun uzunluğu ve sırası [komut satırından](#kullanım) değiştirilebilir:
-  `--esik 0,8`, `--ilk 20`, `--hepsi`, `--siralama adet`. Yazım hatalarında öneri verir.
+- Benzerlik eşiği, tablonun uzunluğu, sırası ve biçimi [komut satırından](#kullanım)
+  değiştirilebilir: `--esik 0,8`, `--ilk 20`, `--hepsi`, `--siralama adet`, `--bicim json`.
+  Yazım hatalarında öneri verir.
+- Özeti üç biçimde yazar: terminal için metin, başka programlar (jq, CI adımları) için
+  [JSON](#json-ve-markdown-çıktısı) ve GitHub issue'larına yapıştırmak için Markdown.
+- Log mesajlarındaki kontrol karakterlerini (ESC, CR...) görünür sembollere çevirir: logu
+  yazabilen biri raporun ekranda nasıl göründüğünü değiştiremez
+  ([terminal güvenliği](#terminal-güvenliği)).
 - Geçersiz UTF-8 baytları içeren dosyalarda durmaz; bu baytları `�` ile değiştirip uyarır.
 - Çıktısı başka bir programa yönlendirilebilir (`veylog laravel.log | head`); okuyan program
   erken kapansa da çökmez.
@@ -98,7 +104,7 @@ laravel.log
   → maskele           27 farklı mesaj
   → Drain             23 kalıp
   → parmak izi        24 grup
-  → kalıp raporu
+  → özet              metin, JSON ya da Markdown olarak yazılır
 ```
 
 ### Maskeleme
@@ -243,8 +249,8 @@ aynı olan kayıtlar tablonun bir satırını oluşturur. Her satıra şu bilgil
   açılabilir.
 
 Tablo varsayılan olarak önem sırasına göre dizilir: önce seviye, aynı seviyede adet. İlk 10
-satır gösterilir; gösterilmeyen satır sayısı tablonun altında yazar. Üç sıralama vardır
-(`--siralama`):
+satır gösterilir; gösterilmeyen satır sayısı tablonun altında (JSON'da `gosterilmeyen`
+alanında) yazar. Üç sıralama vardır (`--siralama`):
 
 | Sıralama | Ölçüt | Ne zaman işe yarar? |
 |---|---|---|
@@ -267,7 +273,7 @@ gibi virgüllü ondalık sayıları (`0,8`) tanımıyor. Kendi ayrıştırıcım
 - Değer boşlukla (`--esik 0,8`), `=` ile (`--esik=0,8`) ya da kısa seçeneklerde bitişik
   (`-n20`) verilebilir.
 - Tek başına `-` ve `--`'dan sonraki her şey dosya adıdır: `veylog -- -garip-ad.log`.
-- Türkçe karakterli yazımlar da geçerlidir: `--eşik`, `--sıralama önem`, `--yardım`.
+- Türkçe karakterli yazımlar da geçerlidir: `--eşik`, `--sıralama önem`, `--biçim`, `--yardım`.
 - Argümanlar işletim sisteminin verdiği ham haliyle (`OsString`) okunur. Linux'ta bir dosya
   adı geçerli UTF-8 olmayabilir; program böyle bir adla da çökmez.
 - Tanınmayan bir seçeneğe en çok benzeyen seçenek önerilir. Benzerlik
@@ -275,6 +281,195 @@ gibi virgüllü ondalık sayıları (`0,8`) tanımıyor. Kendi ayrıştırıcım
   birini ötekine çevirmek için gereken en az harf ekleme, silme ya da değiştirme sayısı
   (`--esk` → `--esik`: 1). Yanlış öneri vermemek için 5 harften kısa adlarda en fazla 1,
   uzunlarda en fazla 2 harf farka izin verilir.
+
+### JSON ve Markdown çıktısı
+
+Özet bir kez hesaplanır, sonra istenen biçimde yazılır; bu yüzden üç biçimdeki sayılar hep
+aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
+
+**JSON** (`--bicim json`) başka programların okuması içindir. Örnek logun yalnızca ilk
+satırıyla (`--ilk 1`):
+
+```json
+{
+  "surum": "0.1.0",
+  "dosya": "ornekler/laravel.log",
+  "satir_sayisi": 203,
+  "kayit_sayisi": 59,
+  "devam_satiri_sayisi": 141,
+  "yetim_satir_sayisi": 3,
+  "zaman_araligi": {
+    "en_eski": "2026-10-24 08:59:58",
+    "en_yeni": "2026-10-24 18:31:07"
+  },
+  "seviyeler": {
+    "CRITICAL": 2,
+    "ERROR": 16,
+    "WARNING": 6,
+    "NOTICE": 1,
+    "INFO": 31,
+    "DEBUG": 3
+  },
+  "kaliplar": {
+    "ham_mesaj_sayisi": 45,
+    "maskeli_mesaj_sayisi": 27,
+    "kalip_sayisi": 23,
+    "grup_sayisi": 24,
+    "esik": 0.7,
+    "siralama": "onem",
+    "gosterilmeyen": 23,
+    "satirlar": [
+      {
+        "adet": 2,
+        "seviye": "CRITICAL",
+        "ilk": "2026-10-24 17:05:13",
+        "son": "2026-10-24 17:06:45",
+        "kalip": "Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]",
+        "ornek": "Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]",
+        "istisna": {
+          "sinif": "RedisException",
+          "dosya": "app/Http/Middleware/HizSiniri.php",
+          "satir": 22
+        }
+      }
+    ]
+  }
+}
+```
+
+- Hiçbir şey kısaltılmaz: kalıplar, örnekler ve zamanlar tam haliyle yazılır. Terminalde 80
+  karakterde kesilen SQL kalıbı JSON'da 257 karakterin tamamıdır. Sınıf adı da tam
+  haliyledir: `Illuminate\Database\UniqueConstraintViolationException`.
+- `istisna`, kayıtlar bir istisnadan gelmiyorsa `null`'dır. İstisnanın uygulama kodunda yeri
+  bulunamadıysa `dosya` ve `satir` `null`'dır.
+- `seviyeler` yalnızca logda geçen seviyeleri, en önemlisi başta olacak şekilde içerir.
+- `satirlar` en fazla `--ilk` kadar satırdır; `gosterilmeyen` dışarıda kalanların sayısıdır.
+  Bütün satırlar için `--hepsi`.
+
+[jq](https://jqlang.org) ile birkaç kullanım:
+
+```bash
+# Tablonun en önemli satırı
+veylog --bicim json --hepsi laravel.log | jq '.kaliplar.satirlar[0]'
+
+# Hatalar ve uygulama kodundaki yerleri, sekmeyle ayrılmış
+veylog --bicim json --hepsi laravel.log | jq -r '.kaliplar.satirlar[]
+  | select(.seviye == "CRITICAL" or .seviye == "ERROR")
+  | "\(.adet)\t\(.istisna.dosya // "-")\t\(.kalip)"'
+
+# CI adımı: logda CRITICAL varsa başarısız ol (jq -e, sonuç false ise 1 koduyla çıkar)
+veylog --bicim json laravel.log | jq -e '.seviyeler.CRITICAL // 0 | . == 0'
+```
+
+JSON'u yazmak için kütüphane kullanılmadı. Rust'ta alışılmış yol
+[serde](https://serde.rs)'nin `#[derive(Serialize)]` özelliğidir, ama programın
+bağımlılıklarını 5 paketten 15'e çıkarırdı; yalnızca serde_json bile 9'a. veylog JSON'u
+yalnızca yazıyor, okumuyor ve kurallar kısa ([RFC 8259](https://www.rfc-editor.org/rfc/rfc8259)):
+
+- JSON değeri bir `enum` ile modellenir (`Yok`, `Sayi`, `Ondalik`, `Metin`, `Dizi`, `Nesne`)
+  ve özyinelemeli olarak yazılır. Nesnelerin alanları eklendikleri sırayla yazılır.
+- Metinlerde `"` ve `\` kaçılır; kontrol karakterleri `\n`, `\t` gibi kısa biçimleriyle ya da
+  `\u001b` olarak yazılır. RFC'nin zorunlu tuttuğu U+0000–U+001F'ye ek olarak DEL ve C1
+  karakterleri de kaçılır; böylece JSON doğrudan terminale yazıldığında da güvenlidir. Türkçe
+  harfler olduğu gibi kalır.
+- NaN ve sonsuz JSON'da olmadığı için `null` yazılır.
+
+Testler çıktıyı [serde_json](https://crates.io/crates/serde_json) ile ayrıştırarak denetler:
+tırnak, ters bölü, ESC, emoji gibi zor metinler yazılıp geri okunduğunda aynısı çıkmalı.
+
+**Markdown** (`--bicim markdown`) GitHub issue ve PR açıklamalarına yapıştırmak içindir:
+
+```text
+$ veylog --bicim markdown --ilk 2 ornekler/laravel.log
+## veylog: `ornekler/laravel.log`
+
+- **Satır:** 203 · **Kayıt:** 59 · **Devam satırı:** 141 · **Yetim satır:** 3
+- **Zaman aralığı:** 2026-10-24 08:59:58 → 2026-10-24 18:31:07
+- **Seviyeler:** CRITICAL 2 · ERROR 16 · WARNING 6 · NOTICE 1 · INFO 31 · DEBUG 3
+- **Kalıplar:** 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp (eşik 0,7) → parmak iziyle 24 grup
+
+| Adet | Seviye | İlk | Son | Kalıp | Örnek | Konum |
+|---:|---|---|---|---|---|---|
+| 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22` RedisException |
+| 6 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64` ConnectionException |
+
+… 22 satır daha; tümünü görmek için `--hepsi`
+```
+
+Markdown'da logdan gelen metin için üç tuzak var; üçü de GitHub'ın ayrıştırıcısıyla
+([cmark-gfm](https://github.com/github/cmark-gfm)) denendi:
+
+- `<SAYI>`, `<IP>` gibi yer tutucular düz metin olsa HTML etiketi sanılıp silinir. Bu yüzden
+  logdan gelen her metin satır içi kod olarak yazılır; kodun içinde `<`, `*` ve `_` olduğu
+  gibi görünür.
+- SQL mesajlarındaki ters tırnaklar (`` `siparisler` ``) tek ters tırnaklı kodu ortadan
+  böler. Kod, açan çerçeveyle aynı uzunluktaki ilk ters tırnak dizisinde kapandığı için
+  çerçeve, metindeki en uzun ters tırnak dizisinden bir uzun seçilir ve iki yanına boşluk
+  konur: ``` `` select * from `siparisler` `` ```.
+- `|` tabloda sütun ayırıcıdır, kodun içinde bile; hücrelerde `\|` yazılır. Bu kaçış yalnızca
+  tabloda geçerlidir: tablo dışında `\|` ters bölüyle birlikte görünür. Bu yüzden başlıktaki
+  dosya adında yapılmaz.
+
+Ayrıca CR, Markdown'da da satır sonudur ve tablonun satırını ikiye böler; kontrol
+karakterleri bu yüzden önce sembollere çevrilir (aşağıda).
+
+### Terminal güvenliği
+
+Log mesajları güvenilmez metindir: bir form alanı, bir URL ya da bir HTTP başlığı olduğu
+gibi loga düşebilir. Laravel mesajı dosyaya ham yazar; bağlam dizisi ise JSON olduğu için
+kaçışlıdır. Laravel 13.38'de:
+
+```php
+$ad = "Ali\e[1A\e[2K";   // kullanıcının forma yazdığı ad
+Log::info("Kullanıcı kaydoldu: $ad", ['ad' => $ad]);
+```
+
+```text
+[2026-10-26 08:31:30] local.INFO: Kullanıcı kaydoldu: Ali␛[1A␛[2K {"ad":"Ali\u001b[1A\u001b[2K"}
+```
+
+(Burada ␛, dosyadaki ham ESC baytını gösteriyor.)
+
+Terminal, ESC ile başlayan dizileri yazı olarak değil komut olarak okur: `\e[1A` imleci bir
+satır yukarı alır, `\e[2K` o satırı siler. CR (`\r`) imleci satır başına götürür, ardından
+gelen yazı öncekinin üstüne yazılır. Böyle bir mesaj olduğu gibi terminale yazılırsa
+kendinden önceki satırları silebilir; bir log özetinde bu, en önemli hatanın ekrandan
+kaybolması demektir. Şu üç satırlık log (␛ ve ␍ yine ham baytları gösteriyor), veylog'un
+önceki sürümünde CRITICAL satırını ve tablo başlığını ekrandan siliyordu:
+
+```text
+[2026-10-24 10:00:00] local.CRITICAL: Veritabani coktu
+[2026-10-24 10:00:01] local.INFO: Giris ␛[1A␛[2K␛[1A␛[2Kyapildi
+[2026-10-24 10:00:02] local.INFO: Odeme tamam␍HATA: kart reddedildi
+```
+
+Metin ve Markdown çıktısı bu yüzden logdan ve dosya adından gelen her metni temizler:
+
+```text
+     1  CRITICAL   10:00:00  10:00:00  Veritabani coktu
+     1  INFO       10:00:01  10:00:01  Giris ␛[1A␛[2K␛[1A␛[2Kyapildi
+     1  INFO       10:00:02  10:00:02  Odeme tamam HATA: kart reddedildi
+                                       örnek: Odeme tamam␍HATA: kart reddedildi
+```
+
+- U+0000–U+001F arasındaki kontrol karakterleri, Unicode'un "Control Pictures" bloğunda aynı
+  sırayla dizilmiş sembollerine çevrilir (U+2400 + kod): ESC → ␛, CR → ␍, sekme → ␉. Bir
+  karakter yine tek karakter kalır; tablonun hizası bozulmaz.
+- DEL (U+007F) → ␡. C1 karakterlerinin (U+0080–U+009F) sembolü yoktur, `\u{9b}` diye
+  yazılır; VTE tabanlı terminaller, kitty ve WezTerm bunları da komut olarak okur.
+- Kullanıcının yazdığı argümanları geri yazan hata mesajları da aynı temizlikten geçer.
+- JSON'da veri kaybı yoktur: ham mesaj kaçışlarıyla eksiksiz yazılır (`\u001b`), okuyan
+  program aslını alır.
+
+Bu bilinen bir açık sınıfıdır ([CWE-150](https://cwe.mitre.org/data/definitions/150.html)).
+Terminal emülatörlerinde bu yolla bulunan açıklar için
+[ANSI Terminal security in 2023 and finding 10 CVEs](https://dgl.cx/2023/09/ansi-terminal-security),
+bir log kütüphanesindeki karşılığı için Rust'ın tracing-subscriber kütüphanesinde düzeltilen
+[CVE-2025-58160](https://advisories.gitlab.com/cargo/tracing-subscriber/CVE-2025-58160/)
+incelenebilir.
+
+Laravel tarafı için bir ipucu: kullanıcıdan gelen değeri mesaja gömmek yerine bağlama koyun
+(`Log::info('Kullanıcı kaydoldu', ['ad' => $ad])`); bağlam JSON olarak kaçışlı yazılır.
 
 ### Bilinen sınırlamalar
 
@@ -297,6 +492,11 @@ gibi virgüllü ondalık sayıları (`0,8`) tanımıyor. Kendi ayrıştırıcım
   için konum, istisnanın fırlatıldığı yer olur.
 - Aynı dosyada farklı zaman biçimleri ya da saat dilimleri karışırsa zaman aralığı ve
   `--siralama yeni` yanlış sıralanabilir.
+- ANSI renk kodları (`␛[31m`) rakam içerdiği için Drain onları değişken sayar; renk kodlu
+  kısa mesajlar aynı uzunluktaki başka mesajlarla birleşebilir.
+- Yazı yönünü değiştiren Unicode karakterleri (ör. U+202E, "Trojan Source") temizlenmez.
+  Kontrol karakteri değiller ve terminali yönetemezler, ama destekleyen terminallerde ve
+  GitHub'da yazının görünüşünü karıştırabilirler.
 - Tek seferde yalnızca bir log dosyası okunur.
 - Dosyanın tamamı belleğe okunuyor; çok büyük dosyalar için satır satır okuma ileride eklenecek.
 
@@ -327,6 +527,7 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `-n`, `--ilk <sayı>` | Tabloda gösterilecek satır sayısı. | 10 |
 | `--hepsi` | Tablonun tamamını göster. | |
 | `-s`, `--siralama <ölçüt>` | Tablonun sırası: `onem`, `adet` ya da `yeni` ([ayrıntılar](#kalıp-raporu)). | `onem` |
+| `-b`, `--bicim <ad>` | Çıktının biçimi: `metin`, `json` ya da `markdown` ([ayrıntılar](#json-ve-markdown-çıktısı)). | `metin` |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
 
@@ -339,6 +540,12 @@ veylog --esik 0,8 --ilk 20 storage/logs/laravel.log
 
 # Son ortaya çıkan sorunlar önce, tablonun tamamı
 veylog --siralama yeni --hepsi storage/logs/laravel.log
+
+# JSON: bütün satırlar, jq ile en önemlisi
+veylog --bicim json --hepsi storage/logs/laravel.log | jq '.kaliplar.satirlar[0]'
+
+# Markdown: GitHub issue'suna yapıştırmak için
+veylog --bicim markdown storage/logs/laravel.log > rapor.md
 
 # Derlemeden çalıştırırken: cargo'nun seçenekleriyle karışmasın diye önce --
 cargo run -- --ilk 5 ornekler/laravel.log
@@ -359,18 +566,24 @@ Ayrıntılar için: veylog --yardim
 
 ```text
 src/
-├── main.rs         programın girişi: dosyayı okur, raporu yazar, çıkış kodlarını belirler
+├── main.rs         programın girişi: dosyayı okur, özeti istenen biçimde yazar, çıkış kodlarını belirler
 ├── komut_satiri.rs komut satırı: seçenekler, yardım metni, hata mesajları
 ├── kayit.rs        log metnini kayıtlara ayırır: başlık, seviye, mesaj, bağlam, devam satırları
 ├── maske.rs        mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
 ├── drain.rs        Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
 ├── parmak_izi.rs   hata parmak izi: istisna sınıfı ve uygulama kodundaki ilk satır
-└── rapor.rs        özet raporu: sayılar, seviyeler, kalıp tablosu ve sıralamalar
+├── rapor.rs        özet: sayılar, seviyeler, kalıp tablosu, sıralamalar; metin çıktısı ve
+│                   kontrol karakterlerinin temizlenmesi
+├── json.rs         JSON çıktısı: kütüphanesiz JSON yazıcı
+└── markdown.rs     Markdown çıktısı: GitHub'a yapıştırılabilir tablo
 tests/
-└── cli.rs          programı gerçekten çalıştıran testler: argümanlar, hata mesajları, çıkış kodları
+└── cli.rs          programı gerçekten çalıştıran testler: argümanlar, biçimler, hata mesajları, çıkış kodları
 ```
 
-Dış kütüphane olarak yalnızca [regex](https://crates.io/crates/regex) kullanılır.
+Program yalnızca [regex](https://crates.io/crates/regex) kütüphanesini kullanır. Testler JSON
+çıktısını doğrulamak için [serde_json](https://crates.io/crates/serde_json)'ı da kullanır; bu
+bir geliştirme bağımlılığıdır (`[dev-dependencies]`), `cargo build` ve `cargo install` onu
+derlemez.
 
 ## Testler
 
@@ -379,7 +592,10 @@ cargo test
 ```
 
 İki tür test çalışır: `src` içindeki birim testleri her parçayı ayrı ayrı sınar;
-`tests/cli.rs` ise derlenmiş programı çalıştırıp kullanıcının gördüğünü kontrol eder.
+`tests/cli.rs` ise derlenmiş programı çalıştırıp kullanıcının gördüğünü kontrol eder. JSON
+çıktısı serde_json ile ayrıştırılır, Markdown tablosunun satırları sayılır ve kontrol
+karakterleriyle dolu bir logda, üç biçimin hiçbirine tek bir kontrol karakterinin
+sızmadığı denetlenir.
 
 ## Örnek log hakkında
 
@@ -400,6 +616,7 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] Kalıp raporu: en yüksek seviye, ilk/son görülme zamanı, örnek mesaj
 - [x] Hata parmak izi: istisna sınıfı ve uygulamadaki ilk satır
 - [x] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı, sıralama
-- [ ] JSON ve Markdown çıktısı
+- [x] JSON ve Markdown çıktısı
+- [x] Terminal güvenliği: logdaki kontrol karakterleri terminale komut olarak ulaşmaz
 - [ ] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar
 - [ ] Ani hata artışlarını yakalama (medyan + MAD)

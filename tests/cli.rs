@@ -143,6 +143,143 @@ fn gecersiz_utf8_dosyayi_durdurmaz() {
     assert!(metin(&cikti.stdout).contains("Kayıt         : 2"));
 }
 
+#[cfg(unix)]
+#[test]
+fn kontrol_karakterli_dosya_adi_temizlenir() {
+    // Linux'ta dosya adı ESC de içerebilir: hem uyarıda hem raporun ilk satırında sembol olmalı
+    let yol = gecici_dosya(
+        "kötü\u{1b}[2J.log",
+        b"[2026-10-24 10:00:00] local.INFO: Bozuk \xff bayt\n",
+    );
+    let cikti = veylog(&[yol.to_str().unwrap()]);
+    fs::remove_file(&yol).ok();
+
+    assert!(cikti.status.success());
+    let stderr = metin(&cikti.stderr);
+    assert!(stderr.contains("kötü␛[2J.log geçersiz UTF-8"), "{stderr}");
+    assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
+    let stdout = metin(&cikti.stdout);
+    assert!(stdout.contains("kötü␛[2J.log: 1 satır\n"), "{stdout}");
+    assert!(!stdout.contains('\u{1b}'), "{stdout:?}");
+}
+
+#[test]
+fn json_bicimi_gecerli_ve_tam() {
+    let cikti = veylog(&["--bicim", "json", "--hepsi", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    assert!(cikti.stderr.is_empty(), "{}", metin(&cikti.stderr));
+
+    // Başka bir programın yapacağı gibi: çıktıyı bir JSON ayrıştırıcısına ver
+    let rapor: serde_json::Value =
+        serde_json::from_slice(&cikti.stdout).expect("geçerli JSON değil");
+    assert_eq!(rapor["surum"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(rapor["kayit_sayisi"], 59);
+    assert_eq!(rapor["kaliplar"]["grup_sayisi"], 24);
+    // --hepsi: bütün satırlar, gösterilmeyen yok
+    assert_eq!(rapor["kaliplar"]["satirlar"].as_array().unwrap().len(), 24);
+    assert_eq!(rapor["kaliplar"]["gosterilmeyen"], 0);
+}
+
+#[test]
+fn markdown_bicimi_tablo_yazar() {
+    let cikti = veylog(&["-b", "markdown", "-n", "2", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.starts_with("## veylog: `ornekler/laravel.log`\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("| Adet | Seviye | İlk | Son | Kalıp | Örnek | Konum |\n"),
+        "{stdout}"
+    );
+    // Başlık, ayraç ve --ilk kadar satır
+    let tablo_satirlari = stdout
+        .lines()
+        .filter(|satir| satir.starts_with('|'))
+        .count();
+    assert_eq!(tablo_satirlari, 4, "{stdout}");
+    assert!(
+        stdout.ends_with("… 22 satır daha; tümünü görmek için `--hepsi`\n"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn bilinmeyen_bicim_kullanim_hatasi_verir() {
+    let cikti = veylog(&["--bicim", "xml", "ornekler/laravel.log"]);
+    assert_eq!(cikti.status.code(), Some(2));
+    assert!(cikti.stdout.is_empty());
+    let stderr = metin(&cikti.stderr);
+    assert!(
+        stderr.contains("şunlardan biri olmalı: metin, json, markdown"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn logdaki_kontrol_karakterleri_terminale_ulasmaz() {
+    // İkinci mesajdaki ESC dizileri imleci iki satır yukarı alıp o satırları siler: eski
+    // sürümde CRITICAL satırı ekrandan kayboluyordu. Üçüncüsü pencere başlığını değiştirir
+    // ve CR ile satır başına dönüp yazdığının üstüne yazar.
+    let yol = gecici_dosya(
+        "kontrol.log",
+        "[2026-10-24 10:00:00] local.CRITICAL: Veritabanı çöktü\n\
+         [2026-10-24 10:00:01] local.INFO: Giriş \u{1b}[1A\u{1b}[2K\u{1b}[1A\u{1b}[2Kyapıldı\n\
+         [2026-10-24 10:00:02] local.INFO: \u{1b}]0;başlık\u{7}Ödeme tamam\rHATA\n"
+            .as_bytes(),
+    );
+    let yol_metni = yol.to_str().unwrap();
+    let ciktilar: Vec<(&str, Output)> = ["metin", "json", "markdown"]
+        .into_iter()
+        .map(|bicim| (bicim, veylog(&["--bicim", bicim, yol_metni])))
+        .collect();
+    fs::remove_file(&yol).ok();
+
+    for (bicim, cikti) in &ciktilar {
+        assert!(cikti.status.success(), "{bicim}");
+        let stdout = metin(&cikti.stdout);
+        let kalanlar: Vec<char> = stdout
+            .chars()
+            .filter(|&harf| harf.is_control() && harf != '\n')
+            .collect();
+        assert!(kalanlar.is_empty(), "{bicim}: {kalanlar:?}");
+        assert!(stdout.contains("Veritabanı çöktü"), "{bicim}: {stdout}");
+    }
+
+    // JSON ham mesajı kaybetmez: kaçışları çözülünce logdaki metnin aynısı çıkar
+    let rapor: serde_json::Value = serde_json::from_slice(&ciktilar[1].1.stdout).unwrap();
+    let ornekler: Vec<&str> = rapor["kaliplar"]["satirlar"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|satir| satir["ornek"].as_str().unwrap())
+        .collect();
+    assert!(
+        ornekler.contains(&"\u{1b}]0;başlık\u{7}Ödeme tamam\rHATA"),
+        "{ornekler:?}"
+    );
+}
+
+#[test]
+fn hata_mesajlarindaki_argumanlar_temizlenir() {
+    // Dosya adı da fazladan argüman da kullanıcıdan gelir ve hata mesajında geri yazılır
+    for (argumanlar, beklenen, cikis_kodu) in [
+        (&["yok\u{1b}[2J.log"][..], "yok␛[2J.log okunamadı", 1),
+        (
+            &["a.log", "b\u{1b}[31m.log"],
+            "fazladan argüman: b␛[31m.log",
+            2,
+        ),
+    ] {
+        let cikti = veylog(argumanlar);
+        assert_eq!(cikti.status.code(), Some(cikis_kodu), "{argumanlar:?}");
+        let stderr = metin(&cikti.stderr);
+        assert!(stderr.contains(beklenen), "{stderr}");
+        assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
+    }
+}
+
 #[test]
 fn iso_8601_zamanli_log_okunur() {
     let yol = gecici_dosya(

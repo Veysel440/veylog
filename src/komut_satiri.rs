@@ -3,6 +3,7 @@
 //! ```text
 //! veylog [SEÇENEKLER] <log-dosyası>
 //! veylog --esik 0,8 --ilk 20 --siralama yeni storage/logs/laravel.log
+//! veylog --bicim json --hepsi storage/logs/laravel.log
 //! ```
 //!
 //! Ayrıştırma kuralları:
@@ -23,16 +24,56 @@ use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
 pub const KULLANIM: &str = "Kullanım: veylog [SEÇENEKLER] <log-dosyası>";
 
 /// Bilinen uzun seçenekler. Yazım hatası yapıldığında öneri bu listeden seçilir.
-const UZUN_SECENEKLER: [&str; 8] = [
+const UZUN_SECENEKLER: [&str; 9] = [
     "--esik",
     "--ilk",
     "--hepsi",
     "--siralama",
+    "--bicim",
     "--yardim",
     "--surum",
     "--help",
     "--version",
 ];
+
+/// Çıktının biçimi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bicim {
+    /// Terminal için hizalı tablo.
+    Metin,
+    /// Başka programlar için: jq, CI adımları, betikler.
+    Json,
+    /// GitHub issue ve PR'larına yapıştırmak için.
+    Markdown,
+}
+
+impl Bicim {
+    /// Bütün biçimler. Yardım metni ve hata mesajları bu listeden üretilir.
+    pub const HEPSI: [Bicim; 3] = [Bicim::Metin, Bicim::Json, Bicim::Markdown];
+
+    /// Komut satırındaki adı.
+    pub fn ad(self) -> &'static str {
+        match self {
+            Bicim::Metin => "metin",
+            Bicim::Json => "json",
+            Bicim::Markdown => "markdown",
+        }
+    }
+
+    /// Yardım metnindeki açıklaması.
+    pub fn aciklama(self) -> &'static str {
+        match self {
+            Bicim::Metin => "terminal için tablo",
+            Bicim::Json => "başka programlar için (jq, CI adımları)",
+            Bicim::Markdown => "GitHub issue ve PR'larına yapıştırmak için",
+        }
+    }
+
+    /// Komut satırındaki adından biçime çevirir: "json" → Bicim::Json
+    pub fn ayristir(ad: &str) -> Option<Bicim> {
+        Bicim::HEPSI.into_iter().find(|bicim| bicim.ad() == ad)
+    }
+}
 
 /// Komut satırının istediği iş.
 #[derive(Debug)]
@@ -45,11 +86,12 @@ pub enum Komut {
     Surum,
 }
 
-/// Özet için gereken her şey: hangi dosya, hangi ayarlarla.
+/// Özet için gereken her şey: hangi dosya, hangi ayarlarla, hangi biçimde.
 #[derive(Debug)]
 pub struct Secenekler {
     pub dosya: PathBuf,
     pub rapor: RaporAyarlari,
+    pub bicim: Bicim,
 }
 
 /// Komut satırındaki bir yanlışlık. Program bunu yazar ve 2 koduyla çıkar.
@@ -117,6 +159,7 @@ where
     I: IntoIterator<Item = OsString>,
 {
     let mut rapor = RaporAyarlari::default();
+    let mut bicim = Bicim::Metin;
     let mut dosya: Option<PathBuf> = None;
     let mut secenekler_bitti = false;
     let mut argumanlar = argumanlar.into_iter();
@@ -161,6 +204,10 @@ where
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
                 rapor.siralama = siralama_ayristir(ad, &deger)?;
             }
+            "-b" | "--bicim" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                bicim = bicim_ayristir(ad, &deger)?;
+            }
             "-h" | "--yardim" | "--help" => {
                 deger_almaz(ad, bitisik)?;
                 return Ok(Komut::Yardim);
@@ -177,7 +224,11 @@ where
     }
 
     let dosya = dosya.ok_or(SecenekHatasi::DosyaYok)?;
-    Ok(Komut::Ozet(Secenekler { dosya, rapor }))
+    Ok(Komut::Ozet(Secenekler {
+        dosya,
+        rapor,
+        bicim,
+    }))
 }
 
 /// `--yardim` ile gösterilen metin. Varsayılan değerler ayarların kendisinden okunur; böylece
@@ -187,6 +238,10 @@ pub fn yardim_metni() -> String {
     let siralamalar: String = Siralama::HEPSI
         .iter()
         .map(|siralama| format!("{:28}{:<6}{}\n", "", siralama.ad(), siralama.aciklama()))
+        .collect();
+    let bicimler: String = Bicim::HEPSI
+        .iter()
+        .map(|bicim| format!("{:28}{:<10}{}\n", "", bicim.ad(), bicim.aciklama()))
         .collect();
 
     format!(
@@ -201,12 +256,14 @@ Seçenekler:
   -n, --ilk <sayı>        Tabloda gösterilecek satır sayısı. [varsayılan: {VARSAYILAN_ILK}]
       --hepsi             Tablonun tamamını göster.
   -s, --siralama <ölçüt>  Tablonun sırası. [varsayılan: {siralama}]
-{siralamalar}  -h, --yardim            Bu yardımı göster.
+{siralamalar}  -b, --bicim <ad>        Çıktının biçimi. [varsayılan: {bicim}]
+{bicimler}  -h, --yardim            Bu yardımı göster.
   -V, --surum             Sürümü göster.
 
 Seçenekler dosya adından önce ya da sonra yazılabilir. Değer boşlukla ya da \"=\" ile
 verilir (--esik 0,8 ya da --esik=0,8); ondalık ayracı virgül de olabilir, nokta da.
-Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem).
+Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biçim).
+--ilk ve --siralama her biçimde geçerlidir; JSON'da bütün satırlar için --hepsi.
 
 Çıkış kodları: 0 başarılı, 1 dosya okunamadı ya da çıktı yazılamadı, 2 kullanım hatası.
 
@@ -214,10 +271,13 @@ Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem).
   veylog storage/logs/laravel.log
   veylog --esik 0,8 --ilk 20 storage/logs/laravel.log
   veylog --siralama yeni --hepsi storage/logs/laravel.log
+  veylog --bicim json --hepsi storage/logs/laravel.log | jq '.kaliplar.satirlar[0]'
+  veylog --bicim markdown storage/logs/laravel.log > rapor.md
 ",
         surum = env!("CARGO_PKG_VERSION"),
         esik = ondalik(varsayilan.drain.benzerlik_esigi),
         siralama = varsayilan.siralama.ad(),
+        bicim = Bicim::Metin.ad(),
     )
 }
 
@@ -296,6 +356,18 @@ fn siralama_ayristir(ad: &str, deger: &str) -> Result<Siralama, SecenekHatasi> {
             .iter()
             .map(|siralama| siralama.ad())
             .collect();
+        gecersiz(
+            ad,
+            deger,
+            format!("şunlardan biri olmalı: {}", adlar.join(", ")),
+        )
+    })
+}
+
+/// `--bicim`: biçimlerden birinin adı.
+fn bicim_ayristir(ad: &str, deger: &str) -> Result<Bicim, SecenekHatasi> {
+    Bicim::ayristir(&sadelestir(deger)).ok_or_else(|| {
+        let adlar: Vec<&str> = Bicim::HEPSI.iter().map(|bicim| bicim.ad()).collect();
         gecersiz(
             ad,
             deger,
@@ -390,6 +462,23 @@ mod testler {
         assert_eq!(secenekler.rapor.drain.benzerlik_esigi, 0.7);
         assert_eq!(secenekler.rapor.ilk, Some(VARSAYILAN_ILK));
         assert_eq!(secenekler.rapor.siralama, Siralama::Onem);
+        assert_eq!(secenekler.bicim, Bicim::Metin);
+    }
+
+    #[test]
+    fn bicim_secilebilir() {
+        for (argumanlar, beklenen) in [
+            (&["--bicim", "json", "a.log"][..], Bicim::Json),
+            (&["-b", "markdown", "a.log"], Bicim::Markdown),
+            (&["--biçim=json", "a.log"], Bicim::Json),
+            (&["-bmetin", "a.log"], Bicim::Metin),
+        ] {
+            assert_eq!(ozet(argumanlar).bicim, beklenen, "{argumanlar:?}");
+        }
+        assert_eq!(
+            hata(&["--bicim", "xml", "a.log"]).to_string(),
+            "--bicim için geçersiz değer \"xml\": şunlardan biri olmalı: metin, json, markdown"
+        );
     }
 
     #[test]
@@ -590,8 +679,12 @@ mod testler {
         assert!(metin.contains(KULLANIM));
         assert!(metin.contains("[varsayılan: 0,7]"));
         assert!(metin.contains("[varsayılan: 10]"));
+        assert!(metin.contains("[varsayılan: metin]"));
         for siralama in Siralama::HEPSI {
             assert!(metin.contains(siralama.ad()), "{}", siralama.ad());
+        }
+        for bicim in Bicim::HEPSI {
+            assert!(metin.contains(bicim.aciklama()), "{}", bicim.ad());
         }
     }
 

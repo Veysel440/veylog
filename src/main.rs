@@ -1,8 +1,10 @@
 //! veylog: Laravel log dosyalarını özetleyen komut satırı aracı.
 
 mod drain;
+mod json;
 mod kayit;
 mod komut_satiri;
+mod markdown;
 mod maske;
 mod parmak_izi;
 mod rapor;
@@ -14,8 +16,8 @@ use std::io::{self, BufWriter, Write};
 use std::process;
 
 use kayit::kayitlari_ayir;
-use komut_satiri::{KULLANIM, Komut};
-use rapor::ozet_yaz;
+use komut_satiri::{Bicim, KULLANIM, Komut};
+use rapor::{Ozet, gorunur};
 
 fn main() {
     // `args_os`: argümanları işletim sisteminin verdiği ham haliyle alır. `args` ise geçerli
@@ -37,19 +39,24 @@ fn main() {
         }
         Err(hata) => {
             // Kullanım hataları 2 koduyla biter; dosya ve çıktı hataları 1 ile. Böylece onu
-            // çağıran bir betik hatanın türünü ayırt edebilir.
-            eprintln!("veylog: {hata}");
+            // çağıran bir betik hatanın türünü ayırt edebilir. Mesaj kullanıcının yazdığı
+            // argümanları içerebilir; içlerindeki kontrol karakterleri terminale ham gitmesin.
+            eprintln!("veylog: {}", gorunur(&hata.to_string()));
             eprintln!("{KULLANIM}");
             eprintln!("Ayrıntılar için: veylog --yardim");
             process::exit(2);
         }
     };
     let yol = &secenekler.dosya;
+    // Yolun mesajlarda gösterilecek hali: geçersiz UTF-8 baytları �, kontrol karakterleri
+    // sembol olur (Linux'ta bir dosya adı ESC de içerebilir)
+    let yol_metni = yol.display().to_string();
+    let gosterilen_yol = gorunur(&yol_metni);
 
     let baytlar = match fs::read(yol) {
         Ok(baytlar) => baytlar,
         Err(hata) => {
-            eprintln!("{} okunamadı: {hata}", yol.display());
+            eprintln!("{gosterilen_yol} okunamadı: {hata}");
             process::exit(1);
         }
     };
@@ -59,15 +66,23 @@ fn main() {
     let icerik = String::from_utf8_lossy(&baytlar);
     if let Cow::Owned(_) = icerik {
         eprintln!(
-            "Uyarı: {} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi.",
-            yol.display()
+            "Uyarı: {gosterilen_yol} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi."
         );
     }
 
     let log = kayitlari_ayir(&icerik);
+    // Özet bir kez hesaplanır; biçim yalnızca nasıl yazılacağını belirler
+    let ozet = Ozet::hesapla(yol, &icerik, &log, &secenekler.rapor);
 
     let mut cikti = BufWriter::new(io::stdout().lock());
-    yazma_sonucunu_denetle(ozet_yaz(&mut cikti, yol, &icerik, &log, &secenekler.rapor));
+    let yazildi = match secenekler.bicim {
+        Bicim::Metin => rapor::metin_yaz(&mut cikti, &ozet),
+        Bicim::Json => json::yaz(&mut cikti, &ozet),
+        Bicim::Markdown => markdown::yaz(&mut cikti, &ozet),
+    };
+    // Tamponda kalan son satırlar `flush` ile yazılır; varsa hatası da burada ortaya çıkar.
+    // `and_then`: yazma başarılıysa flush'ı da dene, ilk hatayı döndür.
+    yazma_sonucunu_denetle(yazildi.and_then(|()| cikti.flush()));
 }
 
 /// Çıktı yazılamadıysa nedenini söyler ve 1 koduyla çıkar.
