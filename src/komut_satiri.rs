@@ -5,6 +5,7 @@
 //! veylog --esik 0,8 --ilk 20 --siralama yeni storage/logs/laravel.log
 //! veylog --bicim json --hepsi storage/logs/laravel.log
 //! veylog --karsilastir 15:00 storage/logs/laravel.log
+//! veylog --ani-artis 1 storage/logs/laravel.log
 //! ```
 //!
 //! Ayrıştırma kuralları:
@@ -19,6 +20,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::ani_artis::{EN_DUSUK_SEVIYE, EN_UZUN_DILIM};
 use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
 use crate::zaman::ZamanNoktasi;
 
@@ -26,13 +28,14 @@ use crate::zaman::ZamanNoktasi;
 pub const KULLANIM: &str = "Kullanım: veylog [SEÇENEKLER] <log-dosyası>";
 
 /// Bilinen uzun seçenekler. Yazım hatası yapıldığında öneri bu listeden seçilir.
-const UZUN_SECENEKLER: [&str; 10] = [
+const UZUN_SECENEKLER: [&str; 11] = [
     "--esik",
     "--ilk",
     "--hepsi",
     "--siralama",
     "--bicim",
     "--karsilastir",
+    "--ani-artis",
     "--yardim",
     "--surum",
     "--help",
@@ -215,6 +218,10 @@ where
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
                 rapor.karsilastir = Some(karsilastir_ayristir(ad, &deger)?);
             }
+            "-a" | "--ani-artis" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                rapor.ani_artis = Some(ani_artis_ayristir(ad, &deger)?);
+            }
             "-h" | "--yardim" | "--help" => {
                 deger_almaz(ad, bitisik)?;
                 return Ok(Komut::Yardim);
@@ -268,14 +275,19 @@ Seçenekler:
                           Logu bu anda ikiye böl ve iki yarıyı karşılaştır: yeni çıkan,
                           kaybolan ve artan kalıplar. Zaman: 15:00, 15:00:30, 2026-10-24
                           ya da \"2026-10-24 15:00\". Yalnızca saat verilirse logun son günü.
+  -a, --ani-artis <dakika>
+                          Logu bu uzunlukta dilimlere böl ve {seviye} ve üstündeki
+                          kalıpların olağan seviyesinden sıçradığı anları bul. Dilim 1 ile
+                          {EN_UZUN_DILIM} dakika arası; 1 verilirse her dakika ayrı sayılır.
   -h, --yardim            Bu yardımı göster.
   -V, --surum             Sürümü göster.
 
 Seçenekler dosya adından önce ya da sonra yazılabilir. Değer boşlukla ya da \"=\" ile
 verilir (--esik 0,8 ya da --esik=0,8); ondalık ayracı virgül de olabilir, nokta da.
-Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biçim, --karşılaştır).
---ilk ve --siralama her biçimde ve karşılaştırmanın her bölümünde geçerlidir; JSON'da
-bütün satırlar için --hepsi.
+Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biçim, --karşılaştır,
+--ani-artış). --ilk her biçimde ve her bölümde geçerlidir; JSON'da bütün satırlar için
+--hepsi. --siralama kalıp tablosunun ve karşılaştırmanın sırasını belirler; ani artışlar
+puanı en yüksek olan başta olacak şekilde dizilir.
 
 Çıkış kodları: 0 başarılı, 1 dosya okunamadı ya da çıktı yazılamadı, 2 kullanım hatası
 (karşılaştırma noktasının logun dışında kalması da).
@@ -287,11 +299,13 @@ bütün satırlar için --hepsi.
   veylog --bicim json --hepsi storage/logs/laravel.log | jq '.kaliplar.satirlar[0]'
   veylog --bicim markdown storage/logs/laravel.log > rapor.md
   veylog --karsilastir 15:00 storage/logs/laravel.log
+  veylog --ani-artis 1 storage/logs/laravel.log
 ",
         surum = env!("CARGO_PKG_VERSION"),
         esik = ondalik(varsayilan.drain.benzerlik_esigi),
         siralama = varsayilan.siralama.ad(),
         bicim = Bicim::Metin.ad(),
+        seviye = EN_DUSUK_SEVIYE.ad(),
     )
 }
 
@@ -402,6 +416,18 @@ fn karsilastir_ayristir(ad: &str, deger: &str) -> Result<ZamanNoktasi, SecenekHa
     })
 }
 
+/// `--ani-artis`: dilimlerin uzunluğu, 1 dakika ile 1 gün (1440 dakika) arası bir tam sayı.
+fn ani_artis_ayristir(ad: &str, deger: &str) -> Result<u16, SecenekHatasi> {
+    match deger.parse::<u16>() {
+        Ok(dakika) if (1..=EN_UZUN_DILIM).contains(&dakika) => Ok(dakika),
+        _ => Err(gecersiz(
+            ad,
+            deger,
+            format!("1 ile {EN_UZUN_DILIM} arasında bir dakika sayısı olmalı (ör. 1, 5, 60)"),
+        )),
+    }
+}
+
 fn gecersiz(secenek: &str, deger: &str, beklenen: impl Into<String>) -> SecenekHatasi {
     SecenekHatasi::GecersizDeger {
         secenek: secenek.to_owned(),
@@ -490,6 +516,37 @@ mod testler {
         assert_eq!(secenekler.rapor.siralama, Siralama::Onem);
         assert_eq!(secenekler.bicim, Bicim::Metin);
         assert_eq!(secenekler.rapor.karsilastir, None);
+        assert_eq!(secenekler.rapor.ani_artis, None);
+    }
+
+    #[test]
+    fn ani_artis_dilimi_okunur() {
+        for (argumanlar, beklenen) in [
+            (&["--ani-artis", "1", "a.log"][..], 1),
+            (&["-a", "10", "a.log"], 10),
+            (&["-a5", "a.log"], 5),
+            (&["a.log", "--ani-artış=60"], 60),
+            (&["-a", "1440", "a.log"], 1_440),
+        ] {
+            assert_eq!(
+                ozet(argumanlar).rapor.ani_artis,
+                Some(beklenen),
+                "{argumanlar:?}"
+            );
+        }
+        for deger in ["0", "1441", "-1", "1,5", "dakika", "", "70000"] {
+            assert_eq!(
+                hata(&["--ani-artis", deger, "a.log"]).to_string(),
+                format!(
+                    "--ani-artis için geçersiz değer \"{deger}\": 1 ile 1440 arasında bir dakika sayısı olmalı (ör. 1, 5, 60)"
+                )
+            );
+        }
+        // Değeri unutulursa dosya adı değer sanılır ve sayı olmadığı için reddedilir
+        assert!(matches!(
+            hata(&["-a", "a.log"]),
+            SecenekHatasi::GecersizDeger { .. }
+        ));
     }
 
     #[test]
@@ -682,6 +739,7 @@ mod testler {
             ("--Esik", Some("--esik")),
             ("--verison", Some("--version")),
             ("--karsilastr", Some("--karsilastir")),
+            ("--aniartis", Some("--ani-artis")),
             ("--top", None),
             ("--all", None),
         ] {
@@ -741,6 +799,10 @@ mod testler {
         assert!(metin.contains("[varsayılan: 10]"));
         assert!(metin.contains("[varsayılan: metin]"));
         assert!(metin.contains("-k, --karsilastir <zaman>"));
+        // Seviye ve en uzun dilim sabitlerden okunur
+        assert!(metin.contains("-a, --ani-artis <dakika>"));
+        assert!(metin.contains("WARNING ve üstündeki"));
+        assert!(metin.contains("Dilim 1 ile\n                          1440 dakika arası"));
         for siralama in Siralama::HEPSI {
             assert!(metin.contains(siralama.ad()), "{}", siralama.ad());
         }

@@ -8,7 +8,8 @@ Bir Laravel uygulamasının `storage/logs/laravel.log` dosyası binlerce satıra
 Aynı hata yüzlerce kez tekrarlanır, stack trace'ler satır sayısını şişirir ve gerçekten
 önemli olan kayıtlar bu kalabalıkta kaybolur. veylog'un amacı bu dosyayı birkaç saniyede
 okunabilir bir özete çevirmek: kaç kayıt var, hangi seviyede, hangi hatalar tekrar ediyor,
-ne zaman başladı, kodun neresinde oluşuyor ve bir dağıtımdan sonra ne değişti.
+ne zaman başladı, kodun neresinde oluşuyor, bir dağıtımdan sonra ne değişti ve hangi hata
+bir anda patladı.
 
 ## Şu an ne yapıyor?
 
@@ -37,6 +38,9 @@ ne zaman başladı, kodun neresinde oluşuyor ve bir dağıtımdan sonra ne değ
 - Logu bir anda ikiye bölüp iki yarıyı [karşılaştırır](#zaman-aralıklarını-karşılaştırma):
   o andan sonra yeni çıkan, kaybolan ve belirgin şekilde artan kalıplar
   (`--karsilastir 15:00`). Artışın tesadüf olup olmadığını bir istatistik testiyle sınar.
+- Her kalıbın sıklığını dilim dilim izler ve olağan seviyesinden
+  [ani sıçradığı anları](#ani-artışlar) bulur (`--ani-artis 1`: dakika dakika). Olağan seviye
+  medyanla, olağan dalgalanma MAD ile ölçülür; aranan patlama bu ölçüleri bozmaz.
 - Benzerlik eşiği, tablonun uzunluğu, sırası ve biçimi [komut satırından](#kullanım)
   değiştirilebilir: `--esik 0,8`, `--ilk 20`, `--hepsi`, `--siralama adet`, `--bicim json`.
   Yazım hatalarında öneri verir.
@@ -98,7 +102,9 @@ sonra başlayan `kargo_ucreti` hatası, 16:10–16:16 arasındaki ödeme zaman a
 17:05'teki Redis çöküşü. `Attempt to read property "ad" on null` ise iki ayrı satırda
 görünüyor: mesajları aynı ama biri kategori sayfasında, diğeri ürün sayfasında oluşan iki
 ayrı hata. `--karsilastir 15:00` aynı günü deploy öncesi ve sonrası diye ikiye ayırır
-([aşağıda](#zaman-aralıklarını-karşılaştırma)).
+([aşağıda](#zaman-aralıklarını-karşılaştırma)). `--ani-artis 10` ise günü 10 dakikalık
+dilimlere böler ve 16:10'daki zaman aşımlarını olağanın üstüne sıçrayan bir an olarak bulur
+([aşağıda](#ani-artışlar)).
 
 ## Nasıl çalışıyor?
 
@@ -109,6 +115,7 @@ laravel.log
   → Drain             23 kalıp
   → parmak izi        24 grup
   → karşılaştırma     isteğe bağlı (--karsilastir): yeni çıkan, kaybolan, artan
+  → ani artışlar      isteğe bağlı (--ani-artis): olağan seviyesinden sıçrayan anlar
   → özet              metin, JSON ya da Markdown olarak yazılır
 ```
 
@@ -419,6 +426,196 @@ iki zaman aralığının kalıplarını karşılaştırır, yenileri "New", kayb
 işaretler. Değişimi kalıbın toplam loglar içindeki payıyla ölçer; veylog ise saatlik sıklığı
 kullanır, böylece "saatte 0,1 → 2,1" doğrudan okunur.
 
+### Ani artışlar
+
+Karşılaştırma için bakılacak anı bilmek gerekir. Ani artışlarda log tek bir anda bölünmez:
+her kalıbın sıklığı dilim dilim izlenir (`--ani-artis 1` ile dakika dakika) ve olağan
+seviyesinden sıçradığı anlar bulunur.
+
+```text
+$ veylog --ani-artis 10 --ilk 3 ornekler/laravel.log
+...
+Ani artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1
+  zirve  olağan   puan  seviye     ilk       son       kalıp
+      6       0    4,0  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
+                                                       artış: 16:10–16:20 arası 6 kayıt
+                                                       örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
+                                                       konum: app/Services/OdemeServisi.php:64 (ConnectionException)
+```
+
+Ödeme zaman aşımı günün geri kalanında hiç görülmüyor, 16:10–16:20 diliminde ise 6 kez
+görülüyor. `zirve` en çok kaydın düştüğü dilimdeki kayıt sayısı, `olağan` kalıbın dilim
+başına olağan kayıt sayısı, `puan` da sıçramanın büyüklüğüdür. `ilk` ve `son` burada kalıbın
+değil, artışın ilk ve son kaydıdır.
+
+**Dilimler.** Logun kapsadığı süre eşit uzunlukta dilimlere bölünür. Bir kaydın dilimi,
+1970-01-01 00:00'dan bu yana geçen saniyenin dilim uzunluğuna bölümüdür (aşağı yuvarlanır).
+Bu yüzden dilimler ilk kayda göre değil saate göre hizalanır: 60'ı bölen uzunluklarda (1, 5,
+10, 15, 30...) her saat başında bir dilim başlar; 10 dakikalık dilimler 16:00, 16:10, 16:20...
+diye gider. Dilimler ilk kaydın diliminden son kaydın dilimine kadar uzanır ve kaydı olmayan
+dilimler de 0 olarak sayılır. Süreyi bütün kayıtlar (INFO dahil) belirler, çünkü bir hatanın
+saatlerce görülmemesi de onun olağanının parçasıdır.
+
+**Olağan seviye: medyan ve MAD.** Her kalıp için her dilimdeki kayıt sayısı bulunur. Kalıbın
+olağan seviyesi bu sayıların medyanı, olağan dalgalanması ise
+[MAD](https://en.wikipedia.org/wiki/Median_absolute_deviation)'ıdır: sayıların medyandan
+mutlak sapmalarının medyanı. Ortalama ve standart sapma tek bir patlamayla kayardı; medyan ve
+MAD ise dilimlerin yarısına kadarı patlama olsa bile yerinde kalır. Böylece aranan patlama
+kendi ölçüsünü bozmaz.
+
+Ayda birkaç kez görülen bir hatanın 43 200 dakikalık dizisi neredeyse tamamen sıfırdır. Bu
+yüzden sıfırlar tek tek tutulmaz, yalnızca sayılır. Sıralı dizide sıfırlar baştadır: k'inci
+eleman, k sıfır sayısından küçükse 0'dır; değilse kaydı olan dilimlerin sıralı sayılarından
+`sayilar[k − sıfır sayısı]` elemanıdır. MAD'da her sıfırın sapması medyanın kendisidir; bu
+değerin sıralı sapmalar arasındaki yeri ikili aramayla bulunur. Bellek, kaydı olan dilim
+sayısı kadardır.
+
+**Puan.** Her dilim, Iglewicz ve Hoaglin'in (1993) değiştirilmiş z puanını alır:
+
+```text
+puan = 0,6745 × (sayı − medyan) / MAD        puan > 3,5 → sıçrama
+```
+
+0,6745 standart normal dağılımın üçüncü çeyreğidir. Normal dağılımda MAD ≈ 0,6745 σ olduğu
+için puan, sayının olağandan kaç standart sapma uzakta olduğunun dayanıklı bir tahminidir.
+3,5 eşiği de Iglewicz ve Hoaglin'in önerisidir;
+[NIST'in istatistik el kitabı](https://itl.nist.gov/div898/handbook/eda/section3/eda35h.htm)
+da bu eşiği verir.
+
+Seyrek bir hatanın dilimlerinin yarısından fazlası boştur; MAD'ı 0 çıkar ve tek bir kayıt
+bile sonsuz puan alırdı. Sayılar tam sayı olduğu için bir kayıttan küçük bir dalgalanma
+zaten ölçülemez, bu yüzden MAD 1'den küçükse 1 sayılır. Sonuç olarak normalde görülmeyen bir
+hata bir dilimde **en az 6 kayıtla** sıçrar: 0,6745 × 6 = 4,05, oysa 5 kayıt 3,37'de kalır.
+
+Bunun yerine puanın paydasını (MAD / 0,6745) en az 1 yapmak da düşünülebilirdi; o zaman 4
+kayıt yeterdi. Poisson dağılımıyla hesaplanınca, dakikada ortalama 0,69 kayıt yazan
+(medyanı hâlâ 0 olan) bir kalıpta bu yol 1 dakikalık dilimlerle günde yaklaşık 8 yanlış
+sıçrama verir, seçilen yol 0,12. Bedeli, küçük patlamaların kaçabilmesidir: dakikada 0,01
+sıklıkta görülen bir hataya 5 dakika boyunca dakikada ortalama k kayıt eklenen benzetimde
+patlamaların k = 4 iken %72'si, k = 5 iken %91'i, k = 6 iken %97'si, k ≥ 8 iken hepsi
+yakalandı.
+
+**Çift eşik.** Bir ani artış, sayısı olağanın (medyanın) üstünde kalan art arda dilimlerin
+tamamıdır; yeter ki en az biri sıçramış olsun. Artışı sıçrama başlatır, olağana dönüş
+bitirir. Görüntü işlemedeki Canny kenar bulucusunun iki eşiği (histerezis) de bu fikre
+dayanır. Aşağıdaki gerçekçi logda ödeme sağlayıcısı 15 dakika yanıt vermedi; zaman
+aşımlarının dakikalık sayıları şöyleydi (sıçrayanlar, yani 6 ve üstü, işaretli):
+
+```text
+14:xx      20  21  22  23  24  25  26  27  28  29  30  31  32  33  34
+kayıt       4   5   2   3   6   4   3   6   8   4   4   1   2   2   5
+sıçrama                     ●           ●   ●
+```
+
+Yalnızca sıçrayan dakikalar birleştirilseydi arıza "14:24" ve "14:27–14:29" diye iki parçaya
+bölünürdü. Çift eşikle tek satır çıkar: `14:20–14:35 arası 15 dilimde 59 kayıt, zirve
+14:28–14:29`. Artışın puanı, zirve dilimin puanıdır.
+
+**Yalnızca WARNING ve üstü.** INFO ve DEBUG kayıtları çoğu zaman trafikle birlikte gün içinde
+inip çıkar ve tek bir olağan seviye bunu açıklayamaz. Aynı gerçekçi logda bu sınır
+kaldırılınca 14 yanlış artış daha çıktı. Hepsi yoğun saatlerdeki "Kullanıcı giriş yaptı" ve
+"Sipariş oluşturuldu" dakikalarıydı; biri gerçek ödeme arızasının bile önüne geçti.
+
+**Gerçekçi bir günde.** Yöntem, Laravel 13.38 ile üretilen bir günlük log üzerinde denendi.
+Log uydurma bir e-ticaret gününü anlatır; kayıtları Laravel'in kendisi yazar ve istisnalar
+gerçekten fırlatılır (HTTP zaman aşımı, PDO bağlantı hatası, phpredis, PHP uyarısı). Trafik
+gece düşük, gündüz yüksektir; toplam 3 821 kayıt.
+
+| Olay | `--ani-artis 1` | `--ani-artis 5` |
+|---|---|---|
+| 03:15 veritabanı yük devri: 40 saniyede 40 hata | ✓ puan 27,0 | ✓ |
+| 14:20–14:35 ödeme zaman aşımları, dakikada ~5 hata | ✓ tek parça, 15 dilimde 59 kayıt | ✓ 3 dilimde 59 kayıt |
+| Aynı arızanın uyarıları (WARNING), dakikada ~4 | kısmen: 14:30–14:35, 55 kaydın 25'i | ✓ 55 kaydın tamamı |
+| 19:42 Redis çöküşü: 2 dakikada 39 CRITICAL | ✓ 2 dilimde 39 kayıt | ✓ |
+| 16:00 dağıtımından sonra başlayan kargo hatası, dakikada ~0,3 | yok | yok |
+| Saat başı stok senkronizasyonu uyarıları (2–4) ve seyrek hatalar | yok | yok |
+
+İki dilim uzunluğunda da yanlış alarm çıkmadı. Uyarılar dakikalık dilimlerde kısmen bulundu:
+ilk dokuz dakikada hiçbir dakika 6 kayda ulaşmadı ve 14:29'da hiç kayıt yoktu, çift eşik
+orada koptu. Kargo hatası bir sıçrama değil, kalıcı bir seviye değişimidir; onu
+`--karsilastir 16:00` yeni çıkanlar arasında gösterir.
+
+Geliştirme sırasında yöntem numpy ve scipy ile yazılmış bağımsız bir hesapla karşılaştırıldı:
+40 rastgele logda beş dilim uzunluğuyla bulunan 1 635 artışın ve gerçekçi loglardaki
+artışların hepsi aynı çıktı. Hesap hızlıdır: 30 günlük, 92 MB'lık bir logda (43 195 dakikalık
+dilim) `--ani-artis 1` ile çalıştırma, seçeneksiz çalıştırmayla aynı sürede, yaklaşık yarım
+saniyede biter.
+
+**Dilim uzunluğu.** Dilim, aranan olayın süresine yakın seçilmelidir. Örnek logdaki altı zaman
+aşımı altı ayrı dakikaya düşer; dakikalık dilimlerde (`--ani-artis 1`) hiçbir dakika olağanın
+dışına çıkmaz. 10 dakikalık dilimde ise altısı bir aradadır. Gerçekçi logdaki dört olayın
+hepsini 5 ve 10 dakikalık dilimler eksiksiz bulur. Dilim uzadıkça yavaş değişimler de artış
+gibi görünür: 15 dakikalık dilimlerde kargo hatasının seviye değişimi, 60 dakikalık
+dilimlerde ayrıca gündüz saatlerinde sıklaşan bir hata listeye girer. Kısa arızalar için
+1–10 dakika iyi bir başlangıçtır.
+
+**Sıra ve sınırlar.**
+
+- Puanı en yüksek artış başta gelir; puanlar eşitse önce başlayan. `--ilk` bu bölüme de
+  uygulanır.
+- Olağan seviyeyi ölçmek için log en az 10 dilim sürmelidir. Daha kısaysa artış aranmaz ve
+  bölüm bunu söyler; bu bir hata değildir, çıkış kodu 0'dır. Örnek logda `--ani-artis 120`:
+  `Ani artışlar (WARNING ve üstü, 120 dakikalık 6 dilim): olağan seviyeyi ölçmek için en az 10 dilim gerekir`
+- Dilim 1 ile 1440 dakika (bir gün) arasında olabilir; bunun dışındaki bir değer kullanım
+  hatasıdır (çıkış kodu 2).
+
+**Zaman.** Dilimlerin başı ve sonu yazılırken saniyeden tarihe geri dönülür. Bunun için yine
+Hinnant'ın algoritmalarından, bu kez ters yöndeki
+[`civil_from_days`](https://howardhinnant.github.io/date_algorithms.html) kullanılır. Test,
+dört basamaklı yılların 3,6 milyon gününün her birini gidip geri dönerek denetler.
+
+**JSON ve Markdown.** Ani artışlar `ani_artislar` alanındadır; alan yalnızca `--ani-artis`
+verilince eklenir:
+
+```bash
+veylog --bicim json --ani-artis 10 ornekler/laravel.log | jq '.ani_artislar.satirlar[] | {kalip, olagan, mad, artis}'
+```
+
+```json
+{
+  "kalip": "cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> bytes received (see <URL>) for <URL>",
+  "olagan": 0,
+  "mad": 0,
+  "artis": {
+    "baslangic": "2026-10-24 16:10:00",
+    "bitis": "2026-10-24 16:20:00",
+    "dilim_sayisi": 1,
+    "kayit_sayisi": 6,
+    "ilk": "2026-10-24 16:10:02",
+    "son": "2026-10-24 16:16:02",
+    "zirve": {
+      "baslangic": "2026-10-24 16:10:00",
+      "bitis": "2026-10-24 16:20:00",
+      "adet": 6,
+      "puan": 4.047
+    }
+  }
+}
+```
+
+- `dilim_dakika`, `en_dusuk_seviye`, `en_az_dilim`, `esik`, `en_az_mad`: ayarlar ve eşikler.
+- `baslangic`, `bitis`, `dilim_sayisi`: izlenen süre, ilk dilimin başından son dilimin sonuna.
+  Logda kayıt yoksa `baslangic` ve `bitis` `null`'dır.
+- `artis_sayisi` bütün artışların, `gosterilmeyen` `--ilk` yüzünden yazılmayanların sayısıdır.
+  `satirlar`, tablo satırının alanlarına ek olarak kalıbın olağan seviyesini (`olagan`),
+  `mad`'ını ve artışın kendisini (`artis`) taşır: dilim sınırları, dilim ve kayıt sayısı, ilk
+  ve son kayıt, zirve dilim ve puanı.
+
+```bash
+# CI adımı: logda ani artış varsa başarısız ol (jq -e, sonuç false ise 1 koduyla çıkar)
+veylog --bicim json --ani-artis 5 laravel.log | jq -e '.ani_artislar.artis_sayisi == 0'
+```
+
+Markdown çıktısında ani artışlar ayrı bir tablodur; `Zirve` hücresine zirve dilimin aralığı
+da yazılır: `6 (16:10–16:20)`.
+
+Twitter, bulut altyapısındaki ölçümlerde anormallik bulmak için benzer bir yöntem kullandı
+([Vallis ve ark., 2014](https://usenix.org/system/files/conference/hotcloud14/hotcloud14-vallis.pdf);
+açık kaynak [AnomalyDetection](https://github.com/twitter/AnomalyDetection) paketi). O da
+ortalama ve standart sapma yerine medyan ve MAD kullanır, ama önce günlük ve haftalık döngüyü
+seriden çıkarır. veylog döngüyü çıkarmaz; bu yüzden yalnızca WARNING ve üstüne bakar ve uzun
+dilimlerde dikkat ister (aşağıdaki sınırlamalar).
+
 ### Komut satırı
 
 Argümanlar için yaygın bir kütüphane ([clap](https://crates.io/crates/clap)) yerine küçük
@@ -648,16 +845,36 @@ Laravel tarafı için bir ipucu: kullanıcıdan gelen değeri mesaja gömmek yer
 - Windows yolları (`C:\laragon\www\...`) henüz tanınmıyor: vendor klasörü ayırt edilemediği
   için konum, istisnanın fırlatıldığı yer olur.
 - Aynı dosyada farklı zaman biçimleri ya da saat dilimleri karışırsa zaman aralığı ve
-  `--siralama yeni` yanlış sıralanabilir. `--karsilastir` iki biçimi de doğru okur ama saat
-  dilimini yok sayar.
-- Karşılaştırma sıklığı saat başına ölçer. Trafik iki katına çıkarsa her kalıp iki kat sık
-  görünür; veylog bunu yük artışından ayırt edemez.
+  `--siralama yeni` yanlış sıralanabilir. `--karsilastir` ve `--ani-artis` iki biçimi de
+  doğru okur ama saat dilimini yok sayar.
+- Karşılaştırma da ani artışlar da kayıtları sayar. Trafik iki katına çıkarsa her kalıp iki
+  kat sık görünür; veylog bunu yük artışından ayırt edemez.
 - Her kalıp ayrı ayrı sınanır. %1 eşiği ve 2 kat şartı yanlış alarmı az tutar ama
   sıfırlamaz; çok kalıplı bir logda arada bir tesadüfi bir "artan" görülebilir.
-- Test, kayıtların zamana rastgele serpildiğini varsayar. Zamanlanmış görevler gibi düzenli
-  olaylar ve tek bir anda yığılan patlamalar bu varsayıma uymaz.
+- Karşılaştırmadaki test, kayıtların zamana rastgele serpildiğini varsayar. Zamanlanmış
+  görevler gibi düzenli olaylar ve tek bir anda yığılan patlamalar bu varsayıma uymaz.
 - Log tek bir noktada ikiye bölünür; iki ayrı dosya ya da iki keyfi aralık
   karşılaştırılamaz.
+- Ani artışlarda olağan seviye bütün log için tektir; günlük döngü hesaba katılmaz. Gündüz
+  sıklaşan bir kalıbın yoğun saatleri, özellikle uzun dilimlerde, artış gibi görünebilir. Bu
+  yüzden yalnızca WARNING ve üstüne bakılır; INFO ve DEBUG'daki artışlar aranmaz.
+- Kalıcı bir seviye değişimi (bir dağıtımdan sonra sürekli görülmeye başlayan bir hata) kısa
+  dilimlerde artış sayılmaz, uzun dilimlerde sayılır. Bunun için `--karsilastir` daha
+  uygundur.
+- Kayıtlarını toplu yazan kalıplar her seferinde artış sayılabilir: her çalıştığında 6–8
+  uyarı yazan saatlik bir iş, dakikalık dilimlerde günde 24 artış verir. Medyan ve MAD
+  düzenli tekrarı tanımaz.
+- Normalde görülmeyen bir hata, bir dilimde en az 6 kaydı olunca artış sayılır; daha küçük
+  patlamalar kaçabilir.
+- Sayılar tam sayı olduğu için MAD da kaba adımlarla değişir ve dakikada birkaç kayıt yazan
+  kalıplarda gerçek dalgalanmayı küçük gösterebilir. Benzetimde, dakikada ortalama 3–5 kayıt
+  yazan düzenli bir kalıp 1 dakikalık dilimlerle günde 5–8 tesadüfi artış verdi; dakikada 1
+  kayda kadar olan kalıplarda bu sayı 0,1 civarında kaldı.
+- Dilimler saate göre hizalandığı için logun ilk ve son dilimi kısmi olabilir: log 16:07'de
+  başlıyorsa 16:00–16:10 dilimi yalnızca 3 dakikayı kapsar ve oradaki bir artış daha az
+  kayıtla görünür.
+- Arka arkaya iki olay, aradaki dilimlerde sayı olağana inmezse tek bir artış olarak
+  görünür.
 - ANSI renk kodları (`␛[31m`) rakam içerdiği için Drain onları değişken sayar; renk kodlu
   kısa mesajlar aynı uzunluktaki başka mesajlarla birleşebilir.
 - Yazı yönünü değiştiren Unicode karakterleri (ör. U+202E, "Trojan Source") temizlenmez.
@@ -695,6 +912,7 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `-s`, `--siralama <ölçüt>` | Tablonun sırası: `onem`, `adet` ya da `yeni` ([ayrıntılar](#kalıp-raporu)). | `onem` |
 | `-b`, `--bicim <ad>` | Çıktının biçimi: `metin`, `json` ya da `markdown` ([ayrıntılar](#json-ve-markdown-çıktısı)). | `metin` |
 | `-k`, `--karsilastir <zaman>` | Logu bu anda ikiye böl ve iki yarıyı karşılaştır: yeni çıkan, kaybolan ve artan kalıplar. Zaman: `15:00`, `15:00:30`, `2026-10-24` ya da `"2026-10-24 15:00"` ([ayrıntılar](#zaman-aralıklarını-karşılaştırma)). | |
+| `-a`, `--ani-artis <dakika>` | Logu bu uzunlukta dilimlere böl ve WARNING ve üstündeki kalıpların olağan seviyesinden sıçradığı anları bul. 1 ile 1440 dakika arası ([ayrıntılar](#ani-artışlar)). | |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
 
@@ -716,6 +934,12 @@ veylog --bicim markdown storage/logs/laravel.log > rapor.md
 
 # 15:00'teki dağıtımdan önce ve sonra: yeni çıkan, kaybolan ve artan hatalar
 veylog --karsilastir 15:00 storage/logs/laravel.log
+
+# Dakika dakika: olağan seviyesinden sıçrayan hatalar
+veylog --ani-artis 1 storage/logs/laravel.log
+
+# Birkaç dakikaya yayılan arızalar için 10 dakikalık dilimler
+veylog --ani-artis 10 storage/logs/laravel.log
 
 # Derlemeden çalıştırırken: cargo'nun seçenekleriyle karışmasın diye önce --
 cargo run -- --ilk 5 ornekler/laravel.log
@@ -745,8 +969,9 @@ src/
 ├── rapor.rs         özet: sayılar, seviyeler, kalıp tablosu, sıralamalar; metin çıktısı ve
 │                    kontrol karakterlerinin temizlenmesi
 ├── karsilastirma.rs iki zaman aralığının karşılaştırılması: yeni çıkan, kaybolan, artan kalıplar
-├── zaman.rs         tarih ve saat: --karsilastir değerini ayrıştırır, iki an arasındaki süreyi hesaplar
-├── istatistik.rs    binom dağılımının kuyruğu: bir artışın tesadüf olup olmadığı
+├── ani_artis.rs     ani artışlar: dilimler, medyan ve MAD, değiştirilmiş z puanı, çift eşik
+├── zaman.rs         tarih ve saat: --karsilastir değerini ayrıştırır, süreyi hesaplar, saniyeyi tarihe çevirir
+├── istatistik.rs    binom dağılımının kuyruğu; seyrek dizilerde medyan ve MAD
 ├── json.rs          JSON çıktısı: kütüphanesiz JSON yazıcı
 └── markdown.rs      Markdown çıktısı: GitHub'a yapıştırılabilir tablo
 tests/
@@ -768,9 +993,12 @@ cargo test
 `tests/cli.rs` ise derlenmiş programı çalıştırıp kullanıcının gördüğünü kontrol eder. JSON
 çıktısı serde_json ile ayrıştırılır, Markdown tablosunun satırları sayılır ve kontrol
 karakterleriyle dolu bir logda, üç biçimin hiçbirine tek bir kontrol karakterinin
-sızmadığı denetlenir. İstatistik ve tarih hesapları scipy ve Python'un `datetime` modülüyle
-hesaplanmış değerlerle sınanır; karşılaştırma bölümünün metin ve Markdown çıktısı beklenen
-metinle karakter karakter karşılaştırılır.
+sızmadığı denetlenir. İstatistik ve tarih hesapları numpy, scipy ve Python'un `datetime`
+modülüyle hesaplanmış değerlerle sınanır; karşılaştırma ve ani artış bölümlerinin metin ve
+Markdown çıktısı beklenen metinle karakter karakter karşılaştırılır. Seyrek dizilerdeki
+medyan ve MAD, sıfırları tek tek tutan doğrudan bir hesapla 2 000 sözde rastgele dizide
+karşılaştırılır; saniyeden tarihe çeviri, dört basamaklı yılların 3,6 milyon gününün her
+birinde gidip geri dönülerek denenir.
 
 ## Örnek log hakkında
 
@@ -794,4 +1022,4 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] JSON ve Markdown çıktısı
 - [x] Terminal güvenliği: logdaki kontrol karakterleri terminale komut olarak ulaşmaz
 - [x] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar
-- [ ] Ani hata artışlarını yakalama (medyan + MAD)
+- [x] Ani hata artışlarını yakalama (medyan + MAD)

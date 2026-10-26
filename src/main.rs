@@ -1,5 +1,6 @@
 //! veylog: Laravel log dosyalarını özetleyen komut satırı aracı.
 
+mod ani_artis;
 mod drain;
 mod istatistik;
 mod json;

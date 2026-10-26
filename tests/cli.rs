@@ -369,3 +369,60 @@ fn iso_8601_zamanli_log_okunur() {
         "{stdout}"
     );
 }
+
+#[test]
+fn ani_artis_raporu() {
+    // Örnek logda 10 dakikalık dilimlerle 16:10'daki ödeme zaman aşımları görünür
+    let cikti = veylog(&["--ani-artis", "10", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains("\nAni artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("artış: 16:10–16:20 arası 6 kayıt\n"),
+        "{stdout}"
+    );
+
+    // Dakika dakika bakınca hiçbir kalıp bir dakikada 6 kayda ulaşmıyor
+    let cikti = veylog(&["-a", "1", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.ends_with(
+            "\nAni artışlar (WARNING ve üstü, 1 dakikalık 573 dilim, puan > 3,5): yok\n"
+        ),
+        "{stdout}"
+    );
+
+    let cikti = veylog(&["-b", "json", "-a", "10", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
+    let ani_artislar = &rapor["ani_artislar"];
+    assert_eq!(ani_artislar["artis_sayisi"], 1);
+    assert_eq!(ani_artislar["satirlar"][0]["artis"]["zirve"]["adet"], 6);
+}
+
+#[test]
+fn ani_artis_dilimi_denetlenir() {
+    let cikti = veylog(&["--ani-artis", "0", "ornekler/laravel.log"]);
+    assert_eq!(cikti.status.code(), Some(2));
+    assert!(cikti.stdout.is_empty());
+    let stderr = metin(&cikti.stderr);
+    assert!(
+        stderr.contains(
+            "veylog: --ani-artis için geçersiz değer \"0\": 1 ile 1440 arasında bir dakika sayısı olmalı"
+        ),
+        "{stderr}"
+    );
+
+    // Log dilim sayısına göre kısaysa hata değil: bölüm bunu söyler, çıkış kodu 0
+    let cikti = veylog(&["-a", "120", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.ends_with("olağan seviyeyi ölçmek için en az 10 dilim gerekir\n"),
+        "{stdout}"
+    );
+}

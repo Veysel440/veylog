@@ -8,10 +8,11 @@
 
 use std::io::{self, Write};
 
+use crate::ani_artis::AniArtislar;
 use crate::karsilastirma::Karsilastirma;
 use crate::rapor::{
-    KALIP_GENISLIGI, KalipSatiri, Ozet, gorunur, karsilastirma_bolumleri, kisalt, ondalik_kisa,
-    zaman_goster,
+    KALIP_GENISLIGI, KalipSatiri, Ozet, ani_artis_basligi, dilim_araligi, gorunur,
+    karsilastirma_bolumleri, kisalt, ondalik, ondalik_kisa, zaman_goster,
 };
 use crate::zaman::sure_yaz;
 
@@ -46,13 +47,22 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
         // ---: sütunu sağa yaslar
         writeln!(cikti, "|---:|---|---|---|---|---|---|")?;
         for satir in satirlar {
-            satir_yaz(cikti, &[satir.adet.to_string()], satir, tek_gun)?;
+            satir_yaz(
+                cikti,
+                &[satir.adet.to_string()],
+                satir,
+                (satir.ilk, satir.son),
+                tek_gun,
+            )?;
         }
         gizlenen_yaz(cikti, ozet.gosterilmeyen())?;
     }
 
     if let Some(karsilastirma) = &ozet.karsilastirma {
         karsilastirma_yaz(cikti, ozet, karsilastirma, tek_gun)?;
+    }
+    if let Some(ani_artislar) = &ozet.ani_artislar {
+        ani_artis_yaz(cikti, ozet, ani_artislar, tek_gun)?;
     }
     Ok(())
 }
@@ -107,24 +117,70 @@ fn karsilastirma_yaz(
                 degisim.sonra.to_string()
             };
             let satir = &ozet.analiz.satirlar[degisim.satir];
-            satir_yaz(cikti, &[degisim.once.to_string(), sonra], satir, tek_gun)?;
+            satir_yaz(
+                cikti,
+                &[degisim.once.to_string(), sonra],
+                satir,
+                (satir.ilk, satir.son),
+                tek_gun,
+            )?;
         }
         gizlenen_yaz(cikti, ozet.disarida_kalan(degisimler))?;
     }
     Ok(())
 }
 
+/// Ani artış bölümü: başlık ve puanı en yüksek olan artışların tablosu. Zirve hücresinde zirve
+/// dilimin aralığı da yazar: `6 (16:10–16:20)`. İlk ve son, artışın ilk ve son kaydıdır.
+fn ani_artis_yaz(
+    cikti: &mut impl Write,
+    ozet: &Ozet<'_>,
+    ani_artislar: &AniArtislar,
+    tek_gun: bool,
+) -> io::Result<()> {
+    writeln!(cikti)?;
+    writeln!(cikti, "### {}", ani_artis_basligi(ani_artislar))?;
+    if ani_artislar.artislar.is_empty() {
+        return Ok(());
+    }
+    writeln!(cikti)?;
+    writeln!(
+        cikti,
+        "| Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Konum |"
+    )?;
+    writeln!(cikti, "|---:|---:|---:|---|---|---|---|---|---|")?;
+    for artis in ozet.sinirla(&ani_artislar.artislar) {
+        let zirve = format!(
+            "{} ({})",
+            artis.zirve_adet,
+            dilim_araligi(artis.zirve_baslangic, artis.zirve_bitis, tek_gun)
+        );
+        let satir = &ozet.analiz.satirlar[artis.satir];
+        satir_yaz(
+            cikti,
+            &[zirve, ondalik(artis.olagan), ondalik_kisa(artis.puan)],
+            satir,
+            (&artis.ilk.to_string(), &artis.son.to_string()),
+            tek_gun,
+        )?;
+    }
+    gizlenen_yaz(cikti, ozet.disarida_kalan(&ani_artislar.artislar))
+}
+
 /// Tablonun bir satırı. `sayilar`: satır başındaki sayı hücreleri (adet ya da önce ve sonra).
+/// `zamanlar`: İlk ve Son hücrelerine yazılacak zamanlar.
 fn satir_yaz(
     cikti: &mut impl Write,
     sayilar: &[String],
     satir: &KalipSatiri<'_>,
+    zamanlar: (&str, &str),
     tek_gun: bool,
 ) -> io::Result<()> {
+    let (ilk, son) = zamanlar;
     let kalip_hucreleri = [
         satir.seviye.ad().to_owned(),
-        zaman_goster(satir.ilk, tek_gun),
-        zaman_goster(satir.son, tek_gun),
+        zaman_goster(ilk, tek_gun),
+        zaman_goster(son, tek_gun),
         kod(&kisalt(&gorunur(&satir.kalip), KALIP_GENISLIGI)),
         ornek(satir),
         konum(satir),
@@ -214,6 +270,7 @@ fn hucre(metin: &str) -> String {
 #[cfg(test)]
 mod testler {
     use super::*;
+    use crate::ani_artis::deneme_logu;
     use crate::kayit::kayitlari_ayir;
     use crate::rapor::RaporAyarlari;
     use crate::zaman::ZamanNoktasi;
@@ -285,6 +342,51 @@ mod testler {
             karsilastirmali("15:00")
                 .ends_with("\n#### Artanlar (sonra ≥ 2 kat sık, tesadüf ihtimali < %1): yok\n")
         );
+    }
+
+    #[test]
+    fn ani_artis_tablosu() {
+        // Zirve hücresinde zirve dilim de yazar; İlk ve Son artışın kayıtlarıdır
+        let beklenen = r#"
+### Ani artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1
+
+| Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Konum |
+|---:|---:|---:|---|---|---|---|---|---|
+| 6 (16:10–16:20) | 0 | 4,0 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64` ConnectionException |
+"#;
+        let ani_artisli = |dakika| {
+            let ayarlar = RaporAyarlari {
+                ani_artis: Some(dakika),
+                ilk: Some(2),
+                ..RaporAyarlari::default()
+            };
+            markdown_ayarlarla(ORNEK_LOG, "ornekler/laravel.log", &ayarlar)
+        };
+        let metin = ani_artisli(10);
+        assert!(metin.ends_with(beklenen), "{metin}");
+
+        // Artış yoksa tablo yerine "yok"
+        assert!(ani_artisli(1).ends_with(
+            "\n### Ani artışlar (WARNING ve üstü, 1 dakikalık 573 dilim, puan > 3,5): yok\n"
+        ));
+
+        // Üç artış, ikisi gösterilir. Zirve hücresinde zirve dilim, İlk ve Son'da artışın
+        // kayıtları; olağan seviyesi 2 olan kalıp
+        let ayarlar = RaporAyarlari {
+            ani_artis: Some(1),
+            ilk: Some(2),
+            ..RaporAyarlari::default()
+        };
+        let metin = markdown_ayarlarla(&deneme_logu(), "a.log", &ayarlar);
+        let beklenen = r#"
+| Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Konum |
+|---:|---:|---:|---|---|---|---|---|---|
+| 9 (10:31–10:32) | 0 | 6,1 | ERROR | 10:30:30 | 10:32:36 | `Kuyruk dolu` |  |  |
+| 9 (10:45–10:46) | 2 | 4,7 | WARNING | 10:45:10 | 10:45:18 | `Yavaş istek` |  |  |
+
+… 1 satır daha; tümünü görmek için `--hepsi`
+"#;
+        assert!(metin.ends_with(beklenen), "{metin}");
     }
 
     #[test]

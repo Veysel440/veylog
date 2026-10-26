@@ -205,23 +205,11 @@ mod testler {
                 let dakika_sonra = zaman.saniye() + i64::from(tekrar * aralik * 60);
                 satirlar.push(format!(
                     "[{}] local.{seviye}: {mesaj}",
-                    saniyeden(dakika_sonra)
+                    Zaman::saniyeden(dakika_sonra)
                 ));
             }
         }
         satirlar.join("\n")
-    }
-
-    /// Testler için: saniyeden 2026-10-24 içindeki zamana
-    fn saniyeden(saniye: i64) -> String {
-        let gun_basi = Zaman::kayittan("2026-10-24 00:00:00").saniye();
-        let gunun_saniyesi = saniye - gun_basi;
-        format!(
-            "2026-10-24 {:02}:{:02}:{:02}",
-            gunun_saniyesi / 3_600,
-            gunun_saniyesi % 3_600 / 60,
-            gunun_saniyesi % 60
-        )
     }
 
     /// İki yarı tam 2'şer saat: önce 10:00:00–12:00:00, sonra 12:00:00–13:59:59. Bir kaydın

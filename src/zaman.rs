@@ -3,7 +3,8 @@
 //!
 //! Kayıt zamanları metin olarak tutulur (`2026-10-24 14:03:11`). İki an arasında kaç saniye
 //! olduğunu bulmak için tarih bir sayıya çevrilir: 1970-01-01'den bu yana geçen gün. Saat
-//! dilimi ve saniyenin kesri dikkate alınmaz; zamanın ilk 19 karakteri kullanılır.
+//! dilimi ve saniyenin kesri dikkate alınmaz; zamanın ilk 19 karakteri kullanılır. Ters yön de
+//! vardır: saniyeden ana (ani artış dilimlerinin başı ve sonu böyle bulunur).
 
 use std::fmt;
 use std::ops::RangeInclusive;
@@ -53,6 +54,52 @@ impl Zaman {
             + i64::from(self.dakika) * 60
             + i64::from(self.saniye)
     }
+
+    /// `saniye`nin tersi: 1970-01-01 00:00:00'dan bu yana geçen saniyeden an.
+    ///
+    /// Yıl dört basamaklı kalır: 0000-01-01 00:00:00'dan önceki bir saniye o ana, 9999-12-31
+    /// 23:59:59'dan sonraki o ana çekilir.
+    pub fn saniyeden(gecen: i64) -> Zaman {
+        let gecen = gecen.clamp(EN_ESKI.saniye(), EN_YENI.saniye());
+        // Eksi saniyelerde de doğru gün: -1 sn, 1969-12-31'in son saniyesidir
+        let (gun, gunun_saniyesi) = (gecen.div_euclid(86_400), gecen.rem_euclid(86_400));
+        let (yil, ay, gun) = takvim_gunu(gun);
+        Zaman {
+            yil: alan(yil),
+            ay: alan(ay),
+            gun: alan(gun),
+            saat: alan(gunun_saniyesi / 3_600),
+            dakika: alan(gunun_saniyesi % 3_600 / 60),
+            saniye: alan(gunun_saniyesi % 60),
+        }
+    }
+}
+
+/// Dört basamaklı yıllarla yazılabilen ilk ve son an.
+const EN_ESKI: Zaman = Zaman {
+    yil: 0,
+    ay: 1,
+    gun: 1,
+    saat: 0,
+    dakika: 0,
+    saniye: 0,
+};
+const EN_YENI: Zaman = Zaman {
+    yil: 9999,
+    ay: 12,
+    gun: 31,
+    saat: 23,
+    dakika: 59,
+    saniye: 59,
+};
+
+/// Sınırları bilinen bir değeri `Zaman` alanına çevirir.
+///
+/// `i64`'ten `u16`'ya dönüşüm bilgi kaybettirebilir, bu yüzden `From` değil `TryFrom` vardır:
+/// `try_from` sığmayan değerde hata döndürür. Buraya gelen değerler `saniyeden`de sınırlandığı
+/// için hep sığar.
+fn alan(deger: i64) -> u16 {
+    u16::try_from(deger).expect("takvim alanları u16'ya sığar")
 }
 
 /// `2026-10-24 15:00:00`
@@ -167,6 +214,36 @@ fn gun_numarasi(yil: i64, ay: i64, gun: i64) -> i64 {
     donem * 146_097 + donemin_gunu - 719_468
 }
 
+/// `gun_numarasi`nın tersi: 1970-01-01'den bu yana geçen günden (yıl, ay, gün).
+///
+/// Howard Hinnant'ın `civil_from_days` algoritması. Yıl yine Mart'ta başlıyormuş gibi sayılır;
+/// önce 400 yıllık dönem, sonra dönemin içindeki yıl, yılın kaçıncı günü olduğu ve ay bulunur.
+fn takvim_gunu(gun_numarasi: i64) -> (i64, i64, i64) {
+    // 0000-03-01'den bu yana geçen gün
+    let gun = gun_numarasi + 719_468;
+    let donem = gun.div_euclid(146_097);
+    let donemin_gunu = gun.rem_euclid(146_097); // 0..=146 096
+    // Dönemin kaçıncı yılı: artık günler çıkarılınca her yıl 365 gün olur. Bölmeler artık
+    // günleri sayar: 1 460 günde bir (4 yıl) bir gün çıkar, 36 524 günde bir (100 yıl) geri
+    // eklenir, dönemin son gününde (146 096) yine çıkar.
+    let donem_yili = (donemin_gunu - donemin_gunu / 1_460 + donemin_gunu / 36_524
+        - donemin_gunu / 146_096)
+        / 365; // 0..=399
+    let yilin_gunu = donemin_gunu - (365 * donem_yili + donem_yili / 4 - donem_yili / 100); // 0..=365
+    // `gun_numarasi`ndaki 153/5 formülünün tersi
+    let mart_ayi = (5 * yilin_gunu + 2) / 153; // Mart 0, Nisan 1, ..., Şubat 11
+    let gun = yilin_gunu - (153 * mart_ayi + 2) / 5 + 1; // 1..=31
+    let ay = if mart_ayi < 10 {
+        mart_ayi + 3
+    } else {
+        mart_ayi - 9
+    };
+    // Ocak ve Şubat "Mart yılının" sonundadır, takvimde bir sonraki yıla aittir.
+    // `i64::from(true)` 1, `i64::from(false)` 0'dır.
+    let yil = donem * 400 + donem_yili + i64::from(ay <= 2);
+    (yil, ay, gun)
+}
+
 /// `2026-10-24` → (2026, 10, 24). Ay 1–12, gün o ayın gün sayısıyla sınırlı.
 fn tarih_ayristir(metin: &str) -> Option<(u16, u16, u16)> {
     let mut parcalar = metin.split('-');
@@ -258,6 +335,56 @@ mod testler {
             let (yil, ay, gun) = tarih;
             assert_eq!(gun_numarasi(yil, ay, gun), beklenen, "{tarih:?}");
         }
+    }
+
+    #[test]
+    fn takvim_gunu_gun_numarasinin_tersi() {
+        // Python'un datetime modülüyle hesaplanan değerler
+        for (gun, beklenen) in [
+            (0, (1970, 1, 1)),
+            (-1, (1969, 12, 31)),
+            (11_016, (2000, 2, 29)),
+            (19_782, (2024, 2, 29)),
+            (20_750, (2026, 10, 24)),
+            (-25_508, (1900, 3, 1)),
+            (-719_528, (0, 1, 1)),
+            (2_932_896, (9999, 12, 31)),
+        ] {
+            assert_eq!(takvim_gunu(gun), beklenen, "{gun}");
+        }
+        // Dört basamaklı yılların bütün günleri (3,6 milyon gün): takvimde olan bir tarih
+        // vermeli ve o tarih aynı güne geri çevrilmeli
+        for gun in -719_528..=2_932_896 {
+            let (yil, ay, ayin_gunu) = takvim_gunu(gun);
+            assert!((1..=12).contains(&ay), "{gun}");
+            let uzunluk = i64::from(ayin_gun_sayisi(alan(yil), alan(ay)));
+            assert!((1..=uzunluk).contains(&ayin_gunu), "{gun}");
+            assert_eq!(gun_numarasi(yil, ay, ayin_gunu), gun);
+        }
+    }
+
+    #[test]
+    fn saniyeden_ana_geri_donulur() {
+        for metin in [
+            "2026-10-24 16:10:02",
+            "1970-01-01 00:00:00",
+            "1969-12-31 23:59:59",
+            "2024-02-29 12:00:00",
+            "0000-01-01 00:00:00",
+            "9999-12-31 23:59:59",
+        ] {
+            let zaman = Zaman::kayittan(metin);
+            assert_eq!(Zaman::saniyeden(zaman.saniye()), zaman, "{metin}");
+        }
+        assert_eq!(Zaman::saniyeden(-1).to_string(), "1969-12-31 23:59:59");
+        // Dört basamaklı yılların dışı sınırda kalır
+        assert_eq!(Zaman::saniyeden(i64::MIN), EN_ESKI);
+        assert_eq!(Zaman::saniyeden(EN_ESKI.saniye() - 1), EN_ESKI);
+        assert_eq!(Zaman::saniyeden(EN_YENI.saniye() + 1), EN_YENI);
+        assert_eq!(
+            Zaman::saniyeden(i64::MAX).to_string(),
+            "9999-12-31 23:59:59"
+        );
     }
 
     #[test]
