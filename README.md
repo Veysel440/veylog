@@ -34,6 +34,8 @@ ne zaman başladı ve kodun neresinde oluşuyor.
 - Her satır için en yüksek seviyeyi, ilk ve son görülme zamanını, maskelenmemiş bir örnek
   mesajı ve hatanın konumunu gösterir. Tablo önem sırasına göre dizilir: en ciddi hatalar
   en üstte.
+- Benzerlik eşiği, tablonun uzunluğu ve sırası [komut satırından](#kullanım) değiştirilebilir:
+  `--esik 0,8`, `--ilk 20`, `--hepsi`, `--siralama adet`. Yazım hatalarında öneri verir.
 - Geçersiz UTF-8 baytları içeren dosyalarda durmaz; bu baytları `�` ile değiştirip uyarır.
 - Çıktısı başka bir programa yönlendirilebilir (`veylog laravel.log | head`); okuyan program
   erken kapansa da çökmez.
@@ -54,7 +56,7 @@ Seviyeler:
   INFO        31
   DEBUG        3
 
-Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp → parmak iziyle 24 grup
+Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp (eşik 0,7) → parmak iziyle 24 grup
   adet  seviye     ilk       son       kalıp
      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]
                                        örnek: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
@@ -79,6 +81,7 @@ Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp → parm
                                        örnek: Yavaş sorgu (1532 ms): select * from `siparisler` where `kullanici_id` =…
      1  WARNING    10:58:51  10:58:51  Yavaş sorgu (<SAYI> ms): select * from `urunler` where `kategori_id` = <SAYI> a…
                                        örnek: Yavaş sorgu (2210 ms): select * from `urunler` where `kategori_id` = 12 …
+  … 14 satır daha; tümünü görmek için --hepsi
 ```
 
 Örnek logdaki tablo bir günün hikâyesini anlatıyor: saat 15:00'teki deploy'dan iki dakika
@@ -129,7 +132,7 @@ Zamanlanmış görev başladı: yedek:al
 | Ayar | Varsayılan | Açıklama |
 |---|---|---|
 | Önek derinliği | 1 | Kaç baş belirtece göre dallanılacağı. Laravel hata mesajlarında değişken çoğu zaman ikinci sıradadır (`View [x] not found.`), bu yüzden yalnızca ilk belirteç kullanılır. |
-| Benzerlik eşiği | 0,7 | Bir mesajın kümeye katılması için gereken en düşük benzerlik. |
+| Benzerlik eşiği | 0,7 | Bir mesajın kümeye katılması için gereken en düşük benzerlik. `--esik` ile değiştirilebilir. |
 | En fazla çocuk | 100 | Bir düğümün en fazla dal sayısı; dolunca yeni belirteçler `<*>` dalına gider. |
 | Rakama duyarlı eşik | açık | Eşik, rakam içeren farklılıkların oranında gevşer (aşağıda). |
 
@@ -239,7 +242,39 @@ aynı olan kayıtlar tablonun bir satırını oluşturur. Her satıra şu bilgil
   sınıfı. Dosya yolu kısaltılmaz; birçok editörün terminalinde `dosya:satır` tıklanarak
   açılabilir.
 
-Tablo önce seviyeye, aynı seviyede adede göre sıralanır ve ilk 10 satır gösterilir.
+Tablo varsayılan olarak önem sırasına göre dizilir: önce seviye, aynı seviyede adet. İlk 10
+satır gösterilir; gösterilmeyen satır sayısı tablonun altında yazar. Üç sıralama vardır
+(`--siralama`):
+
+| Sıralama | Ölçüt | Ne zaman işe yarar? |
+|---|---|---|
+| `onem` | Seviye, aynı seviyede adet | Önce neyi düzeltmeli? |
+| `adet` | Adet, aynı adette seviye | Logu en çok ne dolduruyor? |
+| `yeni` | İlk görülme zamanı (en yeni önce), aynı anda seviye | Son dağıtımdan sonra ne çıktı? |
+
+Bütün sıralamalar kararlıdır: ölçütleri eşit olan satırlar logda ilk görüldükleri sırada
+kalır. Örnek logda `--siralama yeni` günü sondan başa anlatır: 17:07'de toparlanan Redis,
+17:05'teki çöküşü, 16:10'daki ödeme zaman aşımları...
+
+### Komut satırı
+
+Argümanlar için yaygın bir kütüphane ([clap](https://crates.io/crates/clap)) yerine küçük
+bir ayrıştırıcı yazıldı. clap projeye 17 kütüphane ekliyor, mesajları İngilizce ve Türkçedeki
+gibi virgüllü ondalık sayıları (`0,8`) tanımıyor. Kendi ayrıştırıcımız şu kuralları izler:
+
+- Seçenekler dosya adından önce ya da sonra gelebilir. Aynı seçenek iki kez yazılırsa
+  sonuncusu geçerlidir (`--ilk 5 --hepsi` hepsini gösterir).
+- Değer boşlukla (`--esik 0,8`), `=` ile (`--esik=0,8`) ya da kısa seçeneklerde bitişik
+  (`-n20`) verilebilir.
+- Tek başına `-` ve `--`'dan sonraki her şey dosya adıdır: `veylog -- -garip-ad.log`.
+- Türkçe karakterli yazımlar da geçerlidir: `--eşik`, `--sıralama önem`, `--yardım`.
+- Argümanlar işletim sisteminin verdiği ham haliyle (`OsString`) okunur. Linux'ta bir dosya
+  adı geçerli UTF-8 olmayabilir; program böyle bir adla da çökmez.
+- Tanınmayan bir seçeneğe en çok benzeyen seçenek önerilir. Benzerlik
+  [Levenshtein uzaklığıyla](https://en.wikipedia.org/wiki/Levenshtein_distance) ölçülür:
+  birini ötekine çevirmek için gereken en az harf ekleme, silme ya da değiştirme sayısı
+  (`--esk` → `--esik`: 1). Yanlış öneri vermemek için 5 harften kısa adlarda en fazla 1,
+  uzunlarda en fazla 2 harf farka izin verilir.
 
 ### Bilinen sınırlamalar
 
@@ -260,48 +295,79 @@ Tablo önce seviyeye, aynı seviyede adede göre sıralanır ve ilk 10 satır g�
   asıl Blade dosyası mesajın sonunda `(View: …)` olarak yazar.
 - Windows yolları (`C:\laragon\www\...`) henüz tanınmıyor: vendor klasörü ayırt edilemediği
   için konum, istisnanın fırlatıldığı yer olur.
-- Aynı dosyada farklı zaman biçimleri ya da saat dilimleri karışırsa zaman aralığı yanlış
-  sıralanabilir.
-- Ayarlar, gösterilecek satır sayısı ve sıralama henüz komut satırından değiştirilemiyor.
+- Aynı dosyada farklı zaman biçimleri ya da saat dilimleri karışırsa zaman aralığı ve
+  `--siralama yeni` yanlış sıralanabilir.
+- Tek seferde yalnızca bir log dosyası okunur.
 - Dosyanın tamamı belleğe okunuyor; çok büyük dosyalar için satır satır okuma ileride eklenecek.
 
 ## Kurulum
 
-[Rust](https://rustup.rs) 1.85 veya daha yeni bir sürüm gerekir.
+[Rust](https://rustup.rs) 1.88 veya daha yeni bir sürüm gerekir.
 
 ```bash
 git clone https://github.com/Veysel440/veylog.git
 cd veylog
-cargo build --release
+cargo install --path .
 ```
 
-Derlenen program `target/release/veylog` konumunda oluşur.
+`cargo install` programı derleyip `~/.cargo/bin` klasörüne koyar; rustup bu klasörü PATH'e
+ekler, böylece `veylog` her klasörden çalışır. Kodu değiştirdikten sonra aynı komut programı
+günceller. Yalnızca derlemek için `cargo build --release` yeterlidir; program
+`target/release/veylog` konumunda oluşur.
 
 ## Kullanım
 
+```text
+veylog [SEÇENEKLER] <log-dosyası>
+```
+
+| Seçenek | Açıklama | Varsayılan |
+|---|---|---|
+| `-e`, `--esik <sayı>` | Drain benzerlik eşiği, 0 ile 1 arası. Büyüdükçe kalıplar daha az birleşir. | 0,7 |
+| `-n`, `--ilk <sayı>` | Tabloda gösterilecek satır sayısı. | 10 |
+| `--hepsi` | Tablonun tamamını göster. | |
+| `-s`, `--siralama <ölçüt>` | Tablonun sırası: `onem`, `adet` ya da `yeni` ([ayrıntılar](#kalıp-raporu)). | `onem` |
+| `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
+| `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
+
 ```bash
-# Derlemeden doğrudan çalıştırmak için
-cargo run -- ornekler/laravel.log
+# Varsayılan ayarlarla
+veylog storage/logs/laravel.log
 
-# Derlenmiş programla
-./target/release/veylog /yol/storage/logs/laravel.log
+# Daha sıkı eşik, ilk 20 satır
+veylog --esik 0,8 --ilk 20 storage/logs/laravel.log
 
-# Sadece ilk 20 satır
-./target/release/veylog /yol/storage/logs/laravel.log | head -20
+# Son ortaya çıkan sorunlar önce, tablonun tamamı
+veylog --siralama yeni --hepsi storage/logs/laravel.log
+
+# Derlemeden çalıştırırken: cargo'nun seçenekleriyle karışmasın diye önce --
+cargo run -- --ilk 5 ornekler/laravel.log
+```
+
+Çıkış kodları: `0` başarılı, `1` dosya okunamadı ya da çıktı yazılamadı, `2` kullanım hatası
+(bilinmeyen seçenek, geçersiz değer, eksik dosya adı). Böylece veylog'u çağıran bir betik
+hatanın türünü ayırt edebilir.
+
+```text
+$ veylog --esk 0,8 laravel.log
+veylog: bilinmeyen seçenek: --esk (bunu mu demek istediniz: --esik)
+Kullanım: veylog [SEÇENEKLER] <log-dosyası>
+Ayrıntılar için: veylog --yardim
 ```
 
 ## Proje yapısı
 
 ```text
 src/
-├── main.rs        programın girişi: argümanlar, dosya okuma, hata yönetimi
-├── kayit.rs       log metnini kayıtlara ayırır: başlık, seviye, mesaj, bağlam, devam satırları
-├── maske.rs       mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
-├── drain.rs       Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
-├── parmak_izi.rs  hata parmak izi: istisna sınıfı ve uygulama kodundaki ilk satır
-└── rapor.rs       özet raporu: sayılar, seviyeler ve kalıp tablosu
+├── main.rs         programın girişi: dosyayı okur, raporu yazar, çıkış kodlarını belirler
+├── komut_satiri.rs komut satırı: seçenekler, yardım metni, hata mesajları
+├── kayit.rs        log metnini kayıtlara ayırır: başlık, seviye, mesaj, bağlam, devam satırları
+├── maske.rs        mesajlardaki değişkenleri (sayı, IP, e-posta...) yer tutucularla değiştirir
+├── drain.rs        Drain algoritması: maskelenmiş mesajlardan kalıp çıkarır
+├── parmak_izi.rs   hata parmak izi: istisna sınıfı ve uygulama kodundaki ilk satır
+└── rapor.rs        özet raporu: sayılar, seviyeler, kalıp tablosu ve sıralamalar
 tests/
-└── cli.rs         programı gerçekten çalıştıran testler: argümanlar, hata mesajları, çıkış kodları
+└── cli.rs          programı gerçekten çalıştıran testler: argümanlar, hata mesajları, çıkış kodları
 ```
 
 Dış kütüphane olarak yalnızca [regex](https://crates.io/crates/regex) kullanılır.
@@ -333,7 +399,7 @@ anlatır. İçindeki IP adresleri dokümantasyon için ayrılmış aralıklardan
 - [x] Rakama duyarlı benzerlik eşiği: kısa mesajlardaki sayısal değişkenler
 - [x] Kalıp raporu: en yüksek seviye, ilk/son görülme zamanı, örnek mesaj
 - [x] Hata parmak izi: istisna sınıfı ve uygulamadaki ilk satır
-- [ ] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı, sıralama
+- [x] Komut satırı seçenekleri: benzerlik eşiği, gösterilecek kalıp sayısı, sıralama
 - [ ] JSON ve Markdown çıktısı
 - [ ] İki zaman aralığını karşılaştırma: yeni çıkan, kaybolan ve artan hatalar
 - [ ] Ani hata artışlarını yakalama (medyan + MAD)

@@ -27,8 +27,98 @@ fn metin(baytlar: &[u8]) -> String {
 #[test]
 fn arguman_yoksa_kullanim_gosterilir() {
     let cikti = veylog(&[]);
+    // Kullanım hataları 2 koduyla biter; dosya hataları 1 ile
+    assert_eq!(cikti.status.code(), Some(2));
+    let stderr = metin(&cikti.stderr);
+    assert!(stderr.contains("log dosyası verilmedi"), "{stderr}");
+    assert!(stderr.contains("Kullanım: veylog"), "{stderr}");
+}
+
+#[test]
+fn yardim_ve_surum_basariyla_gosterilir() {
+    for secenek in ["--yardim", "-h", "--help", "--yardım"] {
+        let cikti = veylog(&[secenek]);
+        assert!(cikti.status.success(), "{secenek}");
+        assert!(cikti.stderr.is_empty(), "{secenek}");
+        let stdout = metin(&cikti.stdout);
+        assert!(stdout.contains("Kullanım: veylog"), "{secenek}");
+        assert!(stdout.contains("--siralama"), "{secenek}");
+    }
+
+    let cikti = veylog(&["--surum"]);
+    assert!(cikti.status.success());
+    assert_eq!(
+        metin(&cikti.stdout),
+        format!("veylog {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn gecersiz_secenek_kullanim_hatasi_verir() {
+    let cikti = veylog(&["--esik", "1,5", "ornekler/laravel.log"]);
+    assert_eq!(cikti.status.code(), Some(2));
+    assert!(cikti.stdout.is_empty());
+    let stderr = metin(&cikti.stderr);
+    assert!(
+        stderr.contains("veylog: --esik için geçersiz değer \"1,5\""),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Ayrıntılar için: veylog --yardim"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn secenekler_raporu_degistirir() {
+    // Testler paket kökünde çalıştığı için örnek loga göreli yolla ulaşılır
+    let cikti = veylog(&[
+        "--esik",
+        "0,8",
+        "-n",
+        "3",
+        "--siralama",
+        "adet",
+        "ornekler/laravel.log",
+    ]);
+    let stdout = metin(&cikti.stdout);
+    assert!(cikti.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("Drain ile 25 kalıp (eşik 0,8) → parmak iziyle 26 grup"),
+        "{stdout}"
+    );
+    // En sık tekrar eden kalıp en üstte; üç satırdan sonrası söylenir
+    assert!(
+        stdout.contains(
+            "kalıp\n     8  INFO       09:02:13  17:22:08  Kullanıcı <SAYI> giriş yaptı\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.ends_with("  … 23 satır daha; tümünü görmek için --hepsi\n"),
+        "{stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn utf8_olmayan_dosya_adi_programi_cokertmez() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    // Linux'ta dosya adı herhangi bir bayt dizisi olabilir. `env::args` böyle bir argümanda
+    // çöküyordu (çıkış kodu 101); şimdi "okunamadı" hatası verilir.
+    let ad = OsStr::from_bytes(b"olmayan-\xff.log");
+    let cikti = Command::new(env!("CARGO_BIN_EXE_veylog"))
+        .arg(ad)
+        .output()
+        .expect("veylog çalıştırılamadı");
     assert_eq!(cikti.status.code(), Some(1));
-    assert!(metin(&cikti.stderr).contains("Kullanım: veylog"));
+    let stderr = metin(&cikti.stderr);
+    assert!(
+        stderr.contains("olmayan-\u{FFFD}.log okunamadı"),
+        "{stderr}"
+    );
 }
 
 #[test]

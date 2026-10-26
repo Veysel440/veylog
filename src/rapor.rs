@@ -8,16 +8,89 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Write};
+use std::path::Path;
 
 use crate::drain::{Ayarlar, Drain};
 use crate::kayit::{Kayit, Log, Seviye};
 use crate::maske::maskele;
 use crate::parmak_izi::ParmakIzi;
 
-/// Tabloda gösterilecek en fazla satır sayısı.
-const GOSTERILECEK_KALIP: usize = 10;
+/// Tabloda varsayılan olarak gösterilecek satır sayısı.
+pub const VARSAYILAN_ILK: usize = 10;
 /// Uzun kalıplar ve örnekler bu kadar karakterden sonra kesilir.
 const KALIP_GENISLIGI: usize = 80;
+
+/// Tablonun sırası.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Siralama {
+    /// Önce seviye, aynı seviyede adet: en ciddi sorun en üstte.
+    Onem,
+    /// Önce adet, aynı adette seviye: en sık tekrar eden en üstte.
+    Adet,
+    /// İlk görülme zamanı en yeni olan en üstte: en son ortaya çıkan sorunlar.
+    Yeni,
+}
+
+impl Siralama {
+    /// Bütün sıralamalar. Yardım metni ve hata mesajları bu listeden üretilir.
+    pub const HEPSI: [Siralama; 3] = [Siralama::Onem, Siralama::Adet, Siralama::Yeni];
+
+    /// Komut satırındaki adı.
+    pub fn ad(self) -> &'static str {
+        match self {
+            Siralama::Onem => "onem",
+            Siralama::Adet => "adet",
+            Siralama::Yeni => "yeni",
+        }
+    }
+
+    /// Yardım metnindeki açıklaması.
+    pub fn aciklama(self) -> &'static str {
+        match self {
+            Siralama::Onem => "önce seviye, sonra adet",
+            Siralama::Adet => "önce adet, sonra seviye",
+            Siralama::Yeni => "ilk görülme zamanı en yeni olan önce",
+        }
+    }
+
+    /// Komut satırındaki adından sıralamaya çevirir: "adet" → Siralama::Adet
+    ///
+    /// Adlar `ad` metodundan alınır; böylece ad yalnızca bir yerde yazılır.
+    pub fn ayristir(ad: &str) -> Option<Siralama> {
+        Siralama::HEPSI
+            .into_iter()
+            .find(|siralama| siralama.ad() == ad)
+    }
+
+    /// Satırları bu sıralamaya göre dizer. Sıralama kararlıdır: eşit olanlar ilk
+    /// görüldükleri sırada kalır.
+    fn uygula(self, satirlar: &mut [KalipSatiri<'_>]) {
+        match self {
+            Siralama::Onem => satirlar.sort_by_key(|satir| Reverse((satir.seviye, satir.adet))),
+            Siralama::Adet => satirlar.sort_by_key(|satir| Reverse((satir.adet, satir.seviye))),
+            Siralama::Yeni => satirlar.sort_by_key(|satir| Reverse((satir.ilk, satir.seviye))),
+        }
+    }
+}
+
+/// Raporun nasıl üretileceği: kalıp çıkarma ayarları, tablonun sırası ve uzunluğu.
+#[derive(Debug, Clone)]
+pub struct RaporAyarlari {
+    pub drain: Ayarlar,
+    pub siralama: Siralama,
+    /// Tabloda gösterilecek en fazla satır; None ise hepsi.
+    pub ilk: Option<usize>,
+}
+
+impl Default for RaporAyarlari {
+    fn default() -> Self {
+        RaporAyarlari {
+            drain: Ayarlar::default(),
+            siralama: Siralama::Onem,
+            ilk: Some(VARSAYILAN_ILK),
+        }
+    }
+}
 
 /// Tablodaki bir satır: bir kalıp, bir parmak izi ve onlara uyan kayıtlar hakkındaki bilgiler.
 #[derive(Debug)]
@@ -46,7 +119,7 @@ pub struct KalipAnalizi<'a> {
     pub maskeli_mesaj_sayisi: usize,
     /// Drain kaç kalıp buldu? Parmak izi bir kalıbı birden çok satıra bölebilir.
     pub kalip_sayisi: usize,
-    /// En önemli seviye başta; aynı seviyede en kalabalık satır başta.
+    /// Ayarlardaki sıralamaya göre dizilmiş satırlar.
     pub satirlar: Vec<KalipSatiri<'a>>,
 }
 
@@ -87,10 +160,10 @@ impl<'a> Grup<'a> {
     }
 }
 
-/// Kayıtları maskeleyip Drain'den geçirir, parmak izine göre böler ve her grup için bir
-/// satır üretir.
-pub fn kaliplari_cikar<'a>(log: &Log<'a>, ayarlar: Ayarlar) -> KalipAnalizi<'a> {
-    let mut drain = Drain::new(ayarlar);
+/// Kayıtları maskeleyip Drain'den geçirir, parmak izine göre böler, her grup için bir satır
+/// üretir ve satırları ayarlardaki sıraya dizer.
+pub fn kaliplari_cikar<'a>(log: &Log<'a>, ayarlar: &RaporAyarlari) -> KalipAnalizi<'a> {
+    let mut drain = Drain::new(ayarlar.drain.clone());
     let mut gruplar: Vec<Grup<'a>> = Vec::new();
     // (küme numarası, parmak izi) → grubun `gruplar` listesindeki sırası
     let mut grup_sirasi: HashMap<(usize, Option<ParmakIzi<'a>>), usize> = HashMap::new();
@@ -126,9 +199,7 @@ pub fn kaliplari_cikar<'a>(log: &Log<'a>, ayarlar: Ayarlar) -> KalipAnalizi<'a> 
             parmak_izi: grup.parmak_izi,
         })
         .collect();
-    // En önemli seviye başa, aynı seviyede en kalabalık başa. Sıralama kararlıdır: eşit
-    // olanlar ilk görüldükleri sırada kalır.
-    satirlar.sort_by_key(|satir| Reverse((satir.seviye, satir.adet)));
+    ayarlar.siralama.uygula(&mut satirlar);
 
     KalipAnalizi {
         ham_mesaj_sayisi: ham_mesajlar.len(),
@@ -139,10 +210,17 @@ pub fn kaliplari_cikar<'a>(log: &Log<'a>, ayarlar: Ayarlar) -> KalipAnalizi<'a> 
 }
 
 /// Özeti verilen yere yazar: ekrana (stdout) ya da testlerde bir bayt dizisine.
-pub fn ozet_yaz(cikti: &mut impl Write, yol: &str, icerik: &str, log: &Log<'_>) -> io::Result<()> {
+pub fn ozet_yaz(
+    cikti: &mut impl Write,
+    yol: &Path,
+    icerik: &str,
+    log: &Log<'_>,
+    ayarlar: &RaporAyarlari,
+) -> io::Result<()> {
     let zaman_araligi = log.zaman_araligi();
 
-    writeln!(cikti, "{yol}: {} satır", icerik.lines().count())?;
+    // `display`: dosya adı geçerli UTF-8 değilse bozuk baytlar � olarak yazılır
+    writeln!(cikti, "{}: {} satır", yol.display(), icerik.lines().count())?;
     writeln!(cikti, "  Kayıt         : {}", log.kayitlar.len())?;
     writeln!(cikti, "  Devam satırı  : {}", log.devam_satiri_sayisi())?;
     writeln!(cikti, "  Yetim satır   : {}", log.yetim_satir)?;
@@ -157,14 +235,15 @@ pub fn ozet_yaz(cikti: &mut impl Write, yol: &str, icerik: &str, log: &Log<'_>) 
         writeln!(cikti, "  {:<10}{adet:>4}", seviye.ad())?;
     }
 
-    let analiz = kaliplari_cikar(log, Ayarlar::default());
+    let analiz = kaliplari_cikar(log, ayarlar);
     writeln!(cikti)?;
     writeln!(
         cikti,
-        "Kalıplar: {} farklı mesaj → maskeleyince {} → Drain ile {} kalıp → parmak iziyle {} grup",
+        "Kalıplar: {} farklı mesaj → maskeleyince {} → Drain ile {} kalıp (eşik {}) → parmak iziyle {} grup",
         analiz.ham_mesaj_sayisi,
         analiz.maskeli_mesaj_sayisi,
         analiz.kalip_sayisi,
+        ondalik(ayarlar.drain.benzerlik_esigi),
         analiz.satirlar.len()
     )?;
 
@@ -181,7 +260,9 @@ pub fn ozet_yaz(cikti: &mut impl Write, yol: &str, icerik: &str, log: &Log<'_>) 
             "  {:>4}  {:<9}  {:<zaman_genisligi$}  {:<zaman_genisligi$}  kalıp",
             "adet", "seviye", "ilk", "son"
         )?;
-        for satir in analiz.satirlar.iter().take(GOSTERILECEK_KALIP) {
+        // None (--hepsi): sınır yok
+        let gosterilecek = ayarlar.ilk.unwrap_or(usize::MAX);
+        for satir in analiz.satirlar.iter().take(gosterilecek) {
             writeln!(
                 cikti,
                 "  {:>4}  {:<9}  {:<zaman_genisligi$}  {:<zaman_genisligi$}  {}",
@@ -205,10 +286,23 @@ pub fn ozet_yaz(cikti: &mut impl Write, yol: &str, icerik: &str, log: &Log<'_>) 
                 writeln!(cikti, "{girinti}konum: {parmak_izi}")?;
             }
         }
+        // Gösterilmeyen satırlar varsa söyle; yoksa kullanıcı tablonun bittiğini sanır
+        let gizlenen = analiz.satirlar.len().saturating_sub(gosterilecek);
+        if gizlenen > 0 {
+            writeln!(
+                cikti,
+                "  … {gizlenen} satır daha; tümünü görmek için --hepsi"
+            )?;
+        }
     }
 
     // Tamponda kalan son satırlar burada yazılır; varsa hatası da burada ortaya çıkar
     cikti.flush()
+}
+
+/// Ondalık sayıyı Türkçedeki gibi virgülle yazar: 0.7 → "0,7"
+pub fn ondalik(sayi: f64) -> String {
+    sayi.to_string().replace('.', ",")
 }
 
 /// Zamanı tabloda gösterilecek hale getirir: tek günlük logda "14:03:11", birden çok günü
@@ -255,6 +349,21 @@ mod testler {
     }
 
     #[test]
+    fn ondalik_virgulle_yazilir() {
+        assert_eq!(ondalik(0.7), "0,7");
+        assert_eq!(ondalik(0.85), "0,85");
+        assert_eq!(ondalik(1.0), "1");
+    }
+
+    #[test]
+    fn her_siralama_adindan_geri_bulunur() {
+        for siralama in Siralama::HEPSI {
+            assert_eq!(Siralama::ayristir(siralama.ad()), Some(siralama));
+        }
+        assert_eq!(Siralama::ayristir("rastgele"), None);
+    }
+
+    #[test]
     fn zaman_tek_gunde_saat_cok_gunde_tarihle_gosterilir() {
         assert_eq!(zaman_goster("2026-10-24 14:03:11", true), "14:03:11");
         assert_eq!(
@@ -272,7 +381,7 @@ mod testler {
         ]
         .join("\n");
         let log = kayitlari_ayir(&metin);
-        let analiz = kaliplari_cikar(&log, Ayarlar::default());
+        let analiz = kaliplari_cikar(&log, &RaporAyarlari::default());
 
         assert_eq!(analiz.satirlar.len(), 1);
         let satir = &analiz.satirlar[0];
@@ -283,6 +392,80 @@ mod testler {
     }
 
     #[test]
+    fn siralama_secenegi_tabloyu_dizer() {
+        // Beş kalıp. Eşitlikler bilerek kuruldu: her sıralamanın ikinci ölçütü, satırların
+        // ilk görülme sırasından farklı bir sonuç verir; ikinci ölçüt silinirse test bozulur.
+        //
+        //   kalıp               seviye   adet  ilk
+        //   Stok azaldı         WARNING  1     10:00:00
+        //   Sepet güncellendi   INFO     3     10:00:01
+        //   Kargo hazırlandı    INFO     1     10:00:04
+        //   Ödeme reddedildi    ERROR    1     10:00:04
+        //   Disk doluyor        WARNING  2     10:00:05
+        let metin = [
+            "[2026-10-24 10:00:00] local.WARNING: Stok azaldı",
+            "[2026-10-24 10:00:01] local.INFO: Sepet güncellendi",
+            "[2026-10-24 10:00:02] local.INFO: Sepet güncellendi",
+            "[2026-10-24 10:00:03] local.INFO: Sepet güncellendi",
+            "[2026-10-24 10:00:04] local.INFO: Kargo hazırlandı",
+            "[2026-10-24 10:00:04] local.ERROR: Ödeme reddedildi",
+            "[2026-10-24 10:00:05] local.WARNING: Disk doluyor",
+            "[2026-10-24 10:00:06] local.WARNING: Disk doluyor",
+        ]
+        .join("\n");
+        let log = kayitlari_ayir(&metin);
+
+        for (siralama, beklenen) in [
+            // Seviye; aynı seviyede adet (Disk 2 > Stok 1, Sepet 3 > Kargo 1)
+            (
+                Siralama::Onem,
+                [
+                    "Ödeme reddedildi",
+                    "Disk doluyor",
+                    "Stok azaldı",
+                    "Sepet güncellendi",
+                    "Kargo hazırlandı",
+                ],
+            ),
+            // Adet; aynı adette seviye (Ödeme > Stok > Kargo)
+            (
+                Siralama::Adet,
+                [
+                    "Sepet güncellendi",
+                    "Disk doluyor",
+                    "Ödeme reddedildi",
+                    "Stok azaldı",
+                    "Kargo hazırlandı",
+                ],
+            ),
+            // İlk görülme, en yeni önce; aynı anda seviye (Ödeme > Kargo)
+            (
+                Siralama::Yeni,
+                [
+                    "Disk doluyor",
+                    "Ödeme reddedildi",
+                    "Kargo hazırlandı",
+                    "Sepet güncellendi",
+                    "Stok azaldı",
+                ],
+            ),
+        ] {
+            // Yapı güncelleme sözdizimi: siralama dışındaki alanlar varsayılandan gelir
+            let ayarlar = RaporAyarlari {
+                siralama,
+                ..RaporAyarlari::default()
+            };
+            let analiz = kaliplari_cikar(&log, &ayarlar);
+            let kaliplar: Vec<&str> = analiz
+                .satirlar
+                .iter()
+                .map(|satir| satir.kalip.as_str())
+                .collect();
+            assert_eq!(kaliplar, beklenen, "{siralama:?}");
+        }
+    }
+
+    #[test]
     fn ayni_kalip_farkli_konumda_ayri_satirlara_bolunur() {
         // Aynı mesaj: ikisi aynı denetleyiciden, biri bir servisten, biri istisnasız
         let metin = r#"[2026-10-24 10:00:00] local.ERROR: Undefined array key "id" {"exception":"[object] (ErrorException(code: 0): Undefined array key \"id\" at /var/www/app/Http/Controllers/SepetController.php:30)"}
@@ -290,7 +473,7 @@ mod testler {
 [2026-10-24 10:09:00] local.ERROR: Undefined array key "id" {"exception":"[object] (ErrorException(code: 0): Undefined array key \"id\" at /var/www/app/Http/Controllers/SepetController.php:30)"}
 [2026-10-24 10:10:00] local.ERROR: Undefined array key "id""#;
         let log = kayitlari_ayir(metin);
-        let analiz = kaliplari_cikar(&log, Ayarlar::default());
+        let analiz = kaliplari_cikar(&log, &RaporAyarlari::default());
 
         assert_eq!(analiz.kalip_sayisi, 1);
         let satirlar: Vec<(usize, Option<String>)> = analiz
@@ -320,7 +503,7 @@ mod testler {
     #[test]
     fn ornek_logda_kalip_bilgileri_dogru() {
         let log = kayitlari_ayir(ORNEK_LOG);
-        let analiz = kaliplari_cikar(&log, Ayarlar::default());
+        let analiz = kaliplari_cikar(&log, &RaporAyarlari::default());
 
         assert_eq!(analiz.ham_mesaj_sayisi, 45);
         assert_eq!(analiz.maskeli_mesaj_sayisi, 27);
@@ -383,15 +566,12 @@ mod testler {
     fn ozet_ornek_log_icin_dogru_yazilir() {
         let log = kayitlari_ayir(ORNEK_LOG);
 
-        // Ekran yerine bir bayt dizisine yaz, sonra metin olarak incele
-        let mut cikti = Vec::new();
-        ozet_yaz(&mut cikti, "ornek.log", ORNEK_LOG, &log).unwrap();
-        let metin = String::from_utf8(cikti).unwrap();
+        let metin = ozet(&log, &RaporAyarlari::default());
 
         assert!(metin.starts_with("ornek.log: 203 satır\n"));
         assert!(metin.contains("\nSeviyeler:\n  CRITICAL     2\n  ERROR       16\n"));
         assert!(metin.contains(
-            "Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp → parmak iziyle 24 grup\n"
+            "Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp (eşik 0,7) → parmak iziyle 24 grup\n"
         ));
         assert!(metin.contains("\n  adet  seviye     ilk       son       kalıp\n"));
         assert!(metin.contains("\n     2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı"));
@@ -402,5 +582,43 @@ mod testler {
         assert!(metin.contains(
             "\n                                       konum: app/Http/Middleware/HizSiniri.php:22 (RedisException)\n"
         ));
+        // 24 satırın 10'u gösterildi; kalanlar söylenir
+        assert!(metin.ends_with("\n  … 14 satır daha; tümünü görmek için --hepsi\n"));
+    }
+
+    #[test]
+    fn ilk_ve_hepsi_tablonun_uzunlugunu_belirler() {
+        let log = kayitlari_ayir(ORNEK_LOG);
+
+        let ilk_uc = ozet(
+            &log,
+            &RaporAyarlari {
+                ilk: Some(3),
+                ..RaporAyarlari::default()
+            },
+        );
+        assert!(ilk_uc.contains("\n  … 21 satır daha; tümünü görmek için --hepsi\n"));
+        // Üçüncü satır gösterilir, dördüncü (SQLSTATE) gösterilmez
+        assert!(ilk_uc.contains("kargo_ucreti"));
+        assert!(!ilk_uc.contains("SQLSTATE"));
+
+        let hepsi = ozet(
+            &log,
+            &RaporAyarlari {
+                ilk: None,
+                ..RaporAyarlari::default()
+            },
+        );
+        assert!(!hepsi.contains("satır daha"));
+        // Önem sırasında en altta kalan DEBUG kalıbı da gösterilir
+        assert!(hepsi.contains("Sepet önbellekten okundu"));
+        assert!(!ilk_uc.contains("Sepet önbellekten okundu"));
+    }
+
+    /// Özeti ekran yerine bir bayt dizisine yazar ve metin olarak döndürür.
+    fn ozet(log: &Log<'_>, ayarlar: &RaporAyarlari) -> String {
+        let mut cikti = Vec::new();
+        ozet_yaz(&mut cikti, Path::new("ornek.log"), ORNEK_LOG, log, ayarlar).unwrap();
+        String::from_utf8(cikti).unwrap()
     }
 }

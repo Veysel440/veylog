@@ -2,6 +2,8 @@
 name = "veylog"
 version = "0.1.0"
 edition = "2024"
+# En düşük Rust sürümü: `if let ... && ...` zincirleri 1.88'de kararlı hale geldi
+rust-version = "1.88"
 
 [dependencies]
 regex = "1.13.1"
