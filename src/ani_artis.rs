@@ -23,11 +23,21 @@
 //! INFO, `Kullanıcı 7 giriş yapamadı` WARNING). Satırın seviyesi en yükseğidir; ona bakılsaydı
 //! INFO trafiğinin her yoğun anı bir WARNING artışı sayılırdı. Artışın seviyesi, örneği, ilk ve
 //! son zamanı da yalnızca sayılan kayıtlardandır.
+//!
+//! Kayıtlar depodaki sütunlardan bir kez okunur; her satırın her dolu dilimi için kayıt sayısı,
+//! ilk ve son kayıt ve en yüksek seviye toplanır. Artışın örneği, ilk kaydının mesajıdır: o kayıt
+//! bir alt grubun ilk kaydıysa mesajı depodadır, değilse girdiden yeniden okunur. Yeniden
+//! okunamazsa (girdi bu arada değiştiyse) kaydın alt grubunun örneği yazılır: maskeli mesajı,
+//! seviyesi ve istisnası aynı olan ilk kaydın mesajı.
 
 use std::cmp::Reverse;
+use std::collections::HashMap;
+use std::io;
 
+use crate::depo::Depo;
 use crate::istatistik::medyan_ve_mad;
-use crate::kayit::{Log, Seviye};
+use crate::kayit::Seviye;
+use crate::okuyucu::{OrnekIstegi, OrnekKaynagi};
 use crate::rapor::KalipAnalizi;
 use crate::zaman::Zaman;
 
@@ -91,36 +101,63 @@ pub struct AniArtislar {
 }
 
 /// Bir kalıbın kaydı olan bir dilimi.
+#[derive(Debug, Clone)]
 struct DoluDilim {
     /// 1970-01-01'den bu yana kaçıncı dilim olduğu.
     numara: i64,
     adet: usize,
-    /// Dilimdeki ilk ve son kaydın zamanı.
-    ilk: Zaman,
-    son: Zaman,
-    /// Dilimdeki ilk kaydın `Log::kayitlar` içindeki sırası.
+    /// Dilimdeki ilk ve son kaydın zamanı, 1970'ten bu yana saniye. Aynı anda birden çok kayıt
+    /// varsa ilk, logda önce gelenidir.
+    ilk: i64,
+    son: i64,
+    /// Dilimdeki ilk kaydın sıra numarası ve alt grubu.
     ilk_kayit: usize,
+    ilk_alt_grup: u32,
     /// Dilimdeki kayıtların en yüksek seviyesi.
     seviye: Seviye,
 }
 
+impl DoluDilim {
+    fn new(numara: i64, saniye: i64, kayit: usize, alt_grup: u32, seviye: Seviye) -> DoluDilim {
+        DoluDilim {
+            numara,
+            adet: 1,
+            ilk: saniye,
+            son: saniye,
+            ilk_kayit: kayit,
+            ilk_alt_grup: alt_grup,
+            seviye,
+        }
+    }
+
+    /// Kaydı dilime katar. Kayıtlar logdaki sırayla geldiği için zamanı ilkininkiyle aynı olan
+    /// bir kayıt ilk olamaz.
+    fn ekle(&mut self, saniye: i64, kayit: usize, alt_grup: u32, seviye: Seviye) {
+        self.adet += 1;
+        if saniye < self.ilk {
+            self.ilk = saniye;
+            self.ilk_kayit = kayit;
+            self.ilk_alt_grup = alt_grup;
+        }
+        self.son = self.son.max(saniye);
+        self.seviye = self.seviye.max(seviye);
+    }
+}
+
 impl AniArtislar {
     /// Logun süresini `dilim_dakika` uzunluğunda dilimlere bölüp her kalıbın ani artışlarını
-    /// bulur.
-    pub fn hesapla(log: &Log<'_>, analiz: &KalipAnalizi<'_>, dilim_dakika: u16) -> AniArtislar {
+    /// bulur. `ornekler`: artışın ilk kaydının mesajı depoda yoksa girdiyi yeniden okuyan kaynak.
+    pub fn hesapla(
+        depo: &Depo,
+        analiz: &KalipAnalizi,
+        dilim_dakika: u16,
+        ornekler: &mut dyn OrnekKaynagi,
+    ) -> io::Result<AniArtislar> {
         let dilim_saniye = i64::from(dilim_dakika) * 60;
-        let zamanlar: Vec<Zaman> = log
-            .kayitlar
-            .iter()
-            .map(|kayit| Zaman::kayittan(kayit.zaman()))
-            .collect();
         // Her kaydın dilimi: 1970-01-01 00:00'dan bu yana kaçıncı dilimde olduğu. Böylece
         // dilimler saat başlarına hizalanır: 10 dakikalık dilimler 16:00, 16:10, 16:20... diye
         // başlar. `div_euclid` 1970'ten önceki (eksi) saniyelerde de aşağı yuvarlar.
-        let dilimler: Vec<i64> = zamanlar
-            .iter()
-            .map(|zaman| zaman.saniye().div_euclid(dilim_saniye))
-            .collect();
+        let dilim = |saniye: i64| saniye.div_euclid(dilim_saniye);
         let dilim_basi = |numara: i64| Zaman::saniyeden(numara * dilim_saniye);
 
         let mut sonuc = AniArtislar {
@@ -129,48 +166,46 @@ impl AniArtislar {
             dilim_sayisi: 0,
             artislar: Vec::new(),
         };
-        let (Some(&ilk_dilim), Some(&son_dilim)) = (dilimler.iter().min(), dilimler.iter().max())
-        else {
-            return sonuc;
+        let (Some(ilk), Some(son)) = (depo.en_eski(), depo.en_yeni()) else {
+            return Ok(sonuc);
         };
+        let (ilk_dilim, son_dilim) = (dilim(ilk.saniye()), dilim(son.saniye()));
         sonuc.aralik = Some((dilim_basi(ilk_dilim), dilim_basi(son_dilim + 1)));
         // 64 bitlik sistemlerde her zaman sığar
         sonuc.dilim_sayisi = usize::try_from(son_dilim - ilk_dilim + 1).unwrap_or(usize::MAX);
         if sonuc.dilim_sayisi < EN_AZ_DILIM {
-            return sonuc;
+            return Ok(sonuc);
         }
 
-        for (sira, satir) in analiz.satirlar.iter().enumerate() {
-            // Satırın WARNING ve üstündeki kayıtları; dilimlerine, aynı dilimdekiler zamanlarına
-            // (zamanı aynı olanlar logdaki sırasına) göre sıralı. Satırda böyle bir kayıt yoksa
-            // (bütün kayıtları INFO) atlanır.
-            let mut kayitlar: Vec<(i64, Zaman, usize)> = satir
-                .kayitlar
-                .iter()
-                .filter(|&&kayit| log.kayitlar[kayit].seviye() >= EN_DUSUK_SEVIYE)
-                .map(|&kayit| (dilimler[kayit], zamanlar[kayit], kayit))
-                .collect();
-            if kayitlar.is_empty() {
+        // Her satırın WARNING ve üstündeki kayıtlarının dolu dilimleri. Kayıt sütunlardan logdaki
+        // sırayla okunur. Seviyeye kalıp satırının değil kaydın kendisine (alt grubuna) bakılır.
+        let mut dilimler: HashMap<(usize, i64), DoluDilim> = HashMap::new();
+        for (kayit, (saniye, alt_grup)) in depo.kayitlar().enumerate() {
+            let seviye = depo.alt_grup_seviyesi(alt_grup);
+            if seviye < EN_DUSUK_SEVIYE {
                 continue;
             }
-            kayitlar.sort_unstable();
-            // Kaydı olan dilimler. `chunk_by` dilimi aynı olan ardışık kayıtları bir grupta
-            // toplar; sıralı oldukları için her grup bir dilimin bütün kayıtlarıdır.
-            let dolu: Vec<DoluDilim> = kayitlar
-                .chunk_by(|onceki, sonraki| onceki.0 == sonraki.0)
-                .map(|grup| DoluDilim {
-                    numara: grup[0].0,
-                    adet: grup.len(),
-                    ilk: grup[0].1,
-                    son: grup[grup.len() - 1].1,
-                    ilk_kayit: grup[0].2,
-                    seviye: grup
-                        .iter()
-                        .map(|&(_, _, kayit)| log.kayitlar[kayit].seviye())
-                        .max()
-                        .expect("`chunk_by` boş grup vermez"),
-                })
-                .collect();
+            let satir = analiz.alt_grup_satiri[alt_grup as usize];
+            let numara = dilim(saniye);
+            dilimler
+                .entry((satir, numara))
+                .and_modify(|dolu| dolu.ekle(saniye, kayit, alt_grup, seviye))
+                .or_insert_with(|| DoluDilim::new(numara, saniye, kayit, alt_grup, seviye));
+        }
+        // Satır satır, dilimlerin sırasıyla. Satırda böyle bir kayıt yoksa (bütün kayıtları
+        // INFO) satırın dilimi de yoktur.
+        let mut satir_dilimleri: Vec<Vec<DoluDilim>> = vec![Vec::new(); analiz.satirlar.len()];
+        for ((satir, _), dolu) in dilimler {
+            satir_dilimleri[satir].push(dolu);
+        }
+
+        // Artışların ilk kayıtları: örnekleri en sonda topluca bulunur
+        let mut ornek_kayitlari = Vec::new();
+        for (sira, dolu) in satir_dilimleri.iter_mut().enumerate() {
+            if dolu.is_empty() {
+                continue;
+            }
+            dolu.sort_unstable_by_key(|dilim| dilim.numara);
             let sayilar: Vec<usize> = dolu.iter().map(|dilim| dilim.adet).collect();
             // Kaydı olmayan dilimler 0 sayılır. Dizi boş olamaz: log en az `EN_AZ_DILIM` dilim.
             let olagan = medyan_ve_mad(sonuc.dilim_sayisi - dolu.len(), &sayilar)
@@ -198,6 +233,7 @@ impl AniArtislar {
                     continue;
                 }
                 let (ilk, son) = (grup[0], grup[grup.len() - 1]);
+                ornek_kayitlari.push((ilk.ilk_kayit, ilk.ilk_alt_grup));
                 sonuc.artislar.push(AniArtis {
                     satir: sira,
                     seviye: grup
@@ -205,21 +241,30 @@ impl AniArtislar {
                         .map(|dilim| dilim.seviye)
                         .max()
                         .expect("`chunk_by` boş grup vermez"),
-                    ornek: log.kayitlar[ilk.ilk_kayit].mesaj().to_owned(),
+                    // Örnekler aşağıda bulunur
+                    ornek: String::new(),
                     olagan: olagan.medyan,
                     mad: olagan.mad,
                     baslangic: dilim_basi(ilk.numara),
                     bitis: dilim_basi(son.numara + 1),
                     dilim_sayisi: grup.len(),
                     kayit_sayisi: grup.iter().map(|dilim| dilim.adet).sum(),
-                    ilk: ilk.ilk,
-                    son: son.son,
+                    ilk: Zaman::saniyeden(ilk.ilk),
+                    son: Zaman::saniyeden(son.son),
                     zirve_baslangic: dilim_basi(zirve.numara),
                     zirve_bitis: dilim_basi(zirve.numara + 1),
                     zirve_adet: zirve.adet,
                     puan: puan(zirve.adet),
                 });
             }
+        }
+        let mesajlar = mesajlari_bul(&ornek_kayitlari, depo, ornekler)?;
+        for (artis, (kayit, alt_grup)) in sonuc.artislar.iter_mut().zip(&ornek_kayitlari) {
+            // Kayıt yeniden okunamadıysa (girdi bu arada değiştiyse) alt grubunun örneği
+            artis.ornek = match mesajlar.get(kayit) {
+                Some(mesaj) => mesaj.clone(),
+                None => depo.alt_gruplar()[*alt_grup as usize].ornek().to_owned(),
+            };
         }
         // Puanı en yüksek olan başta; eşitse önce başlayan. Sıralama kararlıdır: ikisi de
         // eşitse kalıp satırlarının sırası (--siralama) korunur.
@@ -228,13 +273,51 @@ impl AniArtislar {
                 .total_cmp(&a.puan)
                 .then(a.baslangic.cmp(&b.baslangic))
         });
-        sonuc
+        Ok(sonuc)
     }
 
     /// Log, olağan seviyeyi ölçmeye yetecek kadar dilim sürüyor mu?
     pub fn yeterli(&self) -> bool {
         self.dilim_sayisi >= EN_AZ_DILIM
     }
+}
+
+/// Kayıtların maskelenmemiş mesajları; kayıtlar (sıra numarası, alt grup) olarak verilir. Kayıt
+/// bir alt grubun ilk kaydıysa mesajı depodadır; değilse girdiden yeniden okunur. Bulunamayan
+/// kayıt sonuçta yer almaz.
+fn mesajlari_bul(
+    kayitlar: &[(usize, u32)],
+    depo: &Depo,
+    ornekler: &mut dyn OrnekKaynagi,
+) -> io::Result<HashMap<usize, String>> {
+    let depodakiler: HashMap<usize, &str> = depo
+        .alt_gruplar()
+        .iter()
+        .map(|alt_grup| (alt_grup.ilk_kayit(), alt_grup.ornek()))
+        .collect();
+    let okunacaklar: Vec<OrnekIstegi<'_>> = kayitlar
+        .iter()
+        .filter(|(kayit, _)| !depodakiler.contains_key(kayit))
+        .map(|&(sira, alt_grup)| {
+            let alt_grup = &depo.alt_gruplar()[alt_grup as usize];
+            OrnekIstegi {
+                sira,
+                maskeli: depo.maskeli_mesaj(alt_grup.maskeli()),
+                seviye: alt_grup.seviye(),
+            }
+        })
+        .collect();
+    let mut mesajlar = if okunacaklar.is_empty() {
+        HashMap::new()
+    } else {
+        ornekler.mesajlar(&okunacaklar)?
+    };
+    for (kayit, _) in kayitlar {
+        if let Some(mesaj) = depodakiler.get(kayit) {
+            mesajlar.insert(*kayit, (*mesaj).to_owned());
+        }
+    }
+    Ok(mesajlar)
 }
 
 /// Rapor ve Markdown testlerinin seviyesi karışık logu. "Kuyruk <SAYI> dolu" kalıbında on
@@ -301,8 +384,10 @@ pub fn deneme_logu() -> String {
 #[cfg(test)]
 mod testler {
     use super::*;
-    use crate::kayit::kayitlari_ayir;
+    use crate::depo;
+    use crate::okuyucu::YenidenOkuyucu;
     use crate::rapor::{RaporAyarlari, kaliplari_cikar};
+    use std::io::Cursor;
 
     const ORNEK_LOG: &str = include_str!("../ornekler/laravel.log");
 
@@ -324,14 +409,20 @@ mod testler {
     /// Logun ani artışları ve kalıp satırlarının metinleri (artışlardaki `satir` bunlara
     /// bakar).
     fn hesapla(metin: &str, dakika: u16) -> (AniArtislar, Vec<String>) {
-        let log = kayitlari_ayir(metin);
-        let analiz = kaliplari_cikar(&log, &RaporAyarlari::default());
+        let depo = depo::metinden(metin);
+        let analiz = kaliplari_cikar(&depo, &RaporAyarlari::default());
         let kaliplar = analiz
             .satirlar
             .iter()
             .map(|satir| satir.kalip.clone())
             .collect();
-        (AniArtislar::hesapla(&log, &analiz, dakika), kaliplar)
+        (artislar(metin, &depo, &analiz, dakika), kaliplar)
+    }
+
+    /// Ani artışlar; örnekler gerekirse metinden yeniden okunur.
+    fn artislar(metin: &str, depo: &Depo, analiz: &KalipAnalizi, dakika: u16) -> AniArtislar {
+        let mut kaynak = YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), depo.dizin().to_vec());
+        AniArtislar::hesapla(depo, analiz, dakika, &mut kaynak).unwrap()
     }
 
     /// Bir artışın kalıbı, zirvesi ve dilim aralığı: ("Kuyruk dolu", 12, "11:00", "11:02")
@@ -642,13 +733,13 @@ mod testler {
         // diliminde 8 WARNING, 11:00:30'daki on dakikalık WARNING ve bir ERROR, ikincisinde 4
         // WARNING var: seviyesi iki dilimin en yükseği (ERROR), örneği ilk kaydı.
         let metin = karisik_seviyeli_log();
-        let log = kayitlari_ayir(&metin);
-        let analiz = kaliplari_cikar(&log, &RaporAyarlari::default());
+        let depo = depo::metinden(&metin);
+        let analiz = kaliplari_cikar(&depo, &RaporAyarlari::default());
         assert_eq!(analiz.satirlar.len(), 1);
         assert_eq!(analiz.satirlar[0].seviye, Seviye::Critical);
         assert_eq!(analiz.satirlar[0].ornek, "Kuyruk 2 dolu");
 
-        let ani = AniArtislar::hesapla(&log, &analiz, 1);
+        let ani = artislar(&metin, &depo, &analiz, 1);
         assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
         let artis = &ani.artislar[0];
         assert_eq!(artis.seviye, Seviye::Error);
@@ -663,6 +754,92 @@ mod testler {
         assert_eq!(
             (artis.dilim_sayisi, artis.kayit_sayisi, artis.zirve_adet),
             (2, 14, 10)
+        );
+    }
+
+    /// Hiçbir kaydı bulamayan örnek kaynağı: girdi değişmiş ya da yeniden okunamıyor.
+    struct BulamayanKaynak;
+
+    impl OrnekKaynagi for BulamayanKaynak {
+        fn mesajlar(&mut self, _: &[OrnekIstegi<'_>]) -> io::Result<HashMap<usize, String>> {
+            Ok(HashMap::new())
+        }
+    }
+
+    #[test]
+    fn yeniden_okunamayan_ornegin_yerine_alt_grubunki_yazilir() {
+        // Kalıbın ilk kaydı INFO, artış ERROR kayıtlarından. Artışın ilk kaydı (Kuyruk 7) alt
+        // grubunun ilk kaydı değil: yeniden okunur. Okunamazsa yerine ERROR alt grubunun örneği
+        // (Kuyruk 2) yazılır; kalıbın örneği (INFO kaydı) değil.
+        let mut satirlar = vec![
+            "[2026-10-24 10:00:00] local.INFO: Kuyruk 1 dolu".to_string(),
+            "[2026-10-24 10:05:00] local.ERROR: Kuyruk 2 dolu".to_string(),
+        ];
+        for numara in [7, 3, 9, 4, 8, 6, 5] {
+            satirlar.push(format!(
+                "[2026-10-24 11:00:00] local.ERROR: Kuyruk {numara} dolu"
+            ));
+        }
+        satirlar.push("[2026-10-24 11:59:59] local.INFO: Başladı".to_string());
+        let metin = satirlar.join("\n");
+        let depo = depo::metinden(&metin);
+        let analiz = kaliplari_cikar(&depo, &RaporAyarlari::default());
+        assert_eq!(analiz.satirlar[0].ornek, "Kuyruk 1 dolu");
+
+        let okunan = artislar(&metin, &depo, &analiz, 1);
+        assert_eq!(okunan.artislar[0].ornek, "Kuyruk 7 dolu");
+        let okunamayan = AniArtislar::hesapla(&depo, &analiz, 1, &mut BulamayanKaynak).unwrap();
+        assert_eq!(okunamayan.artislar.len(), 1);
+        assert_eq!(okunamayan.artislar[0].ornek, "Kuyruk 2 dolu");
+    }
+
+    #[test]
+    fn sirasiz_dilimin_ornegi_en_erken_kaydin_alt_grubundan() {
+        // Artışın dilimine önce bir ERROR kaydı yazılmış, sonra zamanı daha erken bir WARNING
+        // kaydı (aynı kalıp, başka alt grup). Örnek en erken kayıttır; yeniden okunurken onun
+        // alt grubunun maskeli mesajı ve seviyesiyle denetlenir.
+        let mut satirlar = vec![
+            "[2026-10-24 10:00:00] local.INFO: Başladı".to_string(),
+            "[2026-10-24 10:05:00] local.ERROR: Kuyruk 1 dolu".to_string(),
+            "[2026-10-24 10:06:00] local.WARNING: Kuyruk 2 dolu".to_string(),
+            "[2026-10-24 11:00:30] local.ERROR: Kuyruk 7 dolu".to_string(),
+            "[2026-10-24 11:00:05] local.WARNING: Kuyruk 8 dolu".to_string(),
+        ];
+        for numara in 10..16 {
+            satirlar.push(format!(
+                "[2026-10-24 11:00:40] local.ERROR: Kuyruk {numara} dolu"
+            ));
+        }
+        satirlar.push("[2026-10-24 11:59:59] local.INFO: Başladı".to_string());
+        let (ani, _) = hesapla(&satirlar.join("\n"), 1);
+        assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
+        let artis = &ani.artislar[0];
+        assert_eq!(artis.ornek, "Kuyruk 8 dolu");
+        assert_eq!(artis.ilk.to_string(), "2026-10-24 11:00:05");
+    }
+
+    #[test]
+    fn ayni_saniyedeki_kayitlardan_logda_once_gelen_ornektir() {
+        // Artışın sekiz kaydı aynı saniyede; örnek, logda ilk yazılanı. O kayıt kalıbın ilk
+        // kaydı değil (10:05'teki): mesajı girdiden yeniden okunur.
+        let mut satirlar = vec![
+            "[2026-10-24 10:00:00] local.INFO: Başladı".to_string(),
+            "[2026-10-24 10:05:00] local.ERROR: Kuyruk 1 dolu".to_string(),
+        ];
+        for numara in [7, 3, 9, 4, 8, 2, 6, 5] {
+            satirlar.push(format!(
+                "[2026-10-24 11:00:00] local.ERROR: Kuyruk {numara} dolu"
+            ));
+        }
+        satirlar.push("[2026-10-24 11:59:59] local.INFO: Başladı".to_string());
+        let (ani, kaliplar) = hesapla(&satirlar.join("\n"), 1);
+        assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
+        let artis = &ani.artislar[0];
+        assert_eq!(kaliplar[artis.satir], "Kuyruk <SAYI> dolu");
+        assert_eq!(artis.ornek, "Kuyruk 7 dolu");
+        assert_eq!(
+            (artis.ilk.to_string(), artis.kayit_sayisi),
+            ("2026-10-24 11:00:00".to_string(), 8)
         );
     }
 

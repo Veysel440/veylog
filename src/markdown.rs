@@ -17,7 +17,7 @@ use crate::rapor::{
 use crate::zaman::sure_yaz;
 
 /// Özeti Markdown olarak yazar. `--ilk` ve `--siralama` burada da geçerlidir.
-pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
+pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     writeln!(cikti, "## veylog: {}", kod(&gorunur(&ozet.dosya)))?;
     writeln!(cikti)?;
     writeln!(
@@ -25,7 +25,7 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
         "- **Satır:** {} · **Kayıt:** {} · **Devam satırı:** {} · **Yetim satır:** {}",
         ozet.satir_sayisi, ozet.kayit_sayisi, ozet.devam_satiri_sayisi, ozet.yetim_satir_sayisi
     )?;
-    if let Some((en_eski, en_yeni)) = ozet.zaman_araligi {
+    if let Some((en_eski, en_yeni)) = &ozet.zaman_araligi {
         writeln!(cikti, "- **Zaman aralığı:** {en_eski} → {en_yeni}")?;
     }
     let seviyeler: Vec<String> = ozet
@@ -70,7 +70,7 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
 /// Karşılaştırma bölümü: iki yarının özeti ve yeni çıkan, kaybolan, artan kalıpların tabloları.
 fn karsilastirma_yaz(
     cikti: &mut impl Write,
-    ozet: &Ozet<'_>,
+    ozet: &Ozet,
     karsilastirma: &Karsilastirma,
     gosterim: ZamanGosterimi,
 ) -> io::Result<()> {
@@ -135,7 +135,7 @@ fn karsilastirma_yaz(
 /// kayıtlarındandır.
 fn ani_artis_yaz(
     cikti: &mut impl Write,
-    ozet: &Ozet<'_>,
+    ozet: &Ozet,
     ani_artislar: &AniArtislar,
     gosterim: ZamanGosterimi,
 ) -> io::Result<()> {
@@ -173,7 +173,7 @@ fn ani_artis_yaz(
 fn satir_yaz(
     cikti: &mut impl Write,
     sayilar: &[String],
-    satir: &KalipSatiri<'_>,
+    satir: &KalipSatiri,
     hucreler: &Hucreler<'_>,
     gosterim: ZamanGosterimi,
 ) -> io::Result<()> {
@@ -220,8 +220,8 @@ fn ornek(ornek: &str, kalip: &str) -> String {
 ///
 /// Kısa sınıf adı kod dışında yazılabilir: parmak izi yalnızca harf, rakam, `_`, `\` ve `@`
 /// içeren sınıf adlarını kabul eder.
-fn konum(satir: &KalipSatiri<'_>) -> String {
-    match satir.parmak_izi {
+fn konum(satir: &KalipSatiri) -> String {
+    match &satir.parmak_izi {
         Some(parmak_izi) => match parmak_izi.konum() {
             Some((dosya, satir_no)) => {
                 let yer = match satir_no {
@@ -272,10 +272,8 @@ fn hucre(metin: &str) -> String {
 mod testler {
     use super::*;
     use crate::ani_artis::{deneme_logu, karisik_seviyeli_log};
-    use crate::kayit::kayitlari_ayir;
     use crate::rapor::RaporAyarlari;
     use crate::zaman::ZamanNoktasi;
-    use std::path::Path;
 
     const ORNEK_LOG: &str = include_str!("../ornekler/laravel.log");
 
@@ -285,8 +283,7 @@ mod testler {
     }
 
     fn markdown_ayarlarla(log_metni: &str, yol: &str, ayarlar: &RaporAyarlari) -> String {
-        let log = kayitlari_ayir(log_metni);
-        let ozet = Ozet::hesapla(Path::new(yol), log_metni, &log, ayarlar).unwrap();
+        let ozet = Ozet::metinden(yol, log_metni, ayarlar).unwrap();
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         String::from_utf8(cikti).unwrap()

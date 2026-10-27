@@ -45,18 +45,21 @@
 //!   (`releases/20261024090000/`), `storage` ise bütün dağıtımların paylaştığı bir klasöre
 //!   bağlantıdır ve derlenmiş şablonun yolu bağlantı çözülerek yazılır. Kaydın kendi
 //!   yollarında ikisi de yoksa (yığın izi olmayan ölümcül hatalar, yığın izi kapalı JSON
-//!   kayıtları) logun başka kayıtlarında bulunan kökler denenir (`parmak_izleri`).
+//!   kayıtları) logun başka kayıtlarında bulunan kökler denenir. Kayıtlar akış halinde
+//!   okunduğu için böyle bir kaydın istisnası bir taslak olarak saklanır (`IstisnaTaslagi`);
+//!   parmak izi, logun bütün kökleri bilinince çıkarılır.
 //!
 //! Derlenmiş şablonlar uygulama kodu sayılmaz. Şablondaki sıradan bir hata `ViewException` olarak
 //! loglanır; derlenmiş şablonda kalan hatalar yalnızca ölümcül hatalardır (`Maximum execution
 //! time of 30 seconds exceeded`) ve yerleri rastgeledir: süre o an nerede dolduysa.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::iter;
 
 use crate::json_okuyucu::{Deger, metni_coz};
-use crate::kayit::{Kayit, Log};
+use crate::kayit::Kayit;
 
 /// Her isteğin ya da komutun geçtiği giriş dosyaları. Yığın izinin en dibinde hep bunlar
 /// bulunur; hatanın nerede oluştuğu hakkında bilgi vermezler. `server.php` Laravel 8 ve
@@ -86,22 +89,38 @@ const SABLON_KLASORLERI: [(&str, &str); 2] =
 /// Bir dosyadaki bir yer: `app/Services/SepetHesaplayici.php:88`. Şablonlarda satır yoktur:
 /// `resources/views/vitrin.blade.php`
 ///
-/// Dosya logda yazıldığı gibi, JSON kaçışlarıyla tutulur (Windows'ta `app\\Models\\Urun.php`).
-/// Böylece log metninden ödünç alınabilir ve parmak izi kopyalanabilir (`Copy`) kalır.
-/// Gösterilecek hali `dosya_yolu` verir.
+/// Dosya logda yazıldığı gibi, JSON kaçışlarıyla tutulur (Windows'ta `app\\Models\\Urun.php`);
+/// gösterilecek hali `dosya_yolu` verir. Bu tür satırlardan ödünç alır; parmak izinin
+/// sakladığı hali `Yer`dir.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Konum<'a> {
     dosya: &'a str,
     satir: Option<u32>,
 }
 
-impl<'a> Konum<'a> {
-    fn dosya_yolu(&self) -> Cow<'a, str> {
-        yolu_coz(self.dosya)
+impl Konum<'_> {
+    fn sahiplen(self) -> Yer {
+        Yer {
+            dosya: self.dosya.to_owned(),
+            satir: self.satir,
+        }
     }
 }
 
-impl fmt::Display for Konum<'_> {
+/// Parmak izindeki yer: `Konum`un satırlardan bağımsız, sahiplenilmiş kopyası.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Yer {
+    dosya: String,
+    satir: Option<u32>,
+}
+
+impl Yer {
+    fn dosya_yolu(&self) -> Cow<'_, str> {
+        yolu_coz(&self.dosya)
+    }
+}
+
+impl fmt::Display for Yer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.satir {
             Some(satir) => write!(f, "{}:{satir}", self.dosya_yolu()),
@@ -122,24 +141,24 @@ struct Aday<'a> {
 ///
 /// `Hash` ve `Eq` sayesinde bir HashMap'te anahtar olarak kullanılabilir: iki kayıt aynı
 /// sınıftan ve aynı konumdansa parmak izleri eşittir.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ParmakIzi<'a> {
-    /// Log'da yazıldığı gibi: `Illuminate\\Database\\QueryException`. Bağlam JSON olduğu
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParmakIzi {
+    /// Logda yazıldığı gibi: `Illuminate\\Database\\QueryException`. Bağlam JSON olduğu
     /// için `\` işareti `\\` olarak yazılır.
-    sinif: &'a str,
+    sinif: String,
     /// Uygulama kodundaki ilk satır. Hata tamamen vendor içinde oluştuysa None.
-    konum: Option<Konum<'a>>,
+    konum: Option<Yer>,
 }
 
-impl<'a> ParmakIzi<'a> {
+impl ParmakIzi {
     /// Ad alanı olmadan sınıf adı: `Illuminate\\Database\\QueryException` → `QueryException`
-    pub fn kisa_sinif(&self) -> &'a str {
-        kisa_ad(self.sinif)
+    pub fn kisa_sinif(&self) -> &str {
+        kisa_ad(&self.sinif)
     }
 
     /// Sınıfın tam adı, JSON kaçışı çözülmüş olarak: `Illuminate\Database\QueryException`
     ///
-    /// Log'da `\` işareti `\\` diye yazılır; sınıf adında başka kaçış olamayacağı için
+    /// Logda `\` işareti `\\` diye yazılır; sınıf adında başka kaçış olamayacağı için
     /// yalnızca bu çözülür.
     pub fn sinif(&self) -> String {
         self.sinif.replace("\\\\", "\\")
@@ -147,44 +166,27 @@ impl<'a> ParmakIzi<'a> {
 
     /// Uygulama kodundaki yer: dosya ve satır. Hata tamamen vendor içindeyse None. Dosyanın
     /// ayracı her sistemde `/`'dir: `app/Models/Urun.php`. Şablonlarda satır yoktur.
-    pub fn konum(&self) -> Option<(Cow<'a, str>, Option<u32>)> {
-        self.konum.map(|konum| (konum.dosya_yolu(), konum.satir))
+    pub fn konum(&self) -> Option<(Cow<'_, str>, Option<u32>)> {
+        self.konum
+            .as_ref()
+            .map(|konum| (konum.dosya_yolu(), konum.satir))
     }
 }
 
 /// Raporda gösterilen hali: `app/Services/SepetHesaplayici.php:88 (ErrorException)`
-impl fmt::Display for ParmakIzi<'_> {
+impl fmt::Display for ParmakIzi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.konum {
+        match &self.konum {
             Some(konum) => write!(f, "{konum} ({})", self.kisa_sinif()),
             None => write!(f, "uygulama kodunda bulunamadı ({})", self.kisa_sinif()),
         }
     }
 }
 
-/// Logdaki bütün kayıtların parmak izleri, kayıtlarla aynı sırada; istisnası olmayan kayıtlar
-/// için None.
-///
-/// Önce her kaydın istisnası okunur, sonra karar verilir: bir kaydın proje kökü kendi
-/// yollarında bulunamazsa logun başka kayıtlarında bulunan kökler denenir.
-pub fn parmak_izleri<'a>(log: &Log<'a>) -> Vec<Option<ParmakIzi<'a>>> {
-    let istisnalar: Vec<Option<Istisna<'a>>> = log.kayitlar.iter().map(Istisna::kayittan).collect();
-    let mut kokler: Vec<&'a str> = istisnalar
-        .iter()
-        .flatten()
-        .filter_map(Istisna::kok)
-        .collect();
-    kokler.sort_unstable();
-    kokler.dedup();
-    istisnalar
-        .iter()
-        .map(|istisna| istisna.as_ref().map(|istisna| istisna.parmak_izi(&kokler)))
-        .collect()
-}
-
 /// Bir kaydın istisnasından parmak izi için okunanlar. Konuma henüz karar verilmemiştir:
 /// kök gerekirse logun başka kayıtlarından gelir.
-struct Istisna<'a> {
+#[derive(Debug)]
+pub struct Istisna<'a> {
     sinif: &'a str,
     /// İçten dışa: önce istisnanın fırlatıldığı yer, sonra sırayla oraya giden çağrılar.
     adaylar: Vec<Aday<'a>>,
@@ -194,7 +196,7 @@ struct Istisna<'a> {
 
 impl<'a> Istisna<'a> {
     /// Kayıtta bir istisna yoksa None.
-    fn kayittan(kayit: &Kayit<'a>) -> Option<Istisna<'a>> {
+    pub fn kayittan(kayit: &Kayit<'a>) -> Option<Istisna<'a>> {
         match kayit.json_istisna() {
             Some(istisna) => Self::json_istisnasindan(istisna),
             None => Self::metinden(kayit),
@@ -294,7 +296,7 @@ impl<'a> Istisna<'a> {
     /// Derlenmiş şablon yığın izinde vendor'dan önce gelse de önce bütün yollarda vendor
     /// aranır: paylaşılan `storage` klasörü dağıtımın klasörünün dışında olabilir. Yollar
     /// zaten köke göre yazılmışsa ("vendor/laravel/...") kök yoktur, gerek de yoktur.
-    fn kok(&self) -> Option<&'a str> {
+    pub fn kok(&self) -> Option<&'a str> {
         let ara = |klasorler: &[(&str, &str)]| {
             self.adaylar
                 .iter()
@@ -304,23 +306,32 @@ impl<'a> Istisna<'a> {
     }
 
     /// Bilinen köklerden kaydın yollarından birinin başında olanı. Birden çoğu uyuyorsa en
-    /// uzunu: iç içe iki projede içteki kök daha doğrudur.
-    fn bilinen_kok(&self, kokler: &[&'a str]) -> Option<&'a str> {
+    /// uzunu: iç içe iki projede içteki kök daha doğrudur. Uzunluklar eşitse sıralamada
+    /// sonuncusu.
+    fn bilinen_kok<'k>(&self, kokler: &'k BTreeSet<String>) -> Option<&'k str> {
         kokler
             .iter()
-            .copied()
             .filter(|kok| {
                 self.adaylar
                     .iter()
-                    .any(|aday| aday.konum.dosya.starts_with(kok))
+                    .any(|aday| aday.konum.dosya.starts_with(kok.as_str()))
             })
             .max_by_key(|kok| kok.len())
+            .map(String::as_str)
     }
 
     /// Parmak izi. `kokler`: logun bütün kayıtlarında bulunan kökler; kaydın kendi kökü
     /// yoksa denenir.
-    fn parmak_izi(&self, kokler: &[&'a str]) -> ParmakIzi<'a> {
-        let kok = self.kok().or_else(|| self.bilinen_kok(kokler));
+    pub fn parmak_izi(&self, kokler: &BTreeSet<String>) -> ParmakIzi {
+        match self.kok() {
+            Some(kok) => self.koke_gore(Some(kok)),
+            None => self.koke_gore(self.bilinen_kok(kokler)),
+        }
+    }
+
+    /// Verilen köke göre parmak izi. Kaydın kendi kökü varsa (`kok`) parmak izi başka
+    /// kayıtlara bakmadan böyle bulunur.
+    pub fn koke_gore(&self, kok: Option<&str>) -> ParmakIzi {
         // View hatasında konum şablondur; şablon uygulamada değilse (bir paketin şablonu)
         // yığın izine bakılır
         let konum = self
@@ -328,8 +339,53 @@ impl<'a> Istisna<'a> {
             .and_then(|sablon| sablon_konumu(sablon, kok))
             .or_else(|| uygulamadaki_ilk(&self.adaylar, kok));
         ParmakIzi {
-            sinif: self.sinif,
-            konum,
+            sinif: self.sinif.to_owned(),
+            konum: konum.map(Konum::sahiplen),
+        }
+    }
+
+    /// İstisnanın satırlardan bağımsız bir kopyası; parmak izi sonradan çıkarılabilsin.
+    pub fn taslak(&self) -> IstisnaTaslagi {
+        IstisnaTaslagi {
+            sinif: self.sinif.to_owned(),
+            adaylar: self
+                .adaylar
+                .iter()
+                .map(|aday| (aday.konum.dosya.to_owned(), aday.konum.satir, aday.iletici))
+                .collect(),
+            sablon: self.sablon.map(str::to_owned),
+        }
+    }
+}
+
+/// Kökü kendi yollarında bulunamayan bir kaydın istisnası. Kayıtlar akış halinde okunurken
+/// logun bütün kökleri henüz bilinmez; parmak izi okuma bitince çıkarılır. Aynı taslaklar
+/// bir kez saklansın diye `Hash` ve `Eq` taşır.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IstisnaTaslagi {
+    sinif: String,
+    /// Adaylar: dosya (logdaki gibi), satır, iletici mi?
+    adaylar: Vec<(String, Option<u32>, bool)>,
+    sablon: Option<String>,
+}
+
+impl IstisnaTaslagi {
+    /// Taslağın istisnası, taslaktan ödünç alarak.
+    pub fn istisna(&self) -> Istisna<'_> {
+        Istisna {
+            sinif: &self.sinif,
+            adaylar: self
+                .adaylar
+                .iter()
+                .map(|(dosya, satir, iletici)| Aday {
+                    konum: Konum {
+                        dosya,
+                        satir: *satir,
+                    },
+                    iletici: *iletici,
+                })
+                .collect(),
+            sablon: self.sablon.as_deref(),
         }
     }
 }
@@ -337,7 +393,7 @@ impl<'a> Istisna<'a> {
 /// Adaylardan uygulama kodundaki ilki. Köke göre yolu "vendor/" ya da
 /// "storage/framework/views/" ile başlamayan ve giriş noktası olmayan ilk aday; iletici
 /// satırlar atlanır. Kök varsa onun dışındaki yollar (`strip_prefix` None verir) de atlanır.
-fn uygulamadaki_ilk<'a>(adaylar: &[Aday<'a>], kok: Option<&'a str>) -> Option<Konum<'a>> {
+fn uygulamadaki_ilk<'a>(adaylar: &[Aday<'a>], kok: Option<&str>) -> Option<Konum<'a>> {
     adaylar
         .iter()
         .filter(|aday| !aday.iletici)
@@ -359,7 +415,7 @@ fn uygulamadaki_ilk<'a>(adaylar: &[Aday<'a>], kok: Option<&'a str>) -> Option<Ko
 /// Şablonun köke göre yolu, satırsız. Kök bilinmiyorsa şablon klasöründen (`resources/views`)
 /// bulunur; o da yoksa yol olduğu gibi kalır. Şablon bir vendor klasöründeyse (bir paketin
 /// şablonu) uygulama kodu değildir: None.
-fn sablon_konumu<'a>(sablon: &'a str, kok: Option<&'a str>) -> Option<Konum<'a>> {
+fn sablon_konumu<'a>(sablon: &'a str, kok: Option<&str>) -> Option<Konum<'a>> {
     if VENDOR_KLASORLERI
         .iter()
         .any(|(_, vendor)| sablon.contains(vendor))
@@ -509,16 +565,55 @@ fn yolu_coz(dosya: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod testler {
     use super::*;
-    use crate::kayit::kayitlari_ayir;
+    use crate::kayit::{KayitAlici, KayitBilgisi};
+    use crate::okuyucu;
+
+    /// Kayıtların istisnalarını toplar: özetin deposu gibi, kökü kendi yollarında olmayanların
+    /// parmak izi bütün kökler bilinince çıkarılır.
+    #[derive(Default)]
+    struct Toplayan {
+        taslaklar: Vec<Option<IstisnaTaslagi>>,
+        kokler: BTreeSet<String>,
+    }
+
+    impl KayitAlici for Toplayan {
+        fn kayit(&mut self, kayit: &Kayit<'_>, _: KayitBilgisi) {
+            let istisna = Istisna::kayittan(kayit);
+            if let Some(kok) = istisna.as_ref().and_then(Istisna::kok) {
+                self.kokler.insert(kok.to_owned());
+            }
+            self.taslaklar.push(istisna.map(|istisna| istisna.taslak()));
+        }
+    }
+
+    /// Metindeki kayıtların parmak izleri, kayıtlarla aynı sırada.
+    fn izler(metin: &str) -> Vec<Option<ParmakIzi>> {
+        let mut toplayan = Toplayan::default();
+        okuyucu::oku(metin.as_bytes(), &mut toplayan).unwrap();
+        toplayan
+            .taslaklar
+            .iter()
+            .map(|taslak| {
+                taslak
+                    .as_ref()
+                    .map(|taslak| taslak.istisna().parmak_izi(&toplayan.kokler))
+            })
+            .collect()
+    }
 
     /// Metindeki ilk kaydın parmak izi. Kök gerekirse metnin başka kayıtlarından da bulunur.
-    fn iz(metin: &str) -> Option<ParmakIzi<'_>> {
-        parmak_izleri(&kayitlari_ayir(metin))[0]
+    fn iz(metin: &str) -> Option<ParmakIzi> {
+        izler(metin).into_iter().next().flatten()
     }
 
     /// Testlerde parmak izini kısaca yazmak için: (kısa sınıf, "dosya:satır")
-    fn ozet(iz: Option<ParmakIzi<'_>>) -> Option<(&str, Option<String>)> {
-        iz.map(|iz| (iz.kisa_sinif(), iz.konum.map(|konum| konum.to_string())))
+    fn ozet(iz: &Option<ParmakIzi>) -> Option<(&str, Option<String>)> {
+        iz.as_ref().map(|iz| {
+            (
+                iz.kisa_sinif(),
+                iz.konum.as_ref().map(|konum| konum.to_string()),
+            )
+        })
     }
 
     const UYGULAMADA_FIRLATILAN: &str = r#"[2026-10-24 15:02:11] production.ERROR: Undefined array key "kargo_ucreti" {"userId":2210,"exception":"[object] (ErrorException(code: 0): Undefined array key \"kargo_ucreti\" at /var/www/magaza/app/Services/SepetHesaplayici.php:88)
@@ -551,7 +646,7 @@ mod testler {
     #[test]
     fn uygulamada_firlatilan_istisna_kendi_satirini_verir() {
         assert_eq!(
-            ozet(iz(UYGULAMADA_FIRLATILAN)),
+            ozet(&iz(UYGULAMADA_FIRLATILAN)),
             Some((
                 "ErrorException",
                 Some("app/Services/SepetHesaplayici.php:88".to_string())
@@ -562,7 +657,7 @@ mod testler {
     #[test]
     fn vendorda_firlatilan_istisnada_uygulamadaki_ilk_cagri_secilir() {
         assert_eq!(
-            ozet(iz(VENDORDA_FIRLATILAN)),
+            ozet(&iz(VENDORDA_FIRLATILAN)),
             Some((
                 "UniqueConstraintViolationException",
                 Some("app/Http/Controllers/KayitController.php:38".to_string())
@@ -591,7 +686,7 @@ mod testler {
             "/var/www/magaza/server.php(21)",
         );
         assert_eq!(
-            ozet(iz(&eski_sunucu)),
+            ozet(&iz(&eski_sunucu)),
             Some(("MaxAttemptsExceededException", None))
         );
     }
@@ -609,7 +704,7 @@ mod testler {
 #0 /var/www/magaza/app/Services/OdemeServisi.php(64): GuzzleHttp\\Client->send(Object(GuzzleHttp\\Psr7\\Request))
 #1 {main}
 "} "#;
-        assert_eq!(ozet(iz(metin)), Some(("ConnectionException", None)));
+        assert_eq!(ozet(&iz(metin)), Some(("ConnectionException", None)));
     }
 
     #[test]
@@ -628,7 +723,7 @@ mod testler {
 #2 {main}
 "} "#;
         assert_eq!(
-            ozet(iz(metin)),
+            ozet(&iz(metin)),
             Some((
                 "OdemeHatasi",
                 Some("app/Services/OdemeServisi.php:80".to_string())
@@ -653,7 +748,7 @@ mod testler {
         // Monolog'un setBasePath ayarı yolların başındaki proje kökünü siler
         let metin = VENDORDA_FIRLATILAN.replace("/var/www/magaza/", "");
         assert_eq!(
-            ozet(iz(&metin)),
+            ozet(&iz(&metin)),
             Some((
                 "UniqueConstraintViolationException",
                 Some("app/Http/Controllers/KayitController.php:38".to_string())
@@ -667,7 +762,7 @@ mod testler {
         // için yol olduğu gibi kalır.
         let metin = r#"[2026-10-24 10:00:00] local.ERROR: Sipariş bulunamadı {"exception":"[object] (App\\Exceptions\\SiparisBulunamadi(code: 404): Sipariş bulunamadı at /srv/magaza/app/Services/SiparisServisi.php:30)"} "#;
         assert_eq!(
-            ozet(iz(metin)),
+            ozet(&iz(metin)),
             Some((
                 "SiparisBulunamadi",
                 Some("/srv/magaza/app/Services/SiparisServisi.php:30".to_string())
@@ -743,7 +838,7 @@ mod testler {
         );
         // Kopyalanabilir kalsın diye konum logdaki haliyle tutulur, gösterilirken çözülür
         assert_eq!(
-            parmak_izi.konum.unwrap().dosya,
+            parmak_izi.konum.as_ref().unwrap().dosya,
             r"database\\migrations\\2026_10_20_083604_create_urunler_table.php"
         );
 
@@ -753,7 +848,7 @@ mod testler {
             r"database\\migrations\\2026_10_20_083604_create_urunler_table.php",
             r"public\\index.php",
         );
-        assert_eq!(ozet(iz(&girisler)), Some(("QueryException", None)));
+        assert_eq!(ozet(&iz(&girisler)), Some(("QueryException", None)));
     }
 
     #[test]
@@ -817,7 +912,7 @@ mod testler {
             r#""trace":["/var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php:1052","internal[Illuminate\\Support\\HigherOrderCollectionProxy->{closure}]:0","/var/www/magaza/app/Services/SiparisDeposu.php:11","/var/www/magaza/app/Http/Controllers/SiparisController.php:20","/var/www/magaza/public/index.php:17"],"#,
             "",
         );
-        assert_eq!(ozet(iz(&izsiz)), Some(("QueryException", None)));
+        assert_eq!(ozet(&iz(&izsiz)), Some(("QueryException", None)));
 
         // Uygulamada fırlatıldıysa ve logda kök başka yerde de geçmiyorsa yol olduğu gibi
         // (ayracı / olarak) yazılır
@@ -826,7 +921,7 @@ mod testler {
             r"C:\\Users\\İrem\\Herd\\magaza\\app\\Models\\Urun.php:12",
         );
         assert_eq!(
-            ozet(iz(&uygulamada)),
+            ozet(&iz(&uygulamada)),
             Some((
                 "QueryException",
                 Some("C:/Users/İrem/Herd/magaza/app/Models/Urun.php:12".to_string())
@@ -851,7 +946,7 @@ mod testler {
         }
         // Yer ve iz okunamıyorsa sınıf yine bilinir
         assert_eq!(
-            ozet(iz(&istisnali(
+            ozet(&iz(&istisnali(
                 r#"{"class":"RuntimeException","file":"satırsız","trace":"dizi değil"}"#
             ))),
             Some(("RuntimeException", None))
@@ -886,7 +981,7 @@ mod testler {
 
     #[test]
     fn middleware_satiri_hatanin_yeri_sayilmaz() {
-        assert_eq!(ozet(iz(MIDDLEWARE_ARDINDA)), Some(("Error", None)));
+        assert_eq!(ozet(&iz(MIDDLEWARE_ARDINDA)), Some(("Error", None)));
 
         // PHP 8.4'ün closure adlarıyla da: `{closure:Sinif::metot():satır}`
         let php84 = MIDDLEWARE_ARDINDA.replace(
@@ -894,7 +989,7 @@ mod testler {
             r"YoneticiMi.php(13): Illuminate\\Pipeline\\Pipeline->{closure:Illuminate\\Pipeline\\Pipeline::carry():184}(Object(Illuminate\\Http\\Request))",
         );
         assert_ne!(php84, MIDDLEWARE_ARDINDA);
-        assert_eq!(ozet(iz(&php84)), Some(("Error", None)));
+        assert_eq!(ozet(&iz(&php84)), Some(("Error", None)));
 
         // Middleware'in başka bir çağrısı hatanın yeridir: ör. `abort_if()` yanlış kullanıldı
         let kendi_hatasi = MIDDLEWARE_ARDINDA.replace(
@@ -902,7 +997,7 @@ mod testler {
             "YoneticiMi.php(13): abort_if()",
         );
         assert_eq!(
-            ozet(iz(&kendi_hatasi)),
+            ozet(&iz(&kendi_hatasi)),
             Some((
                 "Error",
                 Some("app/Http/Middleware/YoneticiMi.php:13".to_string())
@@ -1011,7 +1106,7 @@ mod testler {
         // View hatası olmayan bir istisnada mesajdaki `(View: ...)` şablon sayılmaz. Tek yer
         // derlenmiş şablon: uygulama kodu değil
         let baska = metin.replace(r"Illuminate\\View\\ViewException", "RuntimeException");
-        assert_eq!(ozet(iz(&baska)), Some(("RuntimeException", None)));
+        assert_eq!(ozet(&iz(&baska)), Some(("RuntimeException", None)));
 
         // Derlenmiş şablonlar başka bir klasördeyse (VIEW_COMPILED_PATH) kök bilinmez; şablonun
         // yolu `resources\\views`'ten başlatılır
@@ -1055,10 +1150,9 @@ mod testler {
             "app/Support/Fiyat.php:14 (RuntimeException)",
         ];
         let izler = |metin: &str| -> Vec<String> {
-            let log = kayitlari_ayir(metin);
-            parmak_izleri(&log)
+            izler(metin)
                 .iter()
-                .map(|iz| iz.map(|iz| iz.to_string()).unwrap_or_default())
+                .map(|iz| iz.as_ref().map(|iz| iz.to_string()).unwrap_or_default())
                 .collect()
         };
 
@@ -1091,7 +1185,7 @@ mod testler {
             "/var/www/magaza/storage/framework/views/6d7695d270d0f086ac44cf85aac26053.php:1",
             "/var/www/magaza/vendor/composer/ClassLoader.php:429",
         );
-        assert_eq!(ozet(iz(sablonda)), Some(("FatalError", None)));
+        assert_eq!(ozet(&iz(sablonda)), Some(("FatalError", None)));
         assert_eq!(iz(sablonda), iz(&vendorda));
     }
 
@@ -1102,16 +1196,16 @@ mod testler {
             "/var/www/magaza/resources/views/panel/kampanyalar.blade.php",
             "/var/www/magaza/vendor/firma/panel/resources/views/liste.blade.php",
         );
-        assert_eq!(ozet(iz(&paket)), Some(("ViewException", None)));
+        assert_eq!(ozet(&iz(&paket)), Some(("ViewException", None)));
         // Bozuk ek: yol yok
         let bos = VIEW_HATASI.replace(
             "(View: /var/www/magaza/resources/views/panel/kampanyalar.blade.php)",
             "(View: )",
         );
-        assert_eq!(ozet(iz(&bos)), Some(("ViewException", None)));
+        assert_eq!(ozet(&iz(&bos)), Some(("ViewException", None)));
         // View hatası olmayan bir istisnanın mesajındaki `(View: ...)` şablon sayılmaz
         let baska = VIEW_HATASI.replace(r"Illuminate\\View\\ViewException", "RuntimeException");
-        assert_eq!(ozet(iz(&baska)), Some(("RuntimeException", None)));
+        assert_eq!(ozet(&iz(&baska)), Some(("RuntimeException", None)));
     }
 
     #[test]
@@ -1154,7 +1248,7 @@ mod testler {
     fn kok_logun_baska_kayitlarindan_bulunur() {
         // Tek başına: kök bilinmez, yol olduğu gibi
         assert_eq!(
-            ozet(iz(OLUMCUL)),
+            ozet(&iz(OLUMCUL)),
             Some((
                 "FatalError",
                 Some("/var/www/magaza/app/Http/Controllers/RaporController.php:5".to_string())
@@ -1163,10 +1257,9 @@ mod testler {
 
         // Aynı logda vendor'dan geçen bir kayıt varsa kök oradan bilinir
         let log_metni = format!("{OLUMCUL}\n{VENDORDA_FIRLATILAN}");
-        let log = kayitlari_ayir(&log_metni);
-        let izler = parmak_izleri(&log);
+        let izler = izler(&log_metni);
         assert_eq!(
-            izler[0].map(|iz| iz.to_string()),
+            izler[0].as_ref().map(|iz| iz.to_string()),
             Some("app/Http/Controllers/RaporController.php:5 (FatalError)".to_string())
         );
 
@@ -1182,12 +1275,11 @@ mod testler {
             OLUMCUL.replace("/var/www/magaza/", "/srv/baska/"),
         ]
         .join("\n");
-        let log = kayitlari_ayir(&log_metni);
-        let izler = parmak_izleri(&log);
+        let izler = super::testler::izler(&log_metni);
         assert_eq!(izler.len(), 5);
         assert_eq!(izler[0], izler[2]);
         assert_eq!(
-            izler[4].map(|iz| iz.to_string()),
+            izler[4].as_ref().map(|iz| iz.to_string()),
             Some("/srv/baska/app/Http/Controllers/RaporController.php:5 (FatalError)".to_string())
         );
     }
@@ -1205,13 +1297,40 @@ mod testler {
             }],
             sablon: None,
         };
+        let kokler = |kokler: &[&str]| -> BTreeSet<String> {
+            kokler.iter().map(|kok| kok.to_string()).collect()
+        };
         assert_eq!(
-            istisna.bilinen_kok(&["/srv/is/", "/srv/is/magaza/", "/srv/baska/"]),
+            istisna.bilinen_kok(&kokler(&["/srv/is/", "/srv/is/magaza/", "/srv/baska/"])),
             Some("/srv/is/magaza/")
         );
-        assert_eq!(istisna.bilinen_kok(&["/srv/baska/"]), None);
+        assert_eq!(istisna.bilinen_kok(&kokler(&["/srv/baska/"])), None);
         // Kök yolun başında olmalı: bir yedeğin içindeki aynı klasör adı kök değildir
-        assert_eq!(istisna.bilinen_kok(&["/is/magaza/"]), None);
+        assert_eq!(istisna.bilinen_kok(&kokler(&["/is/magaza/"])), None);
+        // Eşit uzunlukta iki kök uyuyorsa sıralamada sonuncusu
+        let iki_proje = Istisna {
+            adaylar: vec![
+                Aday {
+                    konum: Konum {
+                        dosya: "/srv/aa/A.php",
+                        satir: Some(1),
+                    },
+                    iletici: false,
+                },
+                Aday {
+                    konum: Konum {
+                        dosya: "/srv/bb/B.php",
+                        satir: Some(2),
+                    },
+                    iletici: false,
+                },
+            ],
+            ..istisna
+        };
+        assert_eq!(
+            iki_proje.bilinen_kok(&kokler(&["/srv/bb/", "/srv/aa/"])),
+            Some("/srv/bb/")
+        );
     }
 
     #[test]

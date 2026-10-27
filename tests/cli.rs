@@ -529,6 +529,104 @@ fn ani_artis_raporu() {
     assert_eq!(ani_artislar["satirlar"][0]["artis"]["zirve"]["adet"], 6);
 }
 
+/// İki saatlik bir log: "Kuyruk <SAYI> dolu" on dakikada bir WARNING, 11:00'de 8 WARNING'lik bir
+/// artış. Artışın ilk kaydı ("Kuyruk 50 dolu") kalıbın ilk kaydı değil: örneği bulmak için log
+/// yeniden okunmalı.
+fn kuyruk_artisi() -> String {
+    let mut satirlar = Vec::new();
+    for dakika in (0..120).step_by(10) {
+        let (saat, dakika) = (10 + dakika / 60, dakika % 60);
+        satirlar.push(format!(
+            "[2026-10-24 {saat}:{dakika:02}:30] local.WARNING: Kuyruk {} dolu",
+            saat * 100 + dakika
+        ));
+    }
+    for saniye in 0..8 {
+        satirlar.push(format!(
+            "[2026-10-24 11:00:{:02}] local.WARNING: Kuyruk {} dolu",
+            saniye * 5 + 1,
+            50 + saniye
+        ));
+    }
+    satirlar.sort();
+    satirlar.join("\n")
+}
+
+#[test]
+fn ani_artis_ornegi_yeniden_okunarak_bulunur() {
+    let log = kuyruk_artisi();
+    let beklenen = "örnek: Kuyruk 50 dolu\n";
+
+    // Dosyadan: aynı dosya yeniden okunur
+    let yol = gecici_dosya("ani-ornek.log", log.as_bytes());
+    let cikti = veylog(&["-a", "1", yol.to_str().unwrap()]);
+    fs::remove_file(&yol).ok();
+    let stdout = metin(&cikti.stdout);
+    assert!(cikti.status.success());
+    let (kaliplar, artislar) = stdout.split_once("\nAni artışlar").unwrap();
+    assert!(kaliplar.contains("örnek: Kuyruk 1000 dolu\n"), "{stdout}");
+    assert!(artislar.contains(beklenen), "{stdout}");
+
+    // Standart girdiden: geçici bir dosyaya kopyalanır, iş bitince geçici dosya kalmaz.
+    // Geçici klasör yalnızca bu test için: başka testlerin dosyaları karışmasın.
+    let gecici_klasor = std::env::temp_dir().join(format!("veylog-{}-gecici", process::id()));
+    fs::create_dir_all(&gecici_klasor).unwrap();
+    for (secenekler, ornekli) in [(&["-a", "1", "-"][..], true), (&["-"][..], false)] {
+        let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+            .args(secenekler)
+            .env("TMPDIR", &gecici_klasor)
+            .env("TMP", &gecici_klasor)
+            .env("TEMP", &gecici_klasor)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("veylog çalıştırılamadı");
+        surec
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(log.as_bytes())
+            .unwrap();
+        let cikti = surec.wait_with_output().unwrap();
+        assert!(cikti.status.success(), "{}", metin(&cikti.stderr));
+        assert_eq!(metin(&cikti.stdout).contains(beklenen), ornekli);
+        let kalanlar: Vec<_> = fs::read_dir(&gecici_klasor).unwrap().collect();
+        assert!(kalanlar.is_empty(), "{kalanlar:?}");
+    }
+    fs::remove_dir(&gecici_klasor).ok();
+}
+
+/// Geçici dosya oluşturulamazsa (geçici klasör yok, disk dolu) standart girdi kopyalanmadan
+/// okunur: rapor yine çıkar, yeniden okunamayan örneğin yerine alt grubun örneği yazılır.
+#[cfg(unix)]
+#[test]
+fn gecici_dosya_olusturulamazsa_rapor_yine_cikar() {
+    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+        .args(["-a", "1", "-"])
+        .env("TMPDIR", "/olmayan/bir/klasor")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("veylog çalıştırılamadı");
+    surec
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(kuyruk_artisi().as_bytes())
+        .unwrap();
+    let cikti = surec.wait_with_output().unwrap();
+    let (stdout, stderr) = (metin(&cikti.stdout), metin(&cikti.stderr));
+    assert!(cikti.status.success(), "{stderr}");
+    assert!(
+        stderr.starts_with("Uyarı: girdinin geçici kopyası oluşturulamadı ("),
+        "{stderr}"
+    );
+    let (_, artislar) = stdout.split_once("\nAni artışlar").unwrap();
+    assert!(artislar.contains("örnek: Kuyruk 1000 dolu\n"), "{stdout}");
+}
+
 #[test]
 fn ani_artis_dilimi_denetlenir() {
     let cikti = veylog(&["--ani-artis", "0", "ornekler/laravel.log"]);

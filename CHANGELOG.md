@@ -3,6 +3,30 @@
 Bu dosya [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) biçimini izler; sürüm
 numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uyar.
 
+## [Yayımlanmamış]
+
+### Bellek
+
+- Log satır satır, akış halinde okunur; dosyanın tamamı belleğe alınmaz. Bellek dosyanın
+  boyuyla değil farklı mesajların sayısıyla büyür: 2 GB'lık bir log 4 GB yerine 30 MB ile,
+  500 MB'lık bir log 976 MB yerine 17 MB ile özetlenir. Süre değişmedi.
+- Kayıtların zamanları ve alt grupları sıkıştırılmış sütunlarda tutulur (delta, zigzag ve
+  LEB128 kodlaması): kayıt başına 2–3 bayt.
+- Kayıtlar okunurken, logdaki sırasıyla kümelenir. Bir mesajın tekrarında ağacın o uzunluktaki
+  kısmı değişmediyse Drain'in önceki sonucu kullanılır (sürümlü önbellek); sonuç her kaydı
+  aramayla kümelemekle aynıdır. Drain ikinci tura girerse kayıtlar sütunlardan yeniden
+  kümelenir; girdi yeniden okunmaz.
+- Ani artışın örneği gerekirse kayıt dosyadan yeniden okunur (seyrek dizin). Okunan kaydın
+  maskeli mesajı ve seviyesi denetlenir: dosya bu arada döndürüldüyse yanlış bir kayıt örnek
+  olmaz, uyarı yazılır. Standart girdi `--ani-artis` ile okunurken geçici bir dosyaya
+  kopyalanır; dosya hemen silinir, diskte kalmaz, Unix'te yalnızca sahibi okuyabilir.
+  Geçici dosya oluşturulamazsa rapor yine çıkar.
+- 262 144'ten fazla farklı ham mesaj varsa sayısı HyperLogLog ile tahmin edilir (64 KB,
+  ±%0,4, Ertl'in sapmasız tahmincisi). Metinde sayının önünde `≈` yazar; JSON'a
+  `ham_mesaj_yaklasik` alanı eklendi.
+- Bir satırın en fazla 256 MB'ı okunur, bir kaydın devam satırlarının en fazla 256 MB'ı
+  saklanır: satır sonu olmayan dev bir dosya belleği dolduramaz.
+
 ## [0.1.0] - 2026-10-26
 
 İlk sürüm.
@@ -48,4 +72,5 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 - Türkçe komut satırı: virgüllü ondalık sayılar, Türkçe karakterli seçenek adları, yazım
   hatalarına öneri, ayırt edilebilir çıkış kodları.
 
+[Yayımlanmamış]: https://github.com/Veysel440/veylog/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Veysel440/veylog/releases/tag/v0.1.0

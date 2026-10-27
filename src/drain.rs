@@ -46,9 +46,9 @@
 //!   belirtecin ikisinde aynıdır (0,67 < 0,7). Her değer ayrı bir küme olur ve yaprak büyüdükçe
 //!   her yeni mesaj bütün kümelerle karşılaştırılır: süre mesaj sayısının karesiyle artar.
 //!   3. adımdaki dolu düğüm kuralı yaprakta da uygulanır: kümelerin kalıplarında bir konum
-//!   `en_fazla_cocuk`'tan fazla farklı belirteç aldıysa o konum değişkendir. `kumele` böyle bir
-//!   konum bulursa mesajları bu bilgiyle bir kez daha kümeler; konum değişken sayılmadan önce
-//!   açılmış kümeler de böylece birleşir.
+//!   `en_fazla_cocuk`'tan fazla farklı belirteç aldıysa o konum değişkendir. Böyle bir konum
+//!   bulunursa mesajlar bu bilgiyle bir kez daha, baştan kümelenir (ikinci tur); konum değişken
+//!   sayılmadan önce açılmış kümeler de böylece birleşir.
 //!
 //! Gevşeyen eşiğin iki sınırı vardır. Değişken konumlar tek belirteçli mesajlarda aranmaz:
 //! orada konum mesajın kendisidir ve bütün tek kelimelik mesajlar (`Unauthenticated.`,
@@ -64,6 +64,17 @@
 //! **Joker.** Kalıplardaki joker, içinde boşluk olan bir iç işarettir. Belirteçler boşluklardan
 //! bölündüğü için hiçbir belirteçle karışmaz: mesajda yazılı bir `<*>` sıradan bir kelimedir ve
 //! birebir aynı mesajlar birleşir. Kalıp gösterilirken joker `<*>` diye yazılır.
+//!
+//! **Sıra ve önbellek.** Drain sıraya bağlıdır: aynı mesaj logun başında bir kümeye, sonunda
+//! (arada daha benzer bir küme açıldıysa) başka bir kümeye katılabilir. Bu yüzden her kayıt,
+//! mesajı daha önce görülmüş olsa da, logdaki sırasıyla kümelenir (`Kumeleyici`). Bir logdaki
+//! kayıtların çoğu daha önce görülmüş bir mesajın tekrarıdır; her tekrarda ağaçta arama
+//! yapmamak için her mesajın son sonucu saklanır. Ağacın her uzunluktaki kısmının bir sürümü
+//! vardır: o uzunlukta bir küme açılınca ya da bir kalıp değişince artar. Mesaj geldiğinde
+//! kendi uzunluğunun sürümü son gelişinden bu yana değişmediyse arama aynı kümeyi bulurdu ve
+//! kalıp (mesaja zaten uyduğu için) değişmezdi: sonuç aramadan verilir. Bir mesajın aramasını
+//! etkileyen her şey (ağacın o uzunluktaki dalları, oradaki kümelerin kalıpları ve konumları,
+//! tek belirteçli kümeler) yalnızca o uzunlukta değişir.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -177,13 +188,95 @@ struct Drain {
     /// Esnek eşikte rakamlı tek belirteçli mesajların kümesi. Rakamlı iki tek belirteç
     /// birbirine katıldığı için en fazla bir tane olur.
     rakamli_tek: Option<usize>,
+    /// Belirteç sayısı → ağacın o uzunluktaki kısmının sürümü: bir küme açılınca ya da bir
+    /// kalıp değişince artar (`Kumeleyici`'nin önbelleği için).
+    surumler: HashMap<usize, u64>,
 }
 
-/// Mesajları sırayla kümeler. Kümeleri (ilk görüldükleri sırayla) ve her mesajın küme
-/// numarasını (mesajlarla aynı sırada) döndürür.
+/// Mesajları teker teker, geldikleri sırayla kümeler; her mesajın o anki küme numarasını verir.
 ///
-/// Kümeleme sırasında değişken bir konum bulunursa mesajlar bu bilgiyle bir kez daha, baştan
-/// kümelenir. Değişken konum yoksa (logların çoğunda) ilk turun sonucu döner.
+/// Her mesajın bir numarası vardır: aynı metin hep aynı numarayla gelir (depo maskeli mesajları
+/// böyle numaralandırır). Mesajın son gelişinin sonucu numarasıyla saklanır; ağacın mesajın
+/// uzunluğundaki kısmı o zamandan beri değişmediyse sonuç aramadan verilir (modül belgesindeki
+/// "Sıra ve önbellek"). Sonuç, her mesajı aramayla eklemekle birebir aynıdır.
+///
+/// Kümeleme sırasında değişken bir konum bulunursa (`ikinci_tur_gerekir`) mesajlar bu bilgiyle
+/// baştan, aynı sırayla bir kez daha kümelenmelidir (`ikinci_tur`).
+#[derive(Debug)]
+pub struct Kumeleyici {
+    drain: Drain,
+    /// Mesaj numarası → son gelişinin sonucu.
+    onbellek: Vec<Option<OncekiSonuc>>,
+}
+
+/// Bir mesajın son kümelenişi.
+#[derive(Debug, Clone, Copy)]
+struct OncekiSonuc {
+    /// Mesajın belirteç sayısı: ağacın hangi kısmının sürümüne bakılacağı.
+    uzunluk: usize,
+    /// Kümelendikten hemen sonra ağacın o kısmının sürümü.
+    surum: u64,
+    kume: usize,
+}
+
+impl Kumeleyici {
+    pub fn new(ayarlar: Ayarlar) -> Self {
+        Kumeleyici {
+            drain: Drain::new(ayarlar),
+            onbellek: Vec::new(),
+        }
+    }
+
+    /// Mesajı kümeler; küme numarasını döndürür. `no`: mesajın numarası.
+    pub fn ekle(&mut self, no: usize, mesaj: &str) -> usize {
+        if let Some(Some(onceki)) = self.onbellek.get(no)
+            && self.drain.surum(onceki.uzunluk) == onceki.surum
+        {
+            self.drain.kumeler[onceki.kume].adet += 1;
+            return onceki.kume;
+        }
+        let belirtecler: Vec<&str> = mesaj.split_whitespace().collect();
+        let kume = self.drain.belirtecleri_ekle(&belirtecler);
+        if self.onbellek.len() <= no {
+            self.onbellek.resize(no + 1, None);
+        }
+        self.onbellek[no] = Some(OncekiSonuc {
+            uzunluk: belirtecler.len(),
+            surum: self.drain.surum(belirtecler.len()),
+            kume,
+        });
+        kume
+    }
+
+    /// Kümelemede değişken bir konum bulundu mu? Bulunduysa mesajlar `ikinci_tur` ile baştan
+    /// kümelenmelidir.
+    pub fn ikinci_tur_gerekir(&self) -> bool {
+        !self.drain.degiskenler.is_empty()
+    }
+
+    /// Boş bir kümeleyici; bu turda öğrenilen değişken konumları bilir. İkinci turun kendi
+    /// bulduğu değişken konumlar kullanılmaz: üçüncü bir tur yoktur.
+    pub fn ikinci_tur(&self) -> Kumeleyici {
+        Kumeleyici {
+            drain: Drain {
+                ogrenilen: self.drain.degiskenler.clone(),
+                ..Drain::new(self.drain.ayarlar.clone())
+            },
+            onbellek: Vec::new(),
+        }
+    }
+
+    /// Kümeler, açılış sırasıyla. Kalıpları yeni mesajlar geldikçe değişir; son halleri bütün
+    /// mesajlar kümelenince alınmalıdır.
+    pub fn kumeler(&self) -> &[Kume] {
+        &self.drain.kumeler
+    }
+}
+
+/// Mesajları sırayla, önbelleksiz kümeler. Kümeleri (ilk görüldükleri sırayla) ve her mesajın
+/// küme numarasını (mesajlarla aynı sırada) döndürür. Değişken bir konum bulunursa mesajlar
+/// ikinci kez kümelenir. `Kumeleyici`'nin sonuçlarının denetlendiği başvuru uygulamasıdır.
+#[cfg(test)]
 pub fn kumele(ayarlar: &Ayarlar, mesajlar: &[impl AsRef<str>]) -> (Vec<Kume>, Vec<usize>) {
     let mut ilk_tur = Drain::new(ayarlar.clone());
     let numaralar = mesajlar
@@ -215,21 +308,29 @@ impl Drain {
             ogrenilen: HashMap::new(),
             tek_belirtecliler: HashMap::new(),
             rakamli_tek: None,
+            surumler: HashMap::new(),
         }
     }
 
     /// Mesajı benzediği kümeye ekler, yoksa yeni küme açar. Kümenin numarasını döndürür.
+    #[cfg(test)]
     fn ekle(&mut self, mesaj: &str) -> usize {
         // 1. Belirteçlere böl
         let belirtecler: Vec<&str> = mesaj.split_whitespace().collect();
+        self.belirtecleri_ekle(&belirtecler)
+    }
 
+    /// Belirteçlerine bölünmüş mesajı ekler (`ekle`).
+    fn belirtecleri_ekle(&mut self, belirtecler: &[&str]) -> usize {
         // 2–4. Ağaçta en benzer kümeyi ara
-        match self.ara(&belirtecler) {
+        match self.ara(belirtecler) {
             // 5. Bulunan kümeye kat ve kalıbını güncelle
             Some(numara) => {
                 let kume = &mut self.kumeler[numara];
-                kalibi_guncelle(&mut kume.kalip, &belirtecler);
                 kume.adet += 1;
+                if kalibi_guncelle(&mut kume.kalip, belirtecler) {
+                    self.degisti(belirtecler.len());
+                }
                 numara
             }
             // Yeterince benzer küme yok: yeni küme aç ve ağaca yerleştir
@@ -239,10 +340,21 @@ impl Drain {
                     kalip: belirtecler.iter().map(|b| b.to_string()).collect(),
                     adet: 1,
                 });
-                self.agaca_ekle(&belirtecler, numara);
+                self.agaca_ekle(belirtecler, numara);
+                self.degisti(belirtecler.len());
                 numara
             }
         }
+    }
+
+    /// Ağacın bu uzunluktaki kısmının sürümü.
+    fn surum(&self, uzunluk: usize) -> u64 {
+        self.surumler.get(&uzunluk).copied().unwrap_or(0)
+    }
+
+    /// Ağacın bu uzunluktaki kısmı değişti: bir küme açıldı ya da bir kalıp değişti.
+    fn degisti(&mut self, uzunluk: usize) {
+        *self.surumler.entry(uzunluk).or_default() += 1;
     }
 
     /// Mesaja yeterince benzeyen en iyi kümeyi bulur. Ağacı değiştirmez.
@@ -505,19 +617,22 @@ fn karsilastir(kalip: &[String], belirtecler: &[&str], konumlar: &[Konum]) -> Ka
     sonuc
 }
 
-/// Kalıpta mesajdan farklı olan konumları jokere çevirir.
-fn kalibi_guncelle(kalip: &mut [String], belirtecler: &[&str]) {
+/// Kalıpta mesajdan farklı olan konumları jokere çevirir. Kalıp değiştiyse true.
+fn kalibi_guncelle(kalip: &mut [String], belirtecler: &[&str]) -> bool {
+    let mut degisti = false;
     for (k, b) in kalip.iter_mut().zip(belirtecler) {
         if k != JOKER && k != b {
             *k = JOKER.to_string();
+            degisti = true;
         }
     }
+    degisti
 }
 
 #[cfg(test)]
 mod testler {
     use super::*;
-    use crate::kayit::kayitlari_ayir;
+    use crate::kayit::deneme::topla;
     use crate::maske::maskele;
 
     /// Mesajları sırayla ekler; her kümeyi "adet × kalıp" olarak, açılış sırasıyla döndürür.
@@ -680,12 +795,8 @@ mod testler {
 
     #[test]
     fn ornek_logdaki_kaliplar() {
-        let log = kayitlari_ayir(include_str!("../ornekler/laravel.log"));
-        let maskeli: Vec<_> = log
-            .kayitlar
-            .iter()
-            .map(|kayit| maskele(kayit.mesaj()))
-            .collect();
+        let (kayitlar, _) = topla(include_str!("../ornekler/laravel.log"));
+        let maskeli: Vec<_> = kayitlar.iter().map(|kayit| maskele(&kayit.mesaj)).collect();
         let mesajlar: Vec<&str> = maskeli.iter().map(|mesaj| mesaj.as_ref()).collect();
         let kaliplar = kumele_tek_tur(Ayarlar::default(), &mesajlar);
 
@@ -1019,6 +1130,158 @@ mod testler {
             self.0 = x;
             (x.wrapping_mul(0x2545_F491_4F6C_DD1D) % ust as u64) as usize
         }
+    }
+
+    /// Mesajları `Kumeleyici` ile kümeler; `kumele` gibi gerekirse iki tur. Aynı metinler aynı
+    /// numarayı alır.
+    fn onbellekli_kumele(ayarlar: &Ayarlar, mesajlar: &[String]) -> (Vec<String>, Vec<usize>) {
+        let mut numaralar: HashMap<&str, usize> = HashMap::new();
+        let nolar: Vec<usize> = mesajlar
+            .iter()
+            .map(|mesaj| {
+                let yeni = numaralar.len();
+                *numaralar.entry(mesaj.as_str()).or_insert(yeni)
+            })
+            .collect();
+        let tur = |kumeleyici: &mut Kumeleyici| -> Vec<usize> {
+            mesajlar
+                .iter()
+                .zip(&nolar)
+                .map(|(mesaj, &no)| kumeleyici.ekle(no, mesaj))
+                .collect()
+        };
+        let mut kumeleyici = Kumeleyici::new(ayarlar.clone());
+        let mut sonuc = tur(&mut kumeleyici);
+        if kumeleyici.ikinci_tur_gerekir() {
+            kumeleyici = kumeleyici.ikinci_tur();
+            sonuc = tur(&mut kumeleyici);
+        }
+        (ozetle(kumeleyici.kumeler()), sonuc)
+    }
+
+    #[test]
+    fn ayni_mesaj_sonradan_daha_benzer_kumeye_katilir() {
+        // Drain sıraya bağlıdır: dördüncü mesaj ikincinin aynısıdır ama arada açılan küme ona
+        // daha çok benzer (7 belirtecin 6'sı, ilk kümede 5'i). Her kayıt kendi sırasında
+        // kümelenmeli; aynı mesaj bir kez kümelenseydi dördüncü de ilk kümeye düşerdi.
+        let mesajlar: Vec<String> = [
+            "Sepet güncellenemedi kullanıcı oturumu kapalı mobil uygulama",
+            "Sepet güncellenemedi kullanıcı oturumu kapalı web tarayıcı",
+            "Sepet boşaltılamadı kullanıcı oturumu kapalı web tarayıcı",
+            "Sepet güncellenemedi kullanıcı oturumu kapalı web tarayıcı",
+        ]
+        .map(String::from)
+        .into();
+        let (kumeler, numaralar) = onbellekli_kumele(&Ayarlar::default(), &mesajlar);
+        assert_eq!(numaralar, [0, 0, 1, 1]);
+        assert_eq!(
+            kumeler,
+            [
+                "2 × Sepet güncellenemedi kullanıcı oturumu kapalı <*> <*>",
+                "2 × Sepet <*> kullanıcı oturumu kapalı web tarayıcı",
+            ]
+        );
+        let (referans, referans_numaralari) = kumele(&Ayarlar::default(), &mesajlar);
+        assert_eq!(
+            (ozetle(&referans), referans_numaralari),
+            (kumeler, numaralar)
+        );
+    }
+
+    #[test]
+    fn onbellekli_kumeleme_onbelleksizle_ayni() {
+        // Önbellek yalnızca hızlandırır: her ayarda ve her mesaj dizisinde sonuç, her mesajı
+        // aramayla eklemekle (iki turuyla birlikte) birebir aynı olmalı
+        let ayarlar_listesi = [
+            Ayarlar::default(),
+            Ayarlar {
+                onek_derinligi: 2,
+                en_fazla_cocuk: 3,
+                ..Ayarlar::default()
+            },
+            Ayarlar {
+                onek_derinligi: 3,
+                en_fazla_cocuk: 4,
+                benzerlik_esigi: 0.4,
+                ..Ayarlar::default()
+            },
+            Ayarlar {
+                esnek_esik: false,
+                benzerlik_esigi: 0.5,
+                en_fazla_cocuk: 5,
+                ..Ayarlar::default()
+            },
+            Ayarlar {
+                benzerlik_esigi: 1.0,
+                ..Ayarlar::default()
+            },
+            Ayarlar {
+                benzerlik_esigi: 0.0,
+                ..Ayarlar::default()
+            },
+        ];
+        let kelimeler = [
+            "sepet", "ödeme", "kargo", "web", "mobil", "api", "açık", "kapalı",
+        ];
+        let mut rastgele = Rastgele(0x2545_F491_4F6C_DD1D);
+        let mut iki_turlu = 0;
+        for deneme in 0..60 {
+            let ayarlar = &ayarlar_listesi[deneme % ayarlar_listesi.len()];
+            // Her denemede küçük bir mesaj havuzu: tekrarlar önbelleği, rastgele sıra Drain'in
+            // sıraya bağlılığını, çok sayıda farklı ad ikinci turu sınar
+            let havuz_boyu = 2 + rastgele.sayi(40);
+            let havuz: Vec<String> = (0..havuz_boyu)
+                .map(|_| match rastgele.sayi(6) {
+                    0 => format!("Bilinmeyen kullanıcı: {}", ad(rastgele.sayi(400))),
+                    1 => ad(rastgele.sayi(20)),
+                    2 => format!("Yanıt süresi {}ms", rastgele.sayi(500)),
+                    3 => String::new(),
+                    _ => {
+                        let uzunluk = 2 + rastgele.sayi(5);
+                        let belirtecler: Vec<&str> = (0..uzunluk)
+                            .map(|_| kelimeler[rastgele.sayi(kelimeler.len())])
+                            .collect();
+                        belirtecler.join(" ")
+                    }
+                })
+                .collect();
+            let adet = 50 + rastgele.sayi(400);
+            let mut mesajlar: Vec<String> = (0..adet)
+                .map(|_| havuz[rastgele.sayi(havuz.len())].clone())
+                .collect();
+            // Bazı denemelerde yüzlerce farklı ad: yaprakta değişken konum, ikinci tur
+            if deneme % 4 == 0 {
+                for sira in 0..250 {
+                    let yer = rastgele.sayi(mesajlar.len());
+                    mesajlar.insert(yer, format!("Bilinmeyen kullanıcı: {}", ad(sira)));
+                }
+            }
+            let (referans, referans_numaralari) = kumele(ayarlar, &mesajlar);
+            let (kumeler, numaralar) = onbellekli_kumele(ayarlar, &mesajlar);
+            assert_eq!(numaralar, referans_numaralari, "deneme {deneme}");
+            assert_eq!(kumeler, ozetle(&referans), "deneme {deneme}");
+            let mut drain = Kumeleyici::new(ayarlar.clone());
+            for (no, mesaj) in mesajlar.iter().enumerate() {
+                drain.ekle(no, mesaj);
+            }
+            iki_turlu += usize::from(drain.ikinci_tur_gerekir());
+        }
+        // İkinci tur gerçekten sınandı
+        assert!(iki_turlu >= 5, "{iki_turlu}");
+    }
+
+    #[test]
+    fn onbellek_agac_degisince_yeniden_arar() {
+        // "a b c" önce kendi kümesini açar; sonra aynı uzunlukta bir mesaj o kümenin kalıbını
+        // değiştirir. "a b c" yeniden geldiğinde önbellekteki sonuç eskidir; yeniden aranır.
+        let mut kumeleyici = Kumeleyici::new(Ayarlar::default());
+        assert_eq!(kumeleyici.ekle(0, "a b c d"), 0);
+        assert_eq!(kumeleyici.ekle(1, "a b c e"), 0);
+        assert_eq!(kumeleyici.ekle(0, "a b c d"), 0);
+        // Başka uzunluktaki bir değişiklik önbelleği bozmaz
+        assert_eq!(kumeleyici.ekle(2, "x y"), 1);
+        assert_eq!(kumeleyici.ekle(0, "a b c d"), 0);
+        assert_eq!(ozetle(kumeleyici.kumeler()), ["4 × a b c <*>", "1 × x y"]);
     }
 
     #[test]

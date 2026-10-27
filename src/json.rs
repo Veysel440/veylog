@@ -17,6 +17,8 @@ use crate::zaman::Zaman;
 pub enum Json {
     /// `null`
     Yok,
+    /// `true` ya da `false`
+    Mantiksal(bool),
     Sayi(usize),
     Ondalik(f64),
     Metin(String),
@@ -30,6 +32,7 @@ impl Json {
     pub fn yaz(&self, cikti: &mut impl Write, derinlik: usize) -> io::Result<()> {
         match self {
             Json::Yok => write!(cikti, "null"),
+            Json::Mantiksal(deger) => write!(cikti, "{deger}"),
             Json::Sayi(sayi) => write!(cikti, "{sayi}"),
             // Rust ondalık sayıları hiçbir zaman "1e-7" gibi üslü yazmaz ("0.0000001");
             // her iki yazım da geçerli JSON'dur. NaN ve sonsuz ise JSON'da yoktur.
@@ -109,14 +112,14 @@ fn metin_yaz(cikti: &mut impl Write, metin: &str) -> io::Result<()> {
 ///
 /// `--ilk` ve `--siralama` burada da geçerlidir: "satirlar" dizisi tablodaki satırlardır,
 /// "gosterilmeyen" sınır yüzünden dışarıda kalanların sayısıdır. Bütün satırlar için `--hepsi`.
-pub fn yaz(cikti: &mut impl Write, ozet: &Ozet<'_>) -> io::Result<()> {
+pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     ozet_json(ozet).yaz(cikti, 0)?;
     writeln!(cikti)
 }
 
 /// Özetin JSON ağacı. Zamanlar, kalıplar ve örnekler kısaltılmadan tam halleriyle yazılır.
-fn ozet_json(ozet: &Ozet<'_>) -> Json {
-    let zaman_araligi = match ozet.zaman_araligi {
+fn ozet_json(ozet: &Ozet) -> Json {
+    let zaman_araligi = match &ozet.zaman_araligi {
         Some((en_eski, en_yeni)) => Json::Nesne(vec![
             ("en_eski", metin(en_eski)),
             ("en_yeni", metin(en_yeni)),
@@ -149,6 +152,10 @@ fn ozet_json(ozet: &Ozet<'_>) -> Json {
             Json::Nesne(vec![
                 ("ham_mesaj_sayisi", Json::Sayi(analiz.ham_mesaj_sayisi)),
                 (
+                    "ham_mesaj_yaklasik",
+                    Json::Mantiksal(analiz.ham_mesaj_yaklasik),
+                ),
+                (
                     "maskeli_mesaj_sayisi",
                     Json::Sayi(analiz.maskeli_mesaj_sayisi),
                 ),
@@ -173,7 +180,7 @@ fn ozet_json(ozet: &Ozet<'_>) -> Json {
 
 /// Karşılaştırmanın JSON'u: nokta, iki yarı, "artan" eşikleri ve üç liste. Listeler en fazla
 /// `--ilk` kadar satır içerir; "gosterilmeyen" dışarıda kalanları sayar.
-fn karsilastirma_json(ozet: &Ozet<'_>, karsilastirma: &Karsilastirma) -> Json {
+fn karsilastirma_json(ozet: &Ozet, karsilastirma: &Karsilastirma) -> Json {
     let liste = |degisimler: &[Degisim]| {
         let satirlar = ozet
             .sinirla(degisimler)
@@ -209,7 +216,7 @@ fn pencere_json(pencere: &Pencere) -> Json {
 }
 
 /// Karşılaştırmadaki bir satır: kalıp satırının alanları ve iki yarıdaki sayıları.
-fn degisim_json(ozet: &Ozet<'_>, degisim: &Degisim) -> Json {
+fn degisim_json(ozet: &Ozet, degisim: &Degisim) -> Json {
     let mut alanlar = satir_alanlari(&ozet.analiz.satirlar[degisim.satir]);
     alanlar.extend([
         ("once", Json::Sayi(degisim.once)),
@@ -223,7 +230,7 @@ fn degisim_json(ozet: &Ozet<'_>, degisim: &Degisim) -> Json {
 
 /// Ani artışların JSON'u: dilimler, eşikler ve en fazla `--ilk` kadar artış. Logda kayıt yoksa
 /// "baslangic" ve "bitis" null'dır; log `en_az_dilim`'den kısaysa artış aranmaz.
-fn ani_artis_json(ozet: &Ozet<'_>, ani_artislar: &AniArtislar) -> Json {
+fn ani_artis_json(ozet: &Ozet, ani_artislar: &AniArtislar) -> Json {
     let (baslangic, bitis) = match ani_artislar.aralik {
         Some((baslangic, bitis)) => (zaman(baslangic), zaman(bitis)),
         None => (Json::Yok, Json::Yok),
@@ -254,7 +261,7 @@ fn ani_artis_json(ozet: &Ozet<'_>, ani_artislar: &AniArtislar) -> Json {
 
 /// Bir ani artış: kalıp satırının alanları, kalıbın olağan seviyesi ve artışın kendisi.
 /// Satırın alanları (seviye, ilk, son, örnek) bütün kalıbındır; artışınkiler "artis"te.
-fn artis_json(ozet: &Ozet<'_>, artis: &AniArtis) -> Json {
+fn artis_json(ozet: &Ozet, artis: &AniArtis) -> Json {
     let mut alanlar = satir_alanlari(&ozet.analiz.satirlar[artis.satir]);
     alanlar.extend([
         ("olagan", Json::Ondalik(artis.olagan)),
@@ -286,15 +293,15 @@ fn artis_json(ozet: &Ozet<'_>, artis: &AniArtis) -> Json {
 }
 
 /// Tablodaki bir satırın JSON'u.
-fn satir_json(satir: &KalipSatiri<'_>) -> Json {
+fn satir_json(satir: &KalipSatiri) -> Json {
     Json::Nesne(satir_alanlari(satir))
 }
 
 /// Bir kalıp satırının alanları. İstisnası olmayan satırlarda "istisna" null'dır; istisnanın
 /// uygulama kodunda yeri bulunamadıysa "dosya" ve "satir" null'dır. View hatalarında konum bir
 /// şablondur; şablonun satırı bilinmediği için "satir" null'dır.
-fn satir_alanlari(satir: &KalipSatiri<'_>) -> Vec<(&'static str, Json)> {
-    let istisna = match satir.parmak_izi {
+fn satir_alanlari(satir: &KalipSatiri) -> Vec<(&'static str, Json)> {
+    let istisna = match &satir.parmak_izi {
         Some(parmak_izi) => {
             let (dosya, satir_no) = match parmak_izi.konum() {
                 // u32 her zaman usize'a sığar (Rust'ın desteklediği bütün sistemler 32 ya da
@@ -317,10 +324,10 @@ fn satir_alanlari(satir: &KalipSatiri<'_>) -> Vec<(&'static str, Json)> {
     vec![
         ("adet", Json::Sayi(satir.adet)),
         ("seviye", metin(satir.seviye.ad())),
-        ("ilk", metin(satir.ilk)),
-        ("son", metin(satir.son)),
+        ("ilk", metin(&satir.ilk)),
+        ("son", metin(&satir.son)),
         ("kalip", metin(&satir.kalip)),
-        ("ornek", metin(satir.ornek)),
+        ("ornek", metin(&satir.ornek)),
         ("istisna", istisna),
     ]
 }
@@ -338,10 +345,8 @@ fn zaman(zaman: Zaman) -> Json {
 mod testler {
     use super::*;
     use crate::ani_artis::{CARPAN, deneme_logu};
-    use crate::kayit::kayitlari_ayir;
     use crate::rapor::RaporAyarlari;
     use crate::zaman::ZamanNoktasi;
-    use std::path::Path;
 
     const ORNEK_LOG: &str = include_str!("../ornekler/laravel.log");
 
@@ -353,9 +358,7 @@ mod testler {
 
     /// Örnek logun JSON raporu, serde_json ile ayrıştırılmış olarak.
     fn ornek_rapor(ayarlar: &RaporAyarlari) -> serde_json::Value {
-        let log = kayitlari_ayir(ORNEK_LOG);
-        let ozet =
-            Ozet::hesapla(Path::new("ornekler/laravel.log"), ORNEK_LOG, &log, ayarlar).unwrap();
+        let ozet = Ozet::metinden("ornekler/laravel.log", ORNEK_LOG, ayarlar).unwrap();
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         // Geçerli bir JSON değilse burada hata verir
@@ -576,13 +579,12 @@ mod testler {
     #[test]
     fn ani_artislar_ilk_kadar_ve_alanlari_tam() {
         let metin = deneme_logu();
-        let log = kayitlari_ayir(&metin);
         let ayarlar = RaporAyarlari {
             ani_artis: Some(1),
             ilk: Some(2),
             ..RaporAyarlari::default()
         };
-        let ozet = Ozet::hesapla(Path::new("a.log"), &metin, &log, &ayarlar).unwrap();
+        let ozet = Ozet::metinden("a.log", &metin, &ayarlar).unwrap();
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         let rapor: serde_json::Value = serde_json::from_slice(&cikti).unwrap();
@@ -623,12 +625,11 @@ mod testler {
 
     #[test]
     fn bos_logda_ani_artis_araligi_null() {
-        let log = kayitlari_ayir("");
         let ayarlar = RaporAyarlari {
             ani_artis: Some(1),
             ..RaporAyarlari::default()
         };
-        let ozet = Ozet::hesapla(Path::new("bos.log"), "", &log, &ayarlar).unwrap();
+        let ozet = Ozet::metinden("bos.log", "", &ayarlar).unwrap();
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         let rapor: serde_json::Value = serde_json::from_slice(&cikti).unwrap();

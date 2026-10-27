@@ -330,6 +330,7 @@ Her adımın ayrıntısı, gerekçesi ve gerçek loglarda nasıl sınandığı
 
 | Karar | Neden |
 |---|---|
+| Akışlı okuma | Dosya satır satır okunur, kayıtlar saklanmaz; özet için gerekenler sıkıştırılmış olarak birikir. 2 GB'lık bir log 30 MB bellekle özetlenir ([ayrıntılar](docs/nasil-calisir.md#akışlı-okuma-ve-bellek)). |
 | Tek bağımlılık: `regex` | serde ile JSON yazmak bağımlılıkları 5 paketten 15'e, clap ile argüman ayrıştırmak 22'ye çıkarırdı. JSON yalnızca okunuyor ve yazılıyor, kuralları kısa ([RFC 8259](https://www.rfc-editor.org/rfc/rfc8259)); clap'in mesajları İngilizce ve virgüllü ondalığı tanımıyor. |
 | Elle yazılan parçalar referansla sınanır | JSON okuyucu serde_json ile (2 000 rastgele değer, gerçek loglardan 17 944 satır), binom kuyruğu scipy ile, medyan ve MAD numpy ile, tarih hesabı Python'un `datetime`'ı ile, kümeleme Drain3 ile karşılaştırılır. |
 | Ortalama yerine medyan ve MAD | Ortalama ve standart sapma tek bir patlamayla kayar; medyan ve MAD dilimlerin yarısına kadarı patlama olsa bile yerinde kalır. |
@@ -340,15 +341,20 @@ Her adımın ayrıntısı, gerekçesi ve gerçek loglarda nasıl sınandığı
 
 ## Performans
 
-İki çekirdekli bir bulut sanal makinesinde, `--release` derlemesiyle:
+İki çekirdekli bir bulut sanal makinesinde, `--release` derlemesiyle. Dosya satır satır
+okunur; bellek dosyanın boyuyla değil, farklı mesajların sayısıyla büyür:
 
 | Log | Boyut | Süre | Bellek |
 |---|---|---|---|
 | Örnek log | 203 satır | 0,01 sn | 9 MB |
-| Gerçek bir geliştirme logu | 13 MB, 64 931 satır | 0,05 sn | 21 MB |
-| Sentetik 426 bin satır | 55 MB | 0,7 sn | 100 MB |
-| 30 günlük log, `--ani-artis 1` (43 195 dilim) | 92 MB, 524 bin satır | 0,6 sn | 138 MB |
-| Her satırda başka bir kullanıcı adı | 40 bin satır | 0,3 sn | 20 MB |
+| Gerçek bir geliştirme logu | 13 MB, 64 931 satır | 0,04 sn | 9 MB |
+| Sentetik 426 bin satır | 55 MB | 0,6 sn | 9 MB |
+| 30 günlük log, `--ani-artis 1` (43 195 dilim) | 92 MB, 524 bin satır | 0,6 sn | 9 MB |
+| Sentetik üretim logu | 500 MB, 1,5 milyon kayıt | 8 sn | 17 MB |
+| Aynısı, dört kat büyük | 2 GB, 6,3 milyon kayıt | 33 sn | 30 MB |
+| Her satırda başka bir kullanıcı adı | 40 bin satır | 0,3 sn | 24 MB |
+
+0.1.0 dosyanın tamamını belleğe okuyordu: 2 GB'lık log 4 GB bellek istiyordu.
 
 Son satır klasik Drain için en kötü durumdur: kısa bir mesajdaki rakamsız bir değer
 birleşmez, her değer ayrı bir küme açar. [Değişken konumlar](docs/nasil-calisir.md#değişken-konumlar)
@@ -357,7 +363,7 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
 
 ## Kalite
 
-- **Testler:** 198 birim testi her modülü ayrı ayrı, 26 uçtan uca test derlenmiş programı
+- **Testler:** 233 birim testi her modülü ayrı ayrı, 28 uçtan uca test derlenmiş programı
   çalıştırıp kullanıcının gördüğünü sınar: çıktı metinleri karakter karakter, JSON
   serde_json ile ayrıştırılarak, Markdown tablosu satır satır.
 - **Referans karşılaştırmaları:** yukarıdaki tabloda. Kümeleme gerçek ve sentetik loglarda
@@ -365,8 +371,8 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
   yalnızca eşiği gevşeten farklılıklarda ayrılır
   ([ayrıntılar](docs/nasil-calisir.md#değişken-konumlar)).
 - **Mutasyon testleri:** koda bilerek küçük hatalar yerleştirilip (bir karşılaştırmayı
-  çevirmek, bir sınırı kaydırmak, bir kuralı silmek) testlerin yakaladığı denetlendi; son
-  geliştirme adımlarında denenen 84 mutasyonun 83'ü yakalandı. Kalan biri sonucu hiç
+  çevirmek, bir sınırı kaydırmak, bir kuralı silmek) testlerin yakaladığı denetlendi;
+  geliştirme adımlarında denenen 147 mutasyonun 146'sı yakalandı. Kalan biri sonucu hiç
   değiştirmeyen (eşdeğer) bir mutasyondu.
 - **CI/CD:** `main` dalına her gönderimde ve her PR'da Linux, macOS ve Windows'ta testler;
   `rustfmt`, `clippy -D warnings` ve en düşük Rust sürümü (1.88). Her sürüm etiketinde dört
@@ -387,7 +393,7 @@ cargo test
 - Saat dilimi yok sayılır; farklı saat dilimleriyle yazılmış kayıtlar aynı dosyada
   karışırsa sıralama ve süreler kayabilir.
 - Ani artışlarda günlük döngü hesaba katılmaz; bu yüzden yalnızca WARNING ve üstüne bakılır.
-- Dosyanın tamamı belleğe okunur; birden çok dosya için `cat laravel-*.log | veylog -`.
+- Tek seferde bir dosya okunur; birden çok dosya için `cat laravel-*.log | veylog -`.
 
 Tam liste: [sınırlamalar](docs/sinirlamalar.md).
 
@@ -395,9 +401,13 @@ Tam liste: [sınırlamalar](docs/sinirlamalar.md).
 
 ```text
 src/
-├── main.rs          girişi okur (dosya ya da standart girdi), özeti istenen biçimde yazar
+├── main.rs          girişi açar (dosya ya da standart girdi), özeti istenen biçimde yazar
 ├── komut_satiri.rs  seçenekler, yardım metni, hata mesajları, yazım hatasına öneri
-├── kayit.rs         log metnini kayıtlara ayırır: başlık ya da JSON satırı, seviye, mesaj
+├── okuyucu.rs       girdiyi satır satır okur; bir kaydı yeniden okumak için seyrek dizin
+├── kayit.rs         satırları kayıtlara toplar: başlık ya da JSON satırı, seviye, mesaj
+├── depo.rs          okunurken her kayıttan özet için gerekenler: alt gruplar, sütunlar, kökler
+├── sutunlar.rs      kayıtların zamanları ve alt grupları, delta ve LEB128 ile sıkıştırılmış
+├── farkli_sayac.rs  farklı mesaj sayacı: tam, çok sayıda farklı değerde HyperLogLog
 ├── json_okuyucu.rs  Monolog'un JSON satırları için kütüphanesiz JSON okuyucu
 ├── maske.rs         değişkenleri yer tutucularla değiştirir: <SAYI>, <IP>, <YOL>...
 ├── drain.rs         Drain: maskelenmiş mesajlardan kalıp çıkarır; esnek eşik, değişken konumlar
@@ -416,7 +426,7 @@ ornekler/            kurgusal örnek loglar
 
 ## Yol haritası
 
-- [ ] Dosyayı satır satır okumak: bellek kullanımı dosyanın boyutundan bağımsız olsun
+- [x] Dosyayı satır satır okumak: bellek kullanımı dosyanın boyutundan bağımsız
 - [ ] Birden çok dosyayı ve `.gz` arşivlerini doğrudan okumak
 - [ ] Saat dilimlerini hesaba katmak
 
@@ -446,9 +456,10 @@ Drain algorithm, fingerprints exceptions by class and first application frame (s
 vendor code, entry points and middleware pass-through frames, and pointing Blade errors at
 the template), compares two time ranges with an exact conditional binomial test, and detects
 sudden spikes with median/MAD-based modified z-scores. It reads Laravel's text format and
-Monolog's JSON lines, handles Windows paths, and writes text, JSON or Markdown. Its only
-dependency is `regex`; the JSON reader and writer, statistics and argument parser are
-hand-written and tested against serde_json, scipy and Drain3. Prebuilt binaries for Linux
-(static), macOS and Windows are on the
+Monolog's JSON lines, handles Windows paths, and writes text, JSON or Markdown. The file is
+streamed line by line into a compact store, so a 2 GB log is summarized with 30 MB of
+memory. Its only dependency is `regex`; the JSON reader and writer, statistics and argument
+parser are hand-written and tested against serde_json, scipy and Drain3. Prebuilt binaries
+for Linux (static), macOS and Windows are on the
 [Releases](https://github.com/Veysel440/veylog/releases/latest) page. The interface is in
 Turkish.

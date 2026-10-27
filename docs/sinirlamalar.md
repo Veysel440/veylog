@@ -54,9 +54,17 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
   aynı dosyada karışırsa zaman aralığı, sıralama, karşılaştırma ve ani artışlar kayabilir.
 - JSON satırlarında yalnızca Monolog'un alan adları tanınır (`message`, `level_name`,
   `datetime`); başka bir JSON şeması (ör. Elastic'in ECS'i, `@timestamp`) kayıt sayılmaz.
-- Dosyanın tamamı belleğe okunur. Ölçülen loglarda bellek kullanımı dosya boyutunun 1,5 ile 3
-  katı arasında kaldı; satırları kısa olan ve her satırı ayrı bir kayıt olan loglarda üst
-  sınıra yaklaşır (55 MB'lık, 445 bin kayıtlı sentetik bir logda 163 MB).
+- Bellek dosyanın boyuyla değil, farklı mesajların sayısıyla büyür
+  ([akışlı okuma](nasil-calisir.md#akışlı-okuma-ve-bellek)). En kötü durum, maskelemenin hiçbir
+  şeyini değiştiremediği, her mesajı başka olan bir logdur: her mesaj bir kez saklanır. Her
+  satırında başka bir kullanıcı adı olan 40 bin satırlık bir log 24 MB tutar.
+- 262 144'ten fazla farklı ham mesaj varsa "farklı mesaj" sayısı tahmindir (±%0,4); önünde
+  `≈` yazar. Öteki bütün sayılar tamdır.
+- `--ani-artis` ile standart girdiden okurken girdi geçici bir dosyaya kopyalanır: girdi kadar
+  disk yeri gerekir. Dosya oluşturulur oluşturulmaz silinir; diskte kalmaz.
+- Bir satırın 256 MB'tan uzun kısmı okunmaz; bir kaydın devam satırlarının 256 MB'tan sonrası
+  saklanmaz ([akışlı okuma](nasil-calisir.md#akışlı-okuma-ve-bellek)). Gerçek loglarda
+  satırlar bunun çok altındadır.
 - Tek seferde bir log okunur. Birden çok dosya standart girdiden birleştirilebilir:
   `cat storage/logs/laravel-*.log | veylog -`.
 

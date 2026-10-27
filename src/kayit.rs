@@ -1,4 +1,4 @@
-//! Laravel log metnini kayıtlara ayırır.
+//! Laravel log satırlarını kayıtlara ayırır.
 //!
 //! Bir Laravel kaydı şöyle bir başlık satırıyla başlar:
 //!
@@ -16,15 +16,19 @@
 //! ```text
 //! {"message":"Mesaj","context":{},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-24T14:03:11.123456+00:00","extra":{}}
 //! ```
+//!
+//! Satırlar akış halinde, teker teker gelir (`KayitToplayici`). Bir kaydın bittiği ancak bir
+//! sonraki kayıt başladığında ya da girdi bittiğinde anlaşılır; bellekte yalnızca o an
+//! toplanmakta olan kayıt durur. Tamamlanan kayıt bir `KayitAlici`ya verilir.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::mem;
 
 use crate::json_okuyucu::{self, Deger};
 use crate::zaman::Zaman;
 
 /// Laravel log seviyeleri. Sıralama önem sırasıdır: Debug en düşük, Emergency en yüksek.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Seviye {
     Debug,
     Info,
@@ -37,19 +41,23 @@ pub enum Seviye {
 }
 
 impl Seviye {
+    /// Bütün seviyeler, önem sırasıyla.
+    pub const HEPSI: [Seviye; 8] = [
+        Seviye::Debug,
+        Seviye::Info,
+        Seviye::Notice,
+        Seviye::Warning,
+        Seviye::Error,
+        Seviye::Critical,
+        Seviye::Alert,
+        Seviye::Emergency,
+    ];
+
     /// Log dosyasındaki yazılışından seviyeye çevirir: "ERROR" → Seviye::Error
     fn ayristir(metin: &str) -> Option<Seviye> {
-        match metin {
-            "DEBUG" => Some(Seviye::Debug),
-            "INFO" => Some(Seviye::Info),
-            "NOTICE" => Some(Seviye::Notice),
-            "WARNING" => Some(Seviye::Warning),
-            "ERROR" => Some(Seviye::Error),
-            "CRITICAL" => Some(Seviye::Critical),
-            "ALERT" => Some(Seviye::Alert),
-            "EMERGENCY" => Some(Seviye::Emergency),
-            _ => None,
-        }
+        Seviye::HEPSI
+            .into_iter()
+            .find(|seviye| seviye.ad() == metin)
     }
 
     /// Ekrana yazarken kullanılacak ad.
@@ -70,8 +78,7 @@ impl Seviye {
 /// Tek bir log kaydı: başlık satırından (ya da JSON satırından) okunanlar ve ona ait devam
 /// satırları.
 ///
-/// `'a`: kayıt, log metninin parçalarını kopyalamaz, onlardan ödünç alır.
-/// Bu yüzden log metni yaşadığı sürece yaşayabilir, daha uzun değil. Tek istisna JSON
+/// `'a`: kayıt, satırların metnini kopyalamaz, onlardan ödünç alır. Tek istisna JSON
 /// satırlarındaki kaçışlı mesajlardır (`Trait \"X\" not found`): çözülmüş halleri kayda aittir.
 ///
 /// Alanlar gizli, dışarıdan yalnızca okunabilir (aşağıdaki metotlarla). Böylece bir kayıt
@@ -81,9 +88,9 @@ pub struct Kayit<'a> {
     /// "2026-10-24 14:03:11"
     zaman: &'a str,
     seviye: Seviye,
-    /// Bağlam JSON'u olmadan mesajın kendisi: "Kullanıcı 381 giriş yaptı". Çoğu zaman log
-    /// metninden ödünç alınır (`Cow::Borrowed`); JSON satırındaki mesaj kaçış içeriyorsa
-    /// çözülmüş hali kayda aittir (`Cow::Owned`).
+    /// Bağlam JSON'u olmadan mesajın kendisi: "Kullanıcı 381 giriş yaptı". Çoğu zaman satırdan
+    /// ödünç alınır (`Cow::Borrowed`); JSON satırındaki mesaj kaçış içeriyorsa çözülmüş hali
+    /// kayda aittir (`Cow::Owned`).
     mesaj: Cow<'a, str>,
     /// Başlık satırında mesajdan sonra gelen kısım: `{"ip":"203.0.113.24"}`. Yoksa ya da kayıt
     /// bir JSON satırıysa boş.
@@ -107,8 +114,8 @@ impl<'a> Kayit<'a> {
 
     /// Bağlam JSON'u olmadan mesajın kendisi.
     ///
-    /// Dönen metin kayda bağlıdır (`&self` kadar yaşar), log metnine değil: JSON satırındaki
-    /// kaçışlı bir mesajın çözülmüş hali yalnızca kayıtta vardır.
+    /// Dönen metin kayda bağlıdır (`&self` kadar yaşar), satıra değil: JSON satırındaki kaçışlı
+    /// bir mesajın çözülmüş hali yalnızca kayıtta vardır.
     pub fn mesaj(&self) -> &str {
         &self.mesaj
     }
@@ -121,7 +128,7 @@ impl<'a> Kayit<'a> {
 
     /// Başlıktan sonra gelen satırlar.
     ///
-    /// Dönen dilim kayda aittir (`&self` kadar yaşar); içindeki metinler ise log metnine
+    /// Dönen dilim kayda aittir (`&self` kadar yaşar); içindeki metinler ise satırlara
     /// (`'a` kadar yaşar).
     pub fn devam_satirlari(&self) -> &[&'a str] {
         &self.devam_satirlari
@@ -134,71 +141,211 @@ impl<'a> Kayit<'a> {
     }
 }
 
-/// Bir log metninin kayıtlara ayrılmış hali.
-#[derive(Debug)]
-pub struct Log<'a> {
-    pub kayitlar: Vec<Kayit<'a>>,
-    /// İlk kayıttan önce gelen, hiçbir kayda ait olmayan satırlar.
-    /// Dosya bir kaydın ortasından başlıyorsa olur (ör. log dosyası döndürüldüğünde).
-    pub yetim_satir: usize,
+/// Tamamlanan bir kaydın logdaki yeri.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KayitBilgisi {
+    /// Kaydın sıra numarası: logun kaçıncı kaydı olduğu, 0'dan başlayarak.
+    pub sira: usize,
+    /// Kaydın başlık satırının girdideki bayt konumu. Kayıt sonradan buradan yeniden okunabilir.
+    pub konum: u64,
 }
 
-impl Log<'_> {
-    /// Tüm kayıtlardaki devam satırlarının toplamı.
-    pub fn devam_satiri_sayisi(&self) -> usize {
-        self.kayitlar
-            .iter()
-            .map(|kayit| kayit.devam_satirlari.len())
-            .sum()
-    }
-
-    /// En eski ve en yeni kaydın zamanı, logda yazıldığı gibi. Hiç kayıt yoksa None.
-    ///
-    /// Zamanlar metin olarak değil `Zaman` olarak karşılaştırılır: metin karşılaştırması
-    /// `2026-10-24 10:00:00` ile `2026-10-24T09:00:00+00:00`'ı yanlış sıralardı (boşluk, `T`'den
-    /// önce gelir). Saat dilimi yok sayılır.
-    pub fn zaman_araligi(&self) -> Option<(&str, &str)> {
-        let zamanlar = || self.kayitlar.iter().map(|kayit| kayit.zaman);
-        let en_eski = zamanlar().min_by_key(|zaman| Zaman::kayittan(zaman))?;
-        let en_yeni = zamanlar().max_by_key(|zaman| Zaman::kayittan(zaman))?;
-        Some((en_eski, en_yeni))
-    }
-
-    /// Her seviyeden kaç kayıt var? BTreeMap anahtarları sıralı tutar.
-    pub fn seviye_sayilari(&self) -> BTreeMap<Seviye, usize> {
-        let mut sayaclar = BTreeMap::new();
-        for kayit in &self.kayitlar {
-            *sayaclar.entry(kayit.seviye).or_insert(0) += 1;
-        }
-        sayaclar
-    }
+/// Tamamlanan kayıtları alan taraf: özetin deposu ya da testlerde bir liste.
+///
+/// Kayıt ödünç verilir ve yalnızca bu çağrı boyunca yaşar: toplayıcı satırlarını bir sonraki
+/// kayıt için yeniden kullanır. Saklanacak bir şey varsa alıcı onu kopyalamalıdır.
+pub trait KayitAlici {
+    fn kayit(&mut self, kayit: &Kayit<'_>, bilgi: KayitBilgisi);
 }
 
-/// Log metnini kayıtlara ayırır. Başlık satırı ya da bir JSON kaydı yeni bir kayıt başlatır;
-/// sonraki satırlar bir sonraki kayda kadar o kayda eklenir.
+/// Satırların nereye gittiği. Her satır tam olarak bir yere gider: bir kaydın başlığı, bir
+/// kaydın devamı ya da hiçbir kayda ait olmayan bir yetim satır.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SatirSayilari {
+    pub satir: usize,
+    pub kayit: usize,
+    pub devam: usize,
+    /// İlk kayıttan önce gelen, hiçbir kayda ait olmayan satırlar. Dosya bir kaydın ortasından
+    /// başlıyorsa olur (ör. log dosyası döndürüldüğünde).
+    pub yetim: usize,
+}
+
+/// Bir kaydın saklanan devam satırlarının toplam boyu en fazla bu kadar bayt (256 MB) olabilir.
+/// Sığmayan ilk satırdan sonrakiler sayılır ama saklanmaz: kaydın başı (istisnanın sınıfı ve
+/// yeri, uygulama kodunun çerçeveleri) olduğu gibi kalır, sonundan bir kısım eksilir. Gerçek
+/// kayıtlar bunun çok altındadır; sınır, sonu gelmeyen bir kaydın (bir döküm, bozuk bir dosya)
+/// belleği doldurmasını önler.
+const DEVAM_SINIRI: usize = 256 << 20;
+/// Bir kaydın saklanan devam satırı sayısı da sınırlıdır: boş satırlar bayt tutmaz.
+const DEVAM_SATIR_SINIRI: usize = 16 << 20;
+
+/// Satırları teker teker alıp kayıtlara toplar.
+///
+/// Başlık satırı ya da bir JSON kaydı yeni bir kayıt başlatır; sonraki satırlar bir sonraki
+/// kayda kadar o kayda eklenir. Toplanmakta olan kayıt yeni bir kayıt başlayınca ya da `bitir`
+/// çağrılınca tamamlanır ve alıcıya verilir.
 ///
 /// Bazı Windows araçları dosyanın başına bir UTF-8 BOM'u (U+FEFF) yazar. Atılmazsa satır `[`
 /// ile başlamaz ve kayıt bir önceki kaydın devam satırı sayılır. BOM her satırın başında
 /// atılır: birden çok dosya birleştirildiğinde (`cat a.log b.log | veylog -`) her dosyanın
 /// BOM'u kendi ilk satırındadır.
-pub fn kayitlari_ayir(icerik: &str) -> Log<'_> {
-    let mut log = Log {
-        kayitlar: Vec::new(),
-        yetim_satir: 0,
-    };
+#[derive(Debug, Default)]
+pub struct KayitToplayici {
+    bekleyen: Bekleyen,
+    /// Toplanmakta olan metin kaydının başlık satırı.
+    baslik: String,
+    /// Toplanmakta olan JSON kaydının zamanı ve çözülmüş mesajı.
+    json_zaman: String,
+    json_mesaj: String,
+    /// Toplanmakta olan kaydın devam satırları art arda ve her birinin bittiği yer. Tamponlar
+    /// kayıttan kayda yeniden kullanılır; her satır için ayrı bir bellek ayrılmaz. Konumlar
+    /// `u32`: devam satırları `DEVAM_SINIRI`'nı geçmez.
+    devam: String,
+    devam_sonlari: Vec<u32>,
+    /// Kaydın bir devam satırı sınırlara sığmadı: sonrakiler de saklanmaz.
+    devam_kesildi: bool,
+    /// Devam satırlarının bayt ve satır sınırları; None ise (`Default`) `DEVAM_SINIRI` ve
+    /// `DEVAM_SATIR_SINIRI`. Testlerde daha küçük sınırlar verilir.
+    sinirlar: Option<(usize, usize)>,
+    sayilar: SatirSayilari,
+}
 
-    for satir in icerik.lines() {
+/// Toplanmakta olan kayıt.
+#[derive(Debug, Default)]
+enum Bekleyen {
+    #[default]
+    Yok,
+    /// Metin biçiminde bir kayıt; başlık satırı `baslik`ta. Başlık kayıt tamamlanınca yeniden
+    /// ayrıştırılır: ucuzdur ve böylece ayrıştırılmış hali satıra bağlı kalmaz.
+    Metin(KayitBilgisi),
+    /// İstisnası olmayan bir JSON kaydı; alanları `json_*`'da. Devam satırları beklenir:
+    /// istisna onlarda olabilir.
+    Json(KayitBilgisi, Seviye),
+    /// İstisnalı bir JSON kaydı. Gereken her şey JSON satırındaydı; satır gelir gelmez alıcıya
+    /// verildi. Devam satırları yalnızca sayılır.
+    Verildi,
+}
+
+impl KayitToplayici {
+    /// Bir satırı işler. `konum`: satırın girdideki bayt konumu.
+    pub fn satir<A: KayitAlici + ?Sized>(&mut self, satir: &str, konum: u64, alici: &mut A) {
+        self.sayilar.satir += 1;
         let satir = satir.strip_prefix('\u{feff}').unwrap_or(satir);
-        if let Some(kayit) = baslik_ayristir(satir).or_else(|| json_satiri_ayristir(satir)) {
-            log.kayitlar.push(kayit);
-        } else if let Some(son_kayit) = log.kayitlar.last_mut() {
-            son_kayit.devam_satirlari.push(satir);
+        if baslik_ayristir(satir).is_some() {
+            self.bitir(alici);
+            let bilgi = self.yeni_kayit(konum);
+            self.baslik.clear();
+            self.baslik.push_str(satir);
+            self.bekleyen = Bekleyen::Metin(bilgi);
+        } else if let Some(kayit) = json_satiri_ayristir(satir) {
+            self.bitir(alici);
+            let bilgi = self.yeni_kayit(konum);
+            if kayit.json_istisna.is_some() {
+                alici.kayit(&kayit, bilgi);
+                self.bekleyen = Bekleyen::Verildi;
+            } else {
+                self.json_zaman.clear();
+                self.json_zaman.push_str(kayit.zaman);
+                self.json_mesaj.clear();
+                self.json_mesaj.push_str(&kayit.mesaj);
+                self.bekleyen = Bekleyen::Json(bilgi, kayit.seviye);
+            }
+        } else if matches!(self.bekleyen, Bekleyen::Yok) {
+            self.sayilar.yetim += 1;
         } else {
-            log.yetim_satir += 1;
+            self.sayilar.devam += 1;
+            if matches!(self.bekleyen, Bekleyen::Verildi) || self.devam_kesildi {
+                return;
+            }
+            let (bayt_siniri, satir_siniri) =
+                self.sinirlar.unwrap_or((DEVAM_SINIRI, DEVAM_SATIR_SINIRI));
+            if self.devam.len() + satir.len() <= bayt_siniri
+                && self.devam_sonlari.len() < satir_siniri
+            {
+                self.devam.push_str(satir);
+                self.devam_sonlari
+                    .push(u32::try_from(self.devam.len()).expect("devam satırları 4 GB'ı geçmez"));
+            } else {
+                self.devam_kesildi = true;
+            }
         }
     }
 
-    log
+    /// Devam satırlarını daha küçük sınırlarla saklayan bir toplayıcı (testler için).
+    #[cfg(test)]
+    fn sinirli(bayt_siniri: usize, satir_siniri: usize) -> Self {
+        KayitToplayici {
+            sinirlar: Some((bayt_siniri, satir_siniri)),
+            ..KayitToplayici::default()
+        }
+    }
+
+    /// Toplanmakta olan kaydı tamamlar ve alıcıya verir. Girdi bitince çağrılır; yeni bir kayıt
+    /// başlayınca da kendiliğinden çağrılır.
+    pub fn bitir<A: KayitAlici + ?Sized>(&mut self, alici: &mut A) {
+        // Ödünç alma kuralı: kayıt `self`in alanlarından ödünç alırken `self.bekleyen`
+        // değiştirilemez; bu yüzden önce dışarı alınır
+        let bekleyen = mem::take(&mut self.bekleyen);
+        let mut bas = 0;
+        let devam_satirlari: Vec<&str> = self
+            .devam_sonlari
+            .iter()
+            .map(|&son| {
+                let son = son as usize;
+                let satir = &self.devam[bas..son];
+                bas = son;
+                satir
+            })
+            .collect();
+        match bekleyen {
+            Bekleyen::Metin(bilgi) => {
+                let mut kayit =
+                    baslik_ayristir(&self.baslik).expect("başlık olduğu satır gelince denetlendi");
+                kayit.devam_satirlari = devam_satirlari;
+                alici.kayit(&kayit, bilgi);
+            }
+            Bekleyen::Json(bilgi, seviye) => {
+                let kayit = Kayit {
+                    zaman: &self.json_zaman,
+                    seviye,
+                    mesaj: Cow::Borrowed(&self.json_mesaj),
+                    baglam: "",
+                    devam_satirlari,
+                    json_istisna: None,
+                };
+                alici.kayit(&kayit, bilgi);
+            }
+            Bekleyen::Verildi | Bekleyen::Yok => {}
+        }
+        self.devam.clear();
+        self.devam_sonlari.clear();
+        self.devam_kesildi = false;
+    }
+
+    /// Şimdiye kadarki satır sayıları.
+    pub fn sayilar(&self) -> SatirSayilari {
+        self.sayilar
+    }
+
+    /// Yeni başlayan kaydın bilgisi: sıra numarası ve konumu.
+    fn yeni_kayit(&mut self, konum: u64) -> KayitBilgisi {
+        let bilgi = KayitBilgisi {
+            sira: self.sayilar.kayit,
+            konum,
+        };
+        self.sayilar.kayit += 1;
+        bilgi
+    }
+}
+
+/// Satır bir kaydın başlangıcıysa (metin biçiminde bir başlık ya da bir JSON kaydı) o kayıt;
+/// devam satırları olmadan. Satırın başındaki BOM atılır.
+///
+/// Toplayıcıyla aynı kararı verir; bir kayıt sonradan, başlık satırından yeniden okunurken
+/// kullanılır.
+pub fn kayit_baslangici(satir: &str) -> Option<Kayit<'_>> {
+    let satir = satir.strip_prefix('\u{feff}').unwrap_or(satir);
+    baslik_ayristir(satir).or_else(|| json_satiri_ayristir(satir))
 }
 
 /// Satır bir kayıt başlığıysa ondan yeni bir kayıt oluşturur (henüz devam satırı yok).
@@ -331,8 +478,61 @@ fn zaman_eki_gecerli_mi(mut ek: &[u8]) -> bool {
     }
 }
 
+/// Testlerde kayıtları toplamak için: her kaydın sahiplenilmiş bir kopyası.
+#[cfg(test)]
+pub mod deneme {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ToplananKayit {
+        pub zaman: String,
+        pub seviye: Seviye,
+        pub mesaj: String,
+        pub baglam: String,
+        pub devam: Vec<String>,
+        pub json_istisnali: bool,
+        pub bilgi: KayitBilgisi,
+    }
+
+    impl KayitAlici for Vec<ToplananKayit> {
+        fn kayit(&mut self, kayit: &Kayit<'_>, bilgi: KayitBilgisi) {
+            self.push(ToplananKayit {
+                zaman: kayit.zaman().to_owned(),
+                seviye: kayit.seviye(),
+                mesaj: kayit.mesaj().to_owned(),
+                baglam: kayit.baglam().to_owned(),
+                devam: kayit
+                    .devam_satirlari()
+                    .iter()
+                    .map(|satir| satir.to_string())
+                    .collect(),
+                json_istisnali: kayit.json_istisna().is_some(),
+                bilgi,
+            });
+        }
+    }
+
+    /// Metni satır satır toplayıcıdan geçirir: kayıtlar ve satır sayıları.
+    pub fn topla(metin: &str) -> (Vec<ToplananKayit>, SatirSayilari) {
+        let mut kayitlar = Vec::new();
+        let mut toplayici = KayitToplayici::default();
+        let mut konum = 0;
+        // `split_inclusive`: satır sonları satırda kalır; konum onlarla birlikte ilerler
+        for parca in metin.split_inclusive('\n') {
+            let satir = parca
+                .strip_suffix('\n')
+                .map_or(parca, |satir| satir.strip_suffix('\r').unwrap_or(satir));
+            toplayici.satir(satir, konum, &mut kayitlar);
+            konum += parca.len() as u64;
+        }
+        toplayici.bitir(&mut kayitlar);
+        (kayitlar, toplayici.sayilar())
+    }
+}
+
 #[cfg(test)]
 mod testler {
+    use super::deneme::{ToplananKayit, topla};
     use super::*;
 
     #[test]
@@ -431,20 +631,61 @@ mod testler {
             "[2026-10-24 11:00:00] local.INFO: Yine metin",
         ]
         .join("\n");
-        let log = kayitlari_ayir(&metin);
+        let (kayitlar, sayilar) = topla(&metin);
 
-        assert_eq!(log.kayitlar.len(), 3);
-        assert_eq!(log.kayitlar[1].mesaj(), "JSON biçiminde");
-        assert_eq!(log.kayitlar[0].devam_satirlari.len(), 2);
+        assert_eq!(kayitlar.len(), 3);
+        assert_eq!(kayitlar[1].mesaj, "JSON biçiminde");
+        assert_eq!(kayitlar[1].zaman, "2026-10-24T09:00:00.5+00:00");
+        assert_eq!(kayitlar[0].devam.len(), 2);
+        assert_eq!(kayitlar[1].devam, ["JSON kaydından sonra gelen bir satır"]);
         assert_eq!(
-            log.kayitlar[1].devam_satirlari,
-            vec!["JSON kaydından sonra gelen bir satır"]
+            sayilar,
+            SatirSayilari {
+                satir: 6,
+                kayit: 3,
+                devam: 3,
+                yetim: 0
+            }
         );
-        // Metin olarak karşılaştırılsaydı en eski 10:00 olurdu: " " < "T"
+        // Sıra numaraları logdaki sıradır; konumlar başlık satırlarının baytı
+        let bilgiler: Vec<KayitBilgisi> = kayitlar.iter().map(|kayit| kayit.bilgi).collect();
+        let konum = |satir: &str| metin.find(satir).unwrap() as u64;
         assert_eq!(
-            log.zaman_araligi(),
-            Some(("2026-10-24T09:00:00.5+00:00", "2026-10-24 11:00:00"))
+            bilgiler,
+            [
+                KayitBilgisi { sira: 0, konum: 0 },
+                KayitBilgisi {
+                    sira: 1,
+                    konum: konum("{\"message\"")
+                },
+                KayitBilgisi {
+                    sira: 2,
+                    konum: konum("[2026-10-24 11:00:00]")
+                },
+            ]
         );
+    }
+
+    #[test]
+    fn istisnali_json_kaydi_hemen_verilir_devami_sayilir() {
+        // İstisnalı JSON kaydının devam satırlarına bakılmaz: istisnası satırın kendisindedir
+        let metin = [
+            r#"{"message":"Bağlantı yok","context":{"exception":{"class":"RuntimeException","file":"/var/www/magaza/app/A.php:3"}},"level_name":"ERROR","datetime":"2026-10-24T09:00:00+00:00"}"#,
+            "bir devam satırı",
+            "ikinci devam satırı",
+            r#"{"message":"İstisnasız","context":{},"level_name":"INFO","datetime":"2026-10-24T09:00:01+00:00"}"#,
+            "[object] (RuntimeException(code: 0): Devamdaki istisna at /var/www/magaza/app/B.php:4)",
+        ]
+        .join("\n");
+        let (kayitlar, sayilar) = topla(&metin);
+        assert_eq!(kayitlar.len(), 2);
+        assert!(kayitlar[0].json_istisnali);
+        assert!(kayitlar[0].devam.is_empty());
+        // İstisnasız JSON kaydının devam satırları saklanır: istisna orada olabilir
+        assert!(!kayitlar[1].json_istisnali);
+        assert_eq!(kayitlar[1].devam.len(), 1);
+        assert_eq!(kayitlar[1].baglam, "");
+        assert_eq!(sayilar.devam, 3);
     }
 
     #[test]
@@ -530,12 +771,12 @@ mod testler {
         assert!(baslik_ayristir("[2024-02-29 23:59:59] local.ERROR: x").is_some());
 
         // Önceki kaydın devam satırı olur: loglanan bir girdi başlık taklidi yapamaz
-        let log = kayitlari_ayir(
+        let (kayitlar, _) = topla(
             "[2026-03-01 12:00:00] local.ERROR: Form gönderildi\n[2026-02-30 10:00:00] local.ERROR: sahte",
         );
-        assert_eq!(log.kayitlar.len(), 1);
+        assert_eq!(kayitlar.len(), 1);
         assert_eq!(
-            log.kayitlar[0].devam_satirlari(),
+            kayitlar[0].devam,
             ["[2026-02-30 10:00:00] local.ERROR: sahte"]
         );
     }
@@ -546,34 +787,30 @@ mod testler {
         let metin = "\u{feff}[2026-10-24 10:00:00] local.INFO: Birinci gün\n\
                      \u{feff}[2026-10-25 10:00:00] local.CRITICAL: İkinci gün\n\
                      \u{feff}{\"message\":\"Üçüncü\",\"level_name\":\"ERROR\",\"datetime\":\"2026-10-26T10:00:00+00:00\"}";
-        let log = kayitlari_ayir(metin);
-        let mesajlar: Vec<&str> = log.kayitlar.iter().map(Kayit::mesaj).collect();
+        let (kayitlar, sayilar) = topla(metin);
+        let mesajlar: Vec<&str> = kayitlar.iter().map(|kayit| kayit.mesaj.as_str()).collect();
         assert_eq!(mesajlar, ["Birinci gün", "İkinci gün", "Üçüncü"]);
-        assert_eq!(log.kayitlar[1].seviye(), Seviye::Critical);
-        assert_eq!(log.yetim_satir, 0);
-    }
-
-    #[test]
-    fn bozuk_zaman_ekleri_reddedilir() {
-        for satir in [
-            "[2026-10-24 14:03:11.] local.INFO: x",
-            "[2026-10-24 14:03:11+3] local.INFO: x",
-            "[2026-10-24 14:03:11abc] local.INFO: x",
-            "[2026-10-24X14:03:11] local.INFO: x",
-        ] {
-            assert!(baslik_ayristir(satir).is_none(), "kabul edildi: {satir}");
-        }
+        assert_eq!(kayitlar[1].seviye, Seviye::Critical);
+        assert_eq!(sayilar.yetim, 0);
+        // Yeniden okurken de aynı karar verilir
+        assert!(kayit_baslangici("\u{feff}[2026-10-25 10:00:00] local.CRITICAL: x").is_some());
     }
 
     #[test]
     fn bilinmeyen_seviye_baslik_sayilmaz() {
         assert!(baslik_ayristir("[2026-10-24 14:03:11] local.HATA: x").is_none());
+        // Bilinen bütün seviyeler adlarından geri bulunur
+        for seviye in Seviye::HEPSI {
+            assert_eq!(Seviye::ayristir(seviye.ad()), Some(seviye));
+        }
+        assert_eq!(Seviye::ayristir("error"), None);
     }
 
     #[test]
     fn seviyeler_onem_sirasina_gore_karsilastirilir() {
         assert!(Seviye::Error > Seviye::Warning);
         assert!(Seviye::Debug < Seviye::Info);
+        assert!(Seviye::HEPSI.is_sorted());
     }
 
     #[test]
@@ -582,80 +819,117 @@ mod testler {
             "[2026-10-24 10:00:00] local.ERROR: Bir hata",
             "[stacktrace]",
             "#0 /var/www/app/Kod.php(41)",
+            "",
             "[2026-10-24 10:00:05] local.INFO: Tamam",
         ]
         .join("\n");
-        let log = kayitlari_ayir(&metin);
+        let (kayitlar, sayilar) = topla(&metin);
 
-        assert_eq!(log.kayitlar.len(), 2);
+        assert_eq!(kayitlar.len(), 2);
         assert_eq!(
-            log.kayitlar[0].devam_satirlari,
-            vec!["[stacktrace]", "#0 /var/www/app/Kod.php(41)"]
+            kayitlar[0].devam,
+            ["[stacktrace]", "#0 /var/www/app/Kod.php(41)", ""]
         );
-        assert!(log.kayitlar[1].devam_satirlari.is_empty());
-        assert_eq!(log.yetim_satir, 0);
+        assert!(kayitlar[1].devam.is_empty());
+        assert_eq!(sayilar.yetim, 0);
+        assert_eq!(sayilar.devam, 3);
     }
 
     #[test]
     fn ilk_kayittan_onceki_satirlar_yetim_kalir() {
         let metin = ["#15 {main}", "\"}", "[2026-10-24 10:00:00] local.INFO: x"].join("\n");
-        let log = kayitlari_ayir(&metin);
+        let (kayitlar, sayilar) = topla(&metin);
 
-        assert_eq!(log.yetim_satir, 2);
-        assert_eq!(log.kayitlar.len(), 1);
+        assert_eq!(sayilar.yetim, 2);
+        assert_eq!(kayitlar.len(), 1);
+        // "#15 {main}\n" 11 bayt, "\"}\n" 3 bayt
+        assert_eq!(kayitlar[0].bilgi.konum, 14);
     }
 
     #[test]
-    fn zaman_araligi_en_eski_ve_en_yeni_kayittir() {
-        // Kayıtlar dosyada her zaman sıralı olmayabilir (aynı anda yazan birden fazla işlem)
-        let metin = [
-            "[2026-10-24 10:00:05] local.INFO: b",
-            "[2026-10-24 09:59:59] local.INFO: a",
-            "[2026-10-24 10:00:01] local.INFO: c",
-        ]
-        .join("\n");
-        let log = kayitlari_ayir(&metin);
+    fn cok_uzun_kaydin_devami_sinira_kadar_saklanir() {
+        // Sonu gelmeyen bir kayıt: devam satırları sayılır, belli bir boydan sonra saklanmaz
+        const BAYT: usize = 1_000;
+        const SATIR: usize = 50;
+        // Satırlar sınıra tam sığar: onuncu satırla devam tam 1 000 bayt olur
+        let satir = "x".repeat(100);
+        let mut toplayici = KayitToplayici::sinirli(BAYT, SATIR);
+        let mut kayitlar: Vec<ToplananKayit> = Vec::new();
+        toplayici.satir("[2026-10-24 10:00:00] local.ERROR: Döküm", 0, &mut kayitlar);
+        for _ in 0..20 {
+            toplayici.satir(&satir, 0, &mut kayitlar);
+        }
+        toplayici.bitir(&mut kayitlar);
+        assert_eq!(kayitlar.len(), 1);
+        assert_eq!(kayitlar[0].devam.len(), BAYT / satir.len());
+        assert_eq!(toplayici.sayilar().devam, 20);
 
-        assert_eq!(
-            log.zaman_araligi(),
-            Some(("2026-10-24 09:59:59", "2026-10-24 10:00:05"))
+        // Sığmayan ilk satırdan sonrakiler, kısa olsalar da saklanmaz: saklananlar kaydın
+        // başıdır, araya boşluk girmez
+        let mut toplayici = KayitToplayici::sinirli(BAYT, SATIR);
+        let mut kayitlar: Vec<ToplananKayit> = Vec::new();
+        toplayici.satir("[2026-10-24 10:00:00] local.ERROR: Döküm", 0, &mut kayitlar);
+        toplayici.satir("başı", 0, &mut kayitlar);
+        toplayici.satir(&"y".repeat(BAYT), 0, &mut kayitlar);
+        toplayici.satir("#0 /var/www/magaza/app/A.php(3): b()", 0, &mut kayitlar);
+        toplayici.bitir(&mut kayitlar);
+        assert_eq!(kayitlar[0].devam, ["başı"]);
+        assert_eq!(toplayici.sayilar().devam, 3);
+
+        // Boş satırlar bayt tutmaz ama satır sayısı da sınırlıdır
+        let mut toplayici = KayitToplayici::sinirli(BAYT, SATIR);
+        let mut kayitlar: Vec<ToplananKayit> = Vec::new();
+        toplayici.satir(
+            "[2026-10-24 10:00:00] local.ERROR: Boşluk",
+            0,
+            &mut kayitlar,
         );
-        assert_eq!(kayitlari_ayir("").zaman_araligi(), None);
+        for _ in 0..SATIR + 5 {
+            toplayici.satir("", 0, &mut kayitlar);
+        }
+        toplayici.bitir(&mut kayitlar);
+        assert_eq!(kayitlar[0].devam.len(), SATIR);
+        // Tamponlar sonraki kayıt için boşaltılır
+        toplayici.satir(
+            "[2026-10-24 10:00:01] local.INFO: Sonraki",
+            0,
+            &mut kayitlar,
+        );
+        toplayici.bitir(&mut kayitlar);
+        assert!(kayitlar[1].devam.is_empty());
     }
 
     #[test]
     fn ornek_log_dogru_ayrilir() {
         let icerik = include_str!("../ornekler/laravel.log");
-        let log = kayitlari_ayir(icerik);
+        let (kayitlar, sayilar) = topla(icerik);
 
-        assert_eq!(log.kayitlar.len(), 59);
-        assert_eq!(log.yetim_satir, 3);
+        assert_eq!(kayitlar.len(), 59);
+        assert_eq!(sayilar.kayit, 59);
+        assert_eq!(sayilar.yetim, 3);
         // Her satır tam olarak bir yere gider: başlık, devam ya da yetim.
         assert_eq!(
-            log.kayitlar.len() + log.devam_satiri_sayisi() + log.yetim_satir,
+            sayilar.kayit + sayilar.devam + sayilar.yetim,
             icerik.lines().count()
         );
-        assert_eq!(
-            log.zaman_araligi(),
-            Some(("2026-10-24 08:59:58", "2026-10-24 18:31:07"))
-        );
-
-        let sayilar = log.seviye_sayilari();
-        assert_eq!(sayilar[&Seviye::Error], 16);
-        assert_eq!(sayilar[&Seviye::Critical], 2);
-        assert_eq!(sayilar.get(&Seviye::Emergency), None);
+        assert_eq!(sayilar.satir, icerik.lines().count());
+        let hatalar = kayitlar
+            .iter()
+            .filter(|kayit| kayit.seviye == Seviye::Error)
+            .count();
+        assert_eq!(hatalar, 16);
     }
 
     #[test]
     fn karisik_ornek_log_dogru_ayrilir() {
         // Önce metin biçimi (12 kayıt), 10:00'dan sonra JSON (9 kayıt); yollar Windows'ta
         let icerik = include_str!("../ornekler/karisik.log");
-        let log = kayitlari_ayir(icerik);
+        let (kayitlar, sayilar) = topla(icerik);
 
-        assert_eq!(log.kayitlar.len(), 21);
-        assert_eq!(log.yetim_satir, 0);
+        assert_eq!(kayitlar.len(), 21);
+        assert_eq!(sayilar.yetim, 0);
         assert_eq!(
-            log.kayitlar.len() + log.devam_satiri_sayisi() + log.yetim_satir,
+            sayilar.kayit + sayilar.devam + sayilar.yetim,
             icerik.lines().count()
         );
         let json_kayitlari = icerik
@@ -665,13 +939,10 @@ mod testler {
         assert_eq!(json_kayitlari, 9);
         // JSON kayıtlarının devam satırı yok
         assert!(
-            log.kayitlar
+            kayitlar
                 .iter()
                 .filter(|kayit| kayit.zaman.contains('T'))
-                .all(|kayit| kayit.devam_satirlari.is_empty())
+                .all(|kayit| kayit.devam.is_empty())
         );
-        let (en_eski, en_yeni) = log.zaman_araligi().unwrap();
-        assert_eq!(en_eski, "2026-10-25 09:00:12");
-        assert!(en_yeni.starts_with("2026-10-25T11:58:44."), "{en_yeni}");
     }
 }

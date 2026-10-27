@@ -36,6 +36,7 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
   },
   "kaliplar": {
     "ham_mesaj_sayisi": 45,
+    "ham_mesaj_yaklasik": false,
     "maskeli_mesaj_sayisi": 27,
     "kalip_sayisi": 23,
     "grup_sayisi": 24,
@@ -69,6 +70,9 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
   bulunamadıysa `dosya` ve `satir` `null`'dır. View hatalarında `dosya` şablondur ve `satir`
   `null`'dır.
 - `seviyeler` yalnızca logda geçen seviyeleri, en önemlisi başta olacak şekilde içerir.
+- `ham_mesaj_yaklasik`: `ham_mesaj_sayisi` bir tahmin mi? 262 144'ten fazla farklı ham mesaj
+  varsa sayı HyperLogLog ile tahmin edilir (±%0,4,
+  [ayrıntılar](nasil-calisir.md#akışlı-okuma-ve-bellek)); öteki bütün sayılar tamdır.
 - `satirlar` en fazla `--ilk` kadar satırdır; `gosterilmeyen` dışarıda kalanların sayısıdır.
   Bütün satırlar için `--hepsi`.
 

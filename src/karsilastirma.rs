@@ -18,8 +18,8 @@
 
 use std::fmt;
 
+use crate::depo::Depo;
 use crate::istatistik::binom_ust_kuyruk;
-use crate::kayit::Log;
 use crate::rapor::KalipAnalizi;
 use crate::zaman::{Zaman, ZamanNoktasi};
 
@@ -107,17 +107,12 @@ impl std::error::Error for KarsilastirmaHatasi {}
 impl Karsilastirma {
     /// Logu `nokta`da ikiye bölüp kalıp satırlarını karşılaştırır.
     pub fn hesapla(
-        log: &Log<'_>,
-        analiz: &KalipAnalizi<'_>,
+        depo: &Depo,
+        analiz: &KalipAnalizi,
         nokta: ZamanNoktasi,
     ) -> Result<Karsilastirma, KarsilastirmaHatasi> {
-        let zamanlar: Vec<Zaman> = log
-            .kayitlar
-            .iter()
-            .map(|kayit| Zaman::kayittan(kayit.zaman()))
-            .collect();
         // let-else: desen tutmazsa `else` bloğu çalışır ve fonksiyondan çıkar
-        let (Some(&ilk), Some(&son)) = (zamanlar.iter().min(), zamanlar.iter().max()) else {
+        let (Some(ilk), Some(son)) = (depo.en_eski(), depo.en_yeni()) else {
             return Err(KarsilastirmaHatasi::KayitYok);
         };
         let nokta = nokta.coz(son);
@@ -125,15 +120,23 @@ impl Karsilastirma {
             return Err(KarsilastirmaHatasi::AralikDisi { nokta, ilk, son });
         }
 
-        // Tam noktadaki kayıt "sonra"dadır: önce [ilk, nokta), sonra [nokta, son]
-        let sonrada = |zaman: Zaman| zaman >= nokta;
-        let sonra_kayit = zamanlar.iter().filter(|&&zaman| sonrada(zaman)).count();
+        // Tam noktadaki kayıt "sonra"dadır: önce [ilk, nokta), sonra [nokta, son]. Takvimde var
+        // olan anlarda zamanların sırası saniyelerinin sırasıdır.
+        let nokta_saniye = nokta.saniye();
+        let mut sonra_adetleri = vec![0; analiz.satirlar.len()];
+        let mut sonra_kayit = 0;
+        for (saniye, alt_grup) in depo.kayitlar() {
+            if saniye >= nokta_saniye {
+                sonra_kayit += 1;
+                sonra_adetleri[analiz.alt_grup_satiri[alt_grup as usize]] += 1;
+            }
+        }
         // Son kaydın saniyesi de sonra yarısına dahil olduğu için bir saniye eklenir
         let once = Pencere {
             baslangic: ilk,
             bitis: nokta,
             saniye: saniye_farki(ilk, nokta),
-            kayit_sayisi: zamanlar.len() - sonra_kayit,
+            kayit_sayisi: depo.kayit_sayisi() - sonra_kayit,
         };
         let sonra = Pencere {
             baslangic: nokta,
@@ -152,13 +155,9 @@ impl Karsilastirma {
             kaybolan: Vec::new(),
             artan: Vec::new(),
         };
-        for (sira, satir) in analiz.satirlar.iter().enumerate() {
-            let sonra_adet = satir
-                .kayitlar
-                .iter()
-                .filter(|&&kayit| sonrada(zamanlar[kayit]))
-                .count();
-            let once_adet = satir.kayitlar.len() - sonra_adet;
+        for (sira, (satir, &sonra_adet)) in analiz.satirlar.iter().zip(&sonra_adetleri).enumerate()
+        {
+            let once_adet = satir.adet - sonra_adet;
             // Önce 0 ise sonsuz, sonra 0 ise 0
             let kat = sonra.saatlik(sonra_adet) / once.saatlik(once_adet);
             // Kapanış (closure): satırın bilgilerini yakalar, yalnızca p değerini bekler
@@ -201,7 +200,7 @@ fn saniye_farki(bas: Zaman, son: Zaman) -> usize {
 #[cfg(test)]
 mod testler {
     use super::*;
-    use crate::kayit::kayitlari_ayir;
+    use crate::depo;
     use crate::rapor::{RaporAyarlari, kaliplari_cikar};
 
     /// Saat ve mesajdan bir log metni: her eleman (zaman, seviye, mesaj, kaç kez, aralık dk).
@@ -240,10 +239,10 @@ mod testler {
     }
 
     fn karsilastir(metin: &str, nokta: &str) -> Result<Karsilastirma, KarsilastirmaHatasi> {
-        let log = kayitlari_ayir(metin);
-        let analiz = kaliplari_cikar(&log, &RaporAyarlari::default());
+        let depo = depo::metinden(metin);
+        let analiz = kaliplari_cikar(&depo, &RaporAyarlari::default());
         let nokta = ZamanNoktasi::ayristir(nokta).expect("geçerli nokta");
-        Karsilastirma::hesapla(&log, &analiz, nokta)
+        Karsilastirma::hesapla(&depo, &analiz, nokta)
     }
 
     /// Kayan noktalı sayılar son basamakta yuvarlanabilir: yakınlıkla karşılaştır.
@@ -253,8 +252,7 @@ mod testler {
 
     /// Bir listedeki satırların kalıpları ve sayıları.
     fn ozetle(metin: &str, liste: &[Degisim]) -> Vec<(String, usize, usize)> {
-        let log = kayitlari_ayir(metin);
-        let analiz = kaliplari_cikar(&log, &RaporAyarlari::default());
+        let analiz = kaliplari_cikar(&depo::metinden(metin), &RaporAyarlari::default());
         liste
             .iter()
             .map(|degisim| {
@@ -430,8 +428,8 @@ mod testler {
         let metin = "[2026-02-30 10:00:00] local.ERROR: Eski hata\n\
                      [2026-03-01 12:00:00] local.ERROR: Yeni hata\n\
                      [2026-03-03 12:00:00] local.ERROR: Yeni hata";
-        let log = kayitlari_ayir(metin);
-        assert_eq!((log.kayitlar.len(), log.yetim_satir), (2, 1));
+        let sayilar = depo::metinden(metin).sayilar();
+        assert_eq!((sayilar.kayit, sayilar.yetim), (2, 1));
         let sonuc = karsilastir(metin, "2026-03-02").unwrap();
         assert_eq!((sonuc.once.saniye, sonuc.sonra.saniye), (43_200, 129_601));
         assert_eq!(saniye_farki(sonuc.once.baslangic, sonuc.nokta), 43_200);

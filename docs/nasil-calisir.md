@@ -36,8 +36,9 @@ gider: başlık, devam ya da yetim.
   Laravel böyle bir zaman yazmaz; ama mesajlar satır sonu içerebildiği için loglanan bir
   kullanıcı girdisindeki bir satır başlık gibi görünebilir. Kabul edilseydi süre hesapları
   bozulurdu: 30 Şubat sıralamada 1 Mart'tan önce gelir ama saniyesi 2 Mart'ınkidir.
-- Dosyanın başındaki UTF-8 BOM (bazı Windows araçları yazar) atılır; atılmasa ilk satır `[`
-  ile başlamaz ve ilk kayıt kaybolurdu.
+- Satırın başındaki UTF-8 BOM (bazı Windows araçları yazar) atılır; atılmasa satır `[` ile
+  başlamaz ve kayıt kaybolurdu. Her satıra bakılır: birleştirilmiş dosyalarda
+  (`cat a.log b.log | veylog -`) her dosyanın BOM'u kendi ilk satırındadır.
 - Geçersiz UTF-8 baytları dosyanın tamamını reddetmek yerine `�` ile değiştirilir ve bir
   uyarı yazılır.
 - Dosya adı yerine `-` verilirse log standart girdiden okunur:
@@ -409,7 +410,8 @@ görünüyordu.
 
 Drain yalnızca metinle ilgilenir; seviyeyi, zamanı ve stack trace'i bilmez. Rapor, Drain'in
 her mesaj için bulduğu kümeyi kaydın parmak iziyle birlikte kullanır: ikisi de aynı olan
-kayıtlar tablonun bir satırını oluşturur. Her satıra şu bilgiler eklenir:
+kayıtlar tablonun bir satırını oluşturur ([bellekte nasıl toplandıkları](#akışlı-okuma-ve-bellek)).
+Her satıra şu bilgiler eklenir:
 
 - **seviye:** satırdaki kayıtların en önemlisi.
 - **ilk / son:** ilk ve son görülme zamanı. Tek günlük logda yalnızca saat, birden çok günü
@@ -437,6 +439,118 @@ kaydırmaz. Üç sıralama vardır (`--siralama`):
 Bütün sıralamalar kararlıdır: ölçütleri eşit olan satırlar logda ilk görüldükleri sırada
 kalır. Örnek logda `--siralama yeni` günü sondan başa anlatır: 17:07'de toparlanan Redis,
 17:05'teki çöküşü, 16:10'daki ödeme zaman aşımları...
+
+## Akışlı okuma ve bellek
+
+Log dosyası belleğe alınmaz, satır satır okunur. Bellekte o an okunan satır, toplanmakta olan
+kayıt ve özet için biriktirilenler durur. Bir kaydın bittiği ancak bir sonraki kayıt
+başladığında anlaşılır; o zaman kayıt işlenir ve bırakılır. İstisnası bağlamında olan bir
+JSON kaydı beklemez: gereken her şey kendi satırındadır.
+
+Her kayıttan özet için gerekenler bir depoya alınır:
+
+| Depoda | Ne kadar yer tutar | Ne için |
+|---|---|---|
+| Alt gruplar: maskeli mesajı, Drain kümesi, istisnası ve seviyesi aynı olan kayıtlar; her birinin kayıt sayısı, ilk kaydının mesajı, ilk ve son zamanı | farklı alt grup başına | Kalıp tablosu |
+| Her farklı maskeli mesaj, bir kez; Drain'in o mesaj için son bulduğu küme | farklı mesaj başına | Drain |
+| Kayıt sütunları: her kaydın zamanı ve alt grubu | kayıt başına 2–3 bayt | Karşılaştırma, ani artışlar |
+| Seyrek dizin: her 1024 kayıtta bir kaydın dosyadaki yeri | 1024 kayıtta 8 bayt | Bir kaydın mesajını yeniden okumak |
+| Parmak izleri, proje kökleri, kökü bekleyen istisnalar | farklı istisna başına | Konum sütunu |
+| Farklı ham mesaj sayısı | en fazla 4–8 MB, sonra 64 KB | "45 farklı mesaj" |
+
+Bellek böylece dosyanın boyuyla değil, farklı mesajların sayısıyla büyür:
+
+| Log | Boyut | 0.1.0 | Şimdi |
+|---|---|---|---|
+| Gerçek bir geliştirme logu | 13 MB | 21 MB | 9 MB |
+| 30 günlük log, `--ani-artis 1` | 92 MB | 138 MB | 9 MB |
+| Sentetik üretim logu, 1,5 milyon kayıt | 500 MB | 976 MB | 17 MB |
+| Aynı, 6,3 milyon kayıt | 2 GB | 3 975 MB | 30 MB |
+
+Süre değişmedi; 2 GB'lık log iki çekirdekli bir makinede 33 saniyede okunuyor (0.1.0'da 35
+saniye).
+
+**Drain sıraya bağlıdır.** Her kaydın maskeli mesajı, okunurken, logdaki sırasıyla Drain'e
+verilir. Aynı mesaj logun farklı yerlerinde farklı kümelere katılabilir. Dört kayıtlık bir
+örnek:
+
+```text
+Sepet güncellenemedi kullanıcı oturumu kapalı mobil uygulama   → 1. küme
+Sepet güncellenemedi kullanıcı oturumu kapalı web tarayıcı     → 1. küme: … kapalı <*> <*>
+Sepet boşaltılamadı kullanıcı oturumu kapalı web tarayıcı      → 2. küme (1.'ye 7'de 4)
+Sepet güncellenemedi kullanıcı oturumu kapalı web tarayıcı     → 2. küme (2.'ye 7'de 6, 1.'ye 5)
+```
+
+İkinci ve dördüncü kayıt aynı mesajdır ama farklı kümelerdedir: dördüncü geldiğinde ona daha
+çok benzeyen bir küme açılmıştır. Bu yüzden alt grubun anahtarında kümesi de vardır ve her
+kayıt kendi sırasında kümelenir; her farklı mesajı bir kez kümelemek tabloyu değiştirirdi
+(bu örnekte 2 + 2 yerine 3 + 1).
+
+**Önbellek.** Logların çoğunda kayıtların büyük kısmı daha önce görülmüş bir mesajın
+tekrarıdır; her tekrarda ağaçta arama yapmak gereksizdir. Ağacın her uzunluktaki kısmının
+(belirteç sayısı aynı mesajların dalının) bir sürümü vardır: o uzunlukta bir küme açılınca ya
+da bir kalıp değişince artar. Her mesajın son kümelenişi, o andaki sürümle birlikte saklanır.
+Mesaj yeniden geldiğinde sürüm değişmemişse arama aynı kümeyi bulurdu ve kalıp (mesaja zaten
+uyduğu için) değişmezdi: sonuç aramadan verilir. Bir mesajın aramasını etkileyen her şey
+(dallar, yapraktaki kümelerin kalıpları ve değişken konumları, tek belirteçli kümeler) yalnızca
+o uzunlukta değişir; sonuç her kaydı aramayla kümelemekle birebir aynıdır. Bu, rastgele
+mesaj dizileriyle ve her ayarla, önbelleksiz kümelemeyle karşılaştırılarak sınanır.
+
+**İkinci tur.** Drain bir yaprakta değişken bir konum bulursa
+([değişken konumlar](#değişken-konumlar)) kayıtlar bu bilgiyle baştan, aynı sırayla bir kez
+daha kümelenir. Girdi yeniden okunmaz: her kaydın maskeli mesajı kayıt sütunlarındaki alt
+grubundan bilinir. Alt gruplar yeni kümeleriyle yeniden kurulur. Bir alt grubun kayıtları
+ikinci turda farklı kümelere düşebilir; bölünen parçanın ilk kaydı alt grubun ilk kaydı
+değilse mesajı depoda yoktur, girdiden yeniden okunur (aşağıda). Standart girdi
+`--ani-artis` olmadan kopyalanmadığı için yeniden okunamaz; o zaman, nadiren, parçanın örneği
+aynı maskeli mesajlı ilk kaydın mesajı olur.
+
+0.1.0'la karşılaştırmada (60 log ve sıraya bağlılığı, ikinci turu ve bölünmeyi sınayan 228
+rastgele log; dosyadan, standart girdiden ve süreç ikamesiyle) bütün tablolar aynı çıktı.
+
+**Kayıt sütunları.** Karşılaştırma ve ani artışlar her kaydın zamanını ve hangi kalıp
+satırına düştüğünü bilmelidir: kayıt başına iki sayı. Düz tutulsalar 12 bayt ederdi; sütunlar
+onları değişken uzunluklu tamsayılar (LEB128) olarak yazar. Zaman bir önceki kaydın
+zamanından farkı olarak yazılır (delta kodlaması): kayıtlar çoğunlukla zaman sırasıyla
+yazıldığı için fark birkaç saniyedir ve tek bayta sığar. Fark eksi de olabilir (aynı anda
+yazan iki işlem); zigzag kodlaması küçük eksi sayıları küçük artı sayılara çevirir (0 → 0,
+−1 → 1, 1 → 2, −2 → 3). Alt grubun numarası ilk 128 alt grupta tek bayttır.
+
+**Örneği yeniden okumak.** Bir ani artışın örneği, artışın ilk kaydının mesajıdır. O kayıt
+bir alt grubun ilk kaydıysa mesajı depodadır; değilse dosyadan yeniden okunur: seyrek
+dizindeki en yakın konuma atlanır, oradan en fazla 1024 kayıt okunur. Bulunan kaydın maskeli
+mesajı ve seviyesi depodakiyle karşılaştırılır. Dosya okunduktan sonra değiştiyse (ör. log
+döndürülürken `copytruncate` ile kesilip yeniden yazıldıysa) o sırada başka bir kayıt vardır;
+o kayıt örnek olmaz, yerine alt grubunun örneği (maskeli mesajı, seviyesi ve istisnası aynı
+ilk kaydın mesajı) yazılır ve bir uyarı çıkar.
+
+Standart girdi yalnızca bir kez okunabildiği için `--ani-artis` verildiyse okunurken geçici
+bir dosyaya kopyalanır. Dosya oluşturulur oluşturulmaz silinir: açık kaldıkça kullanılır,
+program nasıl biterse bitsin (Ctrl+C dahil) diskte kalmaz. Unix'te yalnızca sahibi okuyup
+yazabilir; silinmeden önceki kısa sürede başka bir kullanıcı açamaz. Kopya girdi kadar yer
+tutar. Geçici dosya oluşturulamazsa (geçici klasör yok, disk dolu) girdi kopyalanmadan okunur:
+rapor yine çıkar, yeniden okunamayan örneklerin yerine alt gruplarının örneği yazılır.
+
+**Farklı mesajları saymak.** "45 farklı mesaj" için her ham mesajın 64 bitlik özeti saklanır
+ve tam sayılır. Her mesajı başka olan bir logda (bir kimlik, bir zaman damgası) bu, kayıt
+sayısıyla büyüyen bir bellek demektir. Farklı mesaj 262 144'ü geçince sayaç
+[HyperLogLog](https://algo.inria.fr/flajolet/Publications/FlFuGaMe07.pdf)'a geçer: 64 KB'lık
+sabit bir bellekle tahmin eder. Fikir şu: iyi bir özet rastgele bitler gibidir; başı k sıfırla
+başlayan bir özete ortalama 2^k farklı değerde bir rastlanır. Tek bir ölçüm çok oynak olduğu
+için özetler ilk 16 bitlerine göre 65 536 kovaya dağıtılır, her kova kendi en uzun sıfır
+dizisini tutar. Tahmin Ertl'in sapmasız tahmincisiyle hesaplanır
+([2017](https://arxiv.org/abs/1702.01284)); asıl formül küçük sayılarda saptığı için başka
+araçlar deneysel düzeltme tabloları kullanır, bu tahminci kullanmaz. Standart hata %0,41;
+1'den 18 milyona kadar denenen sayılarda en büyük hata %0,6 çıktı. Tahmin olan sayının önünde
+`≈` yazar; JSON'da `ham_mesaj_yaklasik` alanı `true` olur.
+
+İki koruma da var: bir satırın en fazla 256 MB'ı okunur; bir kaydın devam satırlarının en
+fazla 256 MB'ı (ve 16 milyon satırı) saklanır, sığmayan ilk satırdan sonrakiler sayılır ama
+saklanmaz. Satır sonu olmayan dev bir dosya ya da sonu gelmeyen bir döküm belleği
+dolduramaz. Gerçek loglardaki en uzun satırlar bağlamında dev bir SQL sorgusu taşıyan
+istisnalardır (MySQL'in bir sorguya izin verdiği en büyük boy 64 MB'tır); onlar da sınırın
+çok altındadır. Saklanan kısım kaydın başıdır: istisnanın sınıfı ve yeri, uygulama kodunun
+çerçeveleri.
 
 ## Komut satırı
 
