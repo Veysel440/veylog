@@ -602,9 +602,13 @@ fn ani_artis_ornegi_yeniden_okunarak_bulunur() {
 #[cfg(unix)]
 #[test]
 fn gecici_dosya_olusturulamazsa_rapor_yine_cikar() {
+    // Geçici klasör bir dosyanın altında: orada hiçbir kullanıcı (root da) dosya oluşturamaz.
+    // Var olmadığı varsayılan sabit bir yol (`/olmayan/bir/klasor`) her makinede yok değildir.
+    let dosya = gecici_dosya("klasor-degil", b"");
+    let gecici_klasor = dosya.join("alt");
     let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
         .args(["-a", "1", "-"])
-        .env("TMPDIR", "/olmayan/bir/klasor")
+        .env("TMPDIR", &gecici_klasor)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -617,11 +621,13 @@ fn gecici_dosya_olusturulamazsa_rapor_yine_cikar() {
         .write_all(kuyruk_artisi().as_bytes())
         .unwrap();
     let cikti = surec.wait_with_output().unwrap();
+    fs::remove_file(&dosya).ok();
     let (stdout, stderr) = (metin(&cikti.stdout), metin(&cikti.stderr));
     assert!(cikti.status.success(), "{stderr}");
     assert!(
         stderr.starts_with("Uyarı: girdinin geçici kopyası oluşturulamadı ("),
-        "{stderr}"
+        "geçici klasör: {}\nstderr: {stderr}\nstdout: {stdout}",
+        gecici_klasor.display()
     );
     let (_, artislar) = stdout.split_once("\nAni artışlar").unwrap();
     assert!(artislar.contains("örnek: Kuyruk 1000 dolu\n"), "{stdout}");
