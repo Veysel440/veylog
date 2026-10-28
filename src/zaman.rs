@@ -207,6 +207,27 @@ pub fn sure_yaz(saniye: usize) -> String {
     }
 }
 
+/// Süreyi bütün bileşenleriyle yazar, sıfır olanları atlayarak: `30 dk`, `1 sa 30 dk`,
+/// `1 gün 2 sa 3 dk 4 sn`. Kullanıcının verdiği bir süreyi (`--son 1sa30dk`) geri yazmak için.
+pub fn sure_tam_yaz(saniye: u64) -> String {
+    let parcalar = [
+        (saniye / 86_400, "gün"),
+        (saniye % 86_400 / 3_600, "sa"),
+        (saniye % 3_600 / 60, "dk"),
+        (saniye % 60, "sn"),
+    ];
+    let yazilanlar: Vec<String> = parcalar
+        .iter()
+        .filter(|&&(sayi, _)| sayi > 0)
+        .map(|(sayi, birim)| format!("{sayi} {birim}"))
+        .collect();
+    if yazilanlar.is_empty() {
+        "0 sn".to_string()
+    } else {
+        yazilanlar.join(" ")
+    }
+}
+
 /// 1970-01-01'den bu yana geçen gün; öncesi için eksi.
 ///
 /// Howard Hinnant'ın `days_from_civil` algoritması. Yıl Mart'ta başlıyormuş gibi sayılır:
@@ -505,6 +526,16 @@ mod testler {
         // Tam zaman verildiyse son kayıt değiştirmez
         let tam_nokta = ZamanNoktasi::ayristir("2026-10-24 15:00").unwrap();
         assert_eq!(tam_nokta.coz(son_kayit).to_string(), "2026-10-24 15:00:00");
+    }
+
+    #[test]
+    fn sure_tum_bilesenleriyle_yazilir() {
+        assert_eq!(sure_tam_yaz(1_800), "30 dk");
+        assert_eq!(sure_tam_yaz(5_400), "1 sa 30 dk");
+        assert_eq!(sure_tam_yaz(86_400), "1 gün");
+        assert_eq!(sure_tam_yaz(93_784), "1 gün 2 sa 3 dk 4 sn");
+        assert_eq!(sure_tam_yaz(45), "45 sn");
+        assert_eq!(sure_tam_yaz(0), "0 sn");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::io::{self, Write};
 
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_AZ_MAD, EN_DUSUK_SEVIYE, ESIK};
 use crate::karsilastirma::{ANLAMLILIK, ARTIS_KATI, Degisim, EN_AZ_KAYIT, Karsilastirma, Pencere};
-use crate::rapor::{KalipSatiri, Ozet};
+use crate::rapor::{FiltreOzeti, KalipSatiri, Ozet};
 use crate::zaman::Zaman;
 
 /// Bir JSON değeri. Nesnelerde alanlar eklendikleri sırayla yazılır.
@@ -145,6 +145,12 @@ fn ozet_json(ozet: &Ozet) -> Json {
         ("kayit_sayisi", Json::Sayi(ozet.kayit_sayisi)),
         ("devam_satiri_sayisi", Json::Sayi(ozet.devam_satiri_sayisi)),
         ("yetim_satir_sayisi", Json::Sayi(ozet.yetim_satir_sayisi)),
+    ];
+    // Filtre yalnızca verildiyse yazılır; normal raporun biçimi değişmez
+    if let Some(filtre) = &ozet.filtre {
+        alanlar.push(("filtre", filtre_json(filtre)));
+    }
+    alanlar.extend([
         ("zaman_araligi", zaman_araligi),
         ("seviyeler", Json::Nesne(seviyeler)),
         (
@@ -167,7 +173,7 @@ fn ozet_json(ozet: &Ozet) -> Json {
                 ("satirlar", Json::Dizi(satirlar)),
             ]),
         ),
-    ];
+    ]);
     // Karşılaştırma ve ani artışlar yalnızca istendiyse yazılır; normal raporun biçimi değişmez
     if let Some(karsilastirma) = &ozet.karsilastirma {
         alanlar.push(("karsilastirma", karsilastirma_json(ozet, karsilastirma)));
@@ -176,6 +182,27 @@ fn ozet_json(ozet: &Ozet) -> Json {
         alanlar.push(("ani_artislar", ani_artis_json(ozet, ani_artislar)));
     }
     Json::Nesne(alanlar)
+}
+
+/// Filtrenin JSON'u: verilmeyen sınırlar null'dır. `kayit_sayisi` filtreye uyan kayıtlardır;
+/// dosyanın bütün kayıtları en üstteki `kayit_sayisi`dır.
+fn filtre_json(filtre: &FiltreOzeti) -> Json {
+    let zaman_ya_da_yok = |zaman: Option<Zaman>| zaman.map_or(Json::Yok, self::zaman);
+    Json::Nesne(vec![
+        (
+            "en_dusuk_seviye",
+            filtre.seviye.map_or(Json::Yok, |seviye| metin(seviye.ad())),
+        ),
+        ("baslangic", zaman_ya_da_yok(filtre.baslangic)),
+        ("bitis", zaman_ya_da_yok(filtre.bitis)),
+        (
+            "son_saniye",
+            filtre
+                .son
+                .map_or(Json::Yok, |saniye| Json::Sayi(saniye as usize)),
+        ),
+        ("kayit_sayisi", Json::Sayi(filtre.kayit_sayisi)),
+    ])
 }
 
 /// Karşılaştırmanın JSON'u: nokta, iki yarı, "artan" eşikleri ve üç liste. Listeler en fazla
@@ -462,6 +489,47 @@ mod testler {
         let kalip = kayit["kalip"].as_str().unwrap();
         assert_eq!(kalip.chars().count(), 257);
         assert!(kalip.ends_with("values <*> <EPOSTA>, <ZAMAN>, <ZAMAN>))"));
+    }
+
+    #[test]
+    fn filtre_yalnizca_verildiyse_yazilir() {
+        use crate::filtre::Filtre;
+        use crate::kayit::Seviye;
+        assert!(
+            ornek_rapor(&RaporAyarlari::default())
+                .get("filtre")
+                .is_none()
+        );
+        let ayarlar = RaporAyarlari {
+            filtre: Filtre {
+                seviye: Some(Seviye::Warning),
+                baslangic: ZamanNoktasi::ayristir("16:00"),
+                ..Filtre::default()
+            },
+            ..RaporAyarlari::default()
+        };
+        let rapor = ornek_rapor(&ayarlar);
+        assert_eq!(
+            rapor["filtre"],
+            serde_json::json!({
+                "en_dusuk_seviye": "WARNING",
+                "baslangic": "2026-10-24 16:00:00",
+                "bitis": null,
+                "son_saniye": null,
+                "kayit_sayisi": 13
+            })
+        );
+        // Dosyanın kayıt sayısı değişmez; seviyeler filtreye uyanlardır
+        assert_eq!(rapor["kayit_sayisi"], 59);
+        assert!(rapor["seviyeler"].get("INFO").is_none());
+        // Alan yetim satırlardan sonra, zaman aralığından önce yazılır
+        let ozet = Ozet::metinden("ornekler/laravel.log", ORNEK_LOG, &ayarlar).unwrap();
+        let mut cikti = Vec::new();
+        yaz(&mut cikti, &ozet).unwrap();
+        let metin = String::from_utf8(cikti).unwrap();
+        let yer = |alan: &str| metin.find(&format!("\n  \"{alan}\": ")).unwrap();
+        assert!(yer("yetim_satir_sayisi") < yer("filtre"));
+        assert!(yer("filtre") < yer("zaman_araligi"));
     }
 
     #[test]

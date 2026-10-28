@@ -6,6 +6,7 @@
 //! veylog --bicim json --hepsi storage/logs/laravel.log
 //! veylog --karsilastir 15:00 storage/logs/laravel.log
 //! veylog --ani-artis 1 storage/logs/laravel.log
+//! veylog --seviye error --son 2sa storage/logs/laravel.log
 //! zcat laravel-2026-10-24.log.gz | veylog -
 //! ```
 //!
@@ -23,6 +24,8 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::ani_artis::{EN_DUSUK_SEVIYE, EN_UZUN_DILIM};
+use crate::filtre::sure_ayristir;
+use crate::kayit::Seviye;
 use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
 use crate::zaman::ZamanNoktasi;
 
@@ -30,7 +33,7 @@ use crate::zaman::ZamanNoktasi;
 pub const KULLANIM: &str = "Kullanım: veylog [SEÇENEKLER] <log-dosyası>";
 
 /// Bilinen uzun seçenekler. Yazım hatası yapıldığında öneri bu listeden seçilir.
-const UZUN_SECENEKLER: [&str; 11] = [
+const UZUN_SECENEKLER: [&str; 15] = [
     "--esik",
     "--ilk",
     "--hepsi",
@@ -38,6 +41,10 @@ const UZUN_SECENEKLER: [&str; 11] = [
     "--bicim",
     "--karsilastir",
     "--ani-artis",
+    "--seviye",
+    "--baslangic",
+    "--bitis",
+    "--son",
     "--yardim",
     "--surum",
     "--help",
@@ -126,6 +133,8 @@ pub enum SecenekHatasi {
     FazlaDosya(String),
     /// Dosya adı boş: `veylog "$LOG"` ve LOG tanımsız.
     BosDosyaAdi,
+    /// Birlikte kullanılamayan iki seçenek: `--son` ile `--baslangic`.
+    Celisen(&'static str, &'static str),
 }
 
 impl fmt::Display for SecenekHatasi {
@@ -153,6 +162,9 @@ impl fmt::Display for SecenekHatasi {
                 "fazladan argüman: {fazla} (yalnızca bir log dosyası verilebilir)"
             ),
             SecenekHatasi::BosDosyaAdi => write!(f, "dosya adı boş olamaz"),
+            SecenekHatasi::Celisen(birinci, ikinci) => {
+                write!(f, "{birinci} ile {ikinci} birlikte kullanılamaz")
+            }
         }
     }
 }
@@ -232,6 +244,22 @@ where
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
                 rapor.ani_artis = Some(ani_artis_ayristir(ad, &deger)?);
             }
+            "--seviye" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                rapor.filtre.seviye = Some(seviye_ayristir(ad, &deger)?);
+            }
+            "--baslangic" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                rapor.filtre.baslangic = Some(sinir_ayristir(ad, &deger)?);
+            }
+            "--bitis" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                rapor.filtre.bitis = Some(sinir_ayristir(ad, &deger)?);
+            }
+            "--son" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                rapor.filtre.son = Some(son_ayristir(ad, &deger)?);
+            }
             "-h" | "--yardim" | "--help" => {
                 deger_almaz(ad, bitisik)?;
                 return Ok(Komut::Yardim);
@@ -247,6 +275,15 @@ where
         }
     }
 
+    // `--son` aralığın başını kendisi belirler: başka bir sınırla çelişir
+    if rapor.filtre.son.is_some() {
+        if rapor.filtre.baslangic.is_some() {
+            return Err(SecenekHatasi::Celisen("--son", "--baslangic"));
+        }
+        if rapor.filtre.bitis.is_some() {
+            return Err(SecenekHatasi::Celisen("--son", "--bitis"));
+        }
+    }
     let dosya = dosya.ok_or(SecenekHatasi::DosyaYok)?;
     Ok(Komut::Ozet(Secenekler {
         dosya,
@@ -290,6 +327,15 @@ Seçenekler:
                           {seviye} ve üstündeki kayıtlarının olağan seviyesinden sıçradığı
                           anları bul. Dilim 1 ile {EN_UZUN_DILIM} dakika arası; 1 verilirse her
                           dakika ayrı sayılır.
+
+Filtreler (raporu yalnızca uyan kayıtlarla çıkarır; satır ve kayıt sayıları dosyanındır):
+      --seviye <seviye>   Bu seviye ve üstündekiler: {seviyeler}.
+      --baslangic <zaman> Bu andan (dahil) sonraki kayıtlar.
+      --bitis <zaman>     Bu andan (hariç) önceki kayıtlar. Zamanlar --karsilastir gibi
+                          yazılır; yalnızca saat verilirse logun son günü.
+      --son <süre>        Logun son kısmı: en yeni kayıttan bu kadar öncesinden bu yana.
+                          Süre: 30dk, 2sa, 1g, 1sa30dk (sn, dk, sa, g).
+
   -h, --yardim            Bu yardımı göster.
   -V, --surum             Sürümü göster.
 
@@ -312,6 +358,7 @@ puanı en yüksek olan başta olacak şekilde dizilir.
   veylog --bicim markdown storage/logs/laravel.log > rapor.md
   veylog --karsilastir 15:00 storage/logs/laravel.log
   veylog --ani-artis 1 storage/logs/laravel.log
+  veylog --seviye error --son 2sa storage/logs/laravel.log
   zcat laravel-2026-10-24.log.gz | veylog -
 ",
         surum = env!("CARGO_PKG_VERSION"),
@@ -319,6 +366,7 @@ puanı en yüksek olan başta olacak şekilde dizilir.
         siralama = varsayilan.siralama.ad(),
         bicim = Bicim::Metin.ad(),
         seviye = EN_DUSUK_SEVIYE.ad(),
+        seviyeler = seviye_adlari().join(", "),
     )
 }
 
@@ -430,6 +478,50 @@ fn karsilastir_ayristir(ad: &str, deger: &str) -> Result<ZamanNoktasi, SecenekHa
     })
 }
 
+/// Seviyelerin komut satırındaki adları, önem sırasıyla: debug, info, ...
+fn seviye_adlari() -> Vec<String> {
+    Seviye::HEPSI
+        .iter()
+        .map(|seviye| seviye.ad().to_lowercase())
+        .collect()
+}
+
+/// `--seviye`: bir seviyenin adı, büyük ya da küçük harfle.
+fn seviye_ayristir(ad: &str, deger: &str) -> Result<Seviye, SecenekHatasi> {
+    Seviye::HEPSI
+        .into_iter()
+        .find(|seviye| seviye.ad().eq_ignore_ascii_case(deger))
+        .ok_or_else(|| {
+            gecersiz(
+                ad,
+                deger,
+                format!("şunlardan biri olmalı: {}", seviye_adlari().join(", ")),
+            )
+        })
+}
+
+/// `--baslangic` ve `--bitis`: bir zaman, `--karsilastir` gibi.
+fn sinir_ayristir(ad: &str, deger: &str) -> Result<ZamanNoktasi, SecenekHatasi> {
+    ZamanNoktasi::ayristir(deger).ok_or_else(|| {
+        gecersiz(
+            ad,
+            deger,
+            "geçerli bir tarih ya da saat olmalı (ör. 15:00, 2026-10-24, \"2026-10-24 15:00\")",
+        )
+    })
+}
+
+/// `--son`: bir süre, saniye olarak.
+fn son_ayristir(ad: &str, deger: &str) -> Result<u64, SecenekHatasi> {
+    sure_ayristir(&sadelestir(deger)).ok_or_else(|| {
+        gecersiz(
+            ad,
+            deger,
+            "bir süre olmalı (ör. 30dk, 2sa, 1g, 1sa30dk; birimler: sn, dk, sa, g)",
+        )
+    })
+}
+
 /// `--ani-artis`: dilimlerin uzunluğu, 1 dakika ile 1 gün (1440 dakika) arası bir tam sayı.
 fn ani_artis_ayristir(ad: &str, deger: &str) -> Result<u16, SecenekHatasi> {
     match deger.parse::<u16>() {
@@ -531,6 +623,69 @@ mod testler {
         assert_eq!(secenekler.bicim, Bicim::Metin);
         assert_eq!(secenekler.rapor.karsilastir, None);
         assert_eq!(secenekler.rapor.ani_artis, None);
+        assert!(secenekler.rapor.filtre.bos_mu());
+    }
+
+    #[test]
+    fn filtreler_okunur() {
+        let filtre = ozet(&["--seviye", "warning", "a.log"]).rapor.filtre;
+        assert_eq!(filtre.seviye, Some(Seviye::Warning));
+        assert!(!filtre.sonu_gerekir());
+        for yazim in ["ERROR", "Error", "error"] {
+            assert_eq!(
+                ozet(&["--seviye", yazim, "a.log"]).rapor.filtre.seviye,
+                Some(Seviye::Error)
+            );
+        }
+        assert_eq!(
+            hata(&["--seviye", "hata", "a.log"]).to_string(),
+            "--seviye için geçersiz değer \"hata\": şunlardan biri olmalı: debug, info, notice, warning, error, critical, alert, emergency"
+        );
+
+        let filtre = ozet(&["--başlangıç", "15:00", "--bitiş=2026-10-25", "a.log"])
+            .rapor
+            .filtre;
+        assert_eq!(filtre.baslangic, ZamanNoktasi::ayristir("15:00"));
+        assert_eq!(filtre.bitis, ZamanNoktasi::ayristir("2026-10-25"));
+        assert!(filtre.sonu_gerekir());
+        assert!(matches!(
+            hata(&["--bitis", "2026-02-30", "a.log"]),
+            SecenekHatasi::GecersizDeger { .. }
+        ));
+
+        assert_eq!(
+            ozet(&["--son", "1sa30dk", "a.log"]).rapor.filtre.son,
+            Some(5_400)
+        );
+        assert_eq!(ozet(&["--son=2g", "a.log"]).rapor.filtre.son, Some(172_800));
+        assert_eq!(
+            ozet(&["--son", "1gün", "a.log"]).rapor.filtre.son,
+            Some(86_400)
+        );
+        assert_eq!(
+            hata(&["--son", "2 saat", "a.log"]).to_string(),
+            "--son için geçersiz değer \"2 saat\": bir süre olmalı (ör. 30dk, 2sa, 1g, 1sa30dk; birimler: sn, dk, sa, g)"
+        );
+    }
+
+    #[test]
+    fn son_baska_bir_sinirla_kullanilamaz() {
+        assert_eq!(
+            hata(&["--son", "1sa", "--baslangic", "15:00", "a.log"]).to_string(),
+            "--son ile --baslangic birlikte kullanılamaz"
+        );
+        assert_eq!(
+            hata(&["--bitis", "15:00", "--son", "1sa", "a.log"]),
+            SecenekHatasi::Celisen("--son", "--bitis")
+        );
+        // Seviyeyle birlikte olur
+        let filtre = ozet(&["--son", "1sa", "--seviye", "error", "a.log"])
+            .rapor
+            .filtre;
+        assert_eq!(
+            (filtre.son, filtre.seviye),
+            (Some(3_600), Some(Seviye::Error))
+        );
     }
 
     #[test]

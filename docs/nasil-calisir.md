@@ -8,6 +8,7 @@ ve gerçek loglarda nasıl sınandığını anlatır. Örnekler depodaki kurgusa
 ```text
 laravel.log
   → kayıtlara ayır    59 kayıt, 45 farklı mesaj
+  → filtre            isteğe bağlı (--seviye, --baslangic, --bitis, --son)
   → maskele           27 farklı mesaj
   → Drain             23 kalıp
   → parmak izi        24 grup
@@ -405,6 +406,46 @@ konum gösterilirken kaçış çözülür ve ayraç `/` olur:
 (`public\\index.php`) aynı yolla tanınır. Gerçek bir geliştirme logunda migration hatalarının
 konumu böylece migration dosyası olarak bulundu; önceden vendor'daki `Connection.php:822`
 görünüyordu.
+
+## Filtreler
+
+Filtre kayıtlar okunurken uygulanır: filtreye uymayan bir kayıt maskelenmez, kümelenmez,
+depoya girmez. Rapor böylece log yalnızca uyan kayıtlardan oluşuyormuş gibi çıkar; kalıplar,
+seviyeler, zaman aralığı, karşılaştırma ve ani artışlar onlardandır. Dosyanın satır ve kayıt
+sayıları ise dosyanın tamamınındır; uyan kayıt sayısı `Filtre` satırında yazar:
+
+```text
+$ veylog --seviye error --son 1sa30dk ornekler/laravel.log
+ornekler/laravel.log: 203 satır
+  Kayıt         : 59
+  Devam satırı  : 141
+  Yetim satır   : 3
+  Filtre        : ERROR ve üstü, 2026-10-24 17:01:07 ve sonrası (son 1 sa 30 dk): 3 kayıt
+  Zaman aralığı : 2026-10-24 17:05:13 → 2026-10-24 17:55:03
+```
+
+| Filtre | Kayıt | Sınır |
+|---|---|---|
+| `--seviye warning` | WARNING ve üstü | Seviyeler büyük ya da küçük harfle yazılabilir. |
+| `--baslangic 15:00` | Bu andan sonraki | Dahil. |
+| `--bitis 2026-10-25` | Bu andan önceki | Hariç: `--bitis 2026-10-25` 24 Ekim'in son saniyesine kadardır. |
+| `--son 2sa` | En yeni kayıttan iki saat öncesinden bu yana | Dahil. Birimler `sn`, `dk`, `sa`, `g` (ya da `s`, `m`, `h`, `d`); birleştirilebilir: `1sa30dk`. |
+
+Zamanlar `--karsilastir` gibi yazılır; yalnızca saat verilirse logun son gününe uygulanır.
+`--son` ve yalnızca saat verilmiş sınırlar logun sonunu, yani en yeni kaydı bilmeyi
+gerektirir. Kayıtlar her zaman zaman sırasıyla yazılmadığı için en yeni kayıt dosyanın
+sonundaki kayıt olmayabilir: log önce baştan sona taranır. Taramada kayıtlar toplanmaz,
+yalnızca bir kaydın başladığı satırlara bakılır. Standart girdi yalnızca bir kez okunabildiği
+için tarama sırasında geçici bir dosyaya kopyalanır ve asıl okuma kopyadan yapılır.
+
+Filtreye uymayan kayıtlar en pahalı adımları (maskeleme, Drain, parmak izi) atladığı için
+filtreli bir rapor daha hızlı çıkar. 500 MB'lık sentetik bir logda:
+
+| Komut | Süre | Bellek |
+|---|---|---|
+| filtresiz | 8 sn | 17 MB |
+| `--seviye error` | 1,9 sn | 7 MB |
+| `--son 2sa` (tarama dahil) | 2,5 sn | 8 MB |
 
 ## Kalıp raporu
 

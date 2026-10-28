@@ -67,6 +67,11 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
   satırlar bunun çok altındadır.
 - Tek seferde bir log okunur. Birden çok dosya standart girdiden birleştirilebilir:
   `cat storage/logs/laravel-*.log | veylog -`.
+- `--son` ve yalnızca saat verilmiş filtre sınırları için log iki kez okunur: önce en yeni
+  kaydı bulmak için taranır. Standart girdi bu yüzden geçici bir dosyaya kopyalanır; girdi
+  kadar disk yeri gerekir.
+- Filtreler yalnızca seviyeye ve zamana göredir; mesaja, kanala ya da bağlama göre süzmek için
+  JSON çıktısı `jq` ile süzülebilir.
 
 ## Karşılaştırma ve ani artışlar
 

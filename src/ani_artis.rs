@@ -95,6 +95,8 @@ pub struct AniArtislar {
     pub dilim_dakika: u16,
     /// İzlenen süre: ilk dilimin başı ve son dilimin sonu. Logda kayıt yoksa None.
     pub aralik: Option<(Zaman, Zaman)>,
+    /// Kayıtlar filtrelendi mi? Kayıt yoksa nedeni böyle söylenir.
+    pub filtreli: bool,
     pub dilim_sayisi: usize,
     /// Puanı en yüksek olan başta. Log `EN_AZ_DILIM`'den kısaysa boştur.
     pub artislar: Vec<AniArtis>,
@@ -163,6 +165,7 @@ impl AniArtislar {
         let mut sonuc = AniArtislar {
             dilim_dakika,
             aralik: None,
+            filtreli: depo.filtre().is_some(),
             dilim_sayisi: 0,
             artislar: Vec::new(),
         };
@@ -421,7 +424,11 @@ mod testler {
 
     /// Ani artışlar; örnekler gerekirse metinden yeniden okunur.
     fn artislar(metin: &str, depo: &Depo, analiz: &KalipAnalizi, dakika: u16) -> AniArtislar {
-        let mut kaynak = YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), depo.dizin().to_vec());
+        let mut kaynak = YenidenOkuyucu::new(
+            Cursor::new(metin.as_bytes()),
+            depo.dizin().to_vec(),
+            depo.filtre().copied(),
+        );
         AniArtislar::hesapla(depo, analiz, dakika, &mut kaynak).unwrap()
     }
 

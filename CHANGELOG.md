@@ -27,6 +27,18 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 - Bir satırın en fazla 256 MB'ı okunur, bir kaydın devam satırlarının en fazla 256 MB'ı
   saklanır: satır sonu olmayan dev bir dosya belleği dolduramaz.
 
+### Filtreler
+
+- `--seviye warning`: yalnızca bu seviye ve üstündeki kayıtlar.
+- `--baslangic` ve `--bitis`: yalnızca bir zaman aralığındaki kayıtlar (başlangıç dahil, bitiş
+  hariç). Yalnızca saat verilirse logun son günü.
+- `--son 2sa`: logun son kısmı, en yeni kayıttan geriye. Süre birimleri: `sn`, `dk`, `sa`,
+  `g` (ya da `s`, `m`, `h`, `d`); birleştirilebilir: `1sa30dk`.
+- Filtreler kalıpları, seviyeleri, zaman aralığını, karşılaştırmayı ve ani artışları süzer;
+  dosyanın satır ve kayıt sayıları değişmez. Metin ve Markdown'da `Filtre` satırı, JSON'da
+  `filtre` nesnesi yalnızca filtre verilince yazılır. Filtreye uymayan kayıtlar maskelenmez ve
+  kümelenmez: 500 MB'lık bir logun son iki saati 2,5 saniyede özetlenir.
+
 ## [0.1.0] - 2026-10-26
 
 İlk sürüm.

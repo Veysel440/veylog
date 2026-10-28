@@ -81,6 +81,8 @@ pub struct Karsilastirma {
 pub enum KarsilastirmaHatasi {
     /// Logda hiç kayıt yok.
     KayitYok,
+    /// Filtreye uyan kayıt yok.
+    FiltreyeUyanYok,
     /// Nokta ilk kayıttan sonra ve en geç son kayıtla aynı anda değil: yarılardan biri boş
     /// kalırdı.
     AralikDisi {
@@ -94,6 +96,9 @@ impl fmt::Display for KarsilastirmaHatasi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             KarsilastirmaHatasi::KayitYok => write!(f, "karşılaştırma için logda kayıt yok"),
+            KarsilastirmaHatasi::FiltreyeUyanYok => {
+                write!(f, "karşılaştırma için filtreye uyan kayıt yok")
+            }
             KarsilastirmaHatasi::AralikDisi { nokta, ilk, son } => write!(
                 f,
                 "karşılaştırma noktası {nokta} logun içinde değil: kayıtlar {ilk} ile {son} arasında"
@@ -113,7 +118,10 @@ impl Karsilastirma {
     ) -> Result<Karsilastirma, KarsilastirmaHatasi> {
         // let-else: desen tutmazsa `else` bloğu çalışır ve fonksiyondan çıkar
         let (Some(ilk), Some(son)) = (depo.en_eski(), depo.en_yeni()) else {
-            return Err(KarsilastirmaHatasi::KayitYok);
+            return Err(match depo.filtre() {
+                Some(_) => KarsilastirmaHatasi::FiltreyeUyanYok,
+                None => KarsilastirmaHatasi::KayitYok,
+            });
         };
         let nokta = nokta.coz(son);
         if nokta <= ilk || nokta > son {

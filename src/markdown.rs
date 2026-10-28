@@ -25,6 +25,9 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
         "- **Satır:** {} · **Kayıt:** {} · **Devam satırı:** {} · **Yetim satır:** {}",
         ozet.satir_sayisi, ozet.kayit_sayisi, ozet.devam_satiri_sayisi, ozet.yetim_satir_sayisi
     )?;
+    if let Some(filtre) = &ozet.filtre {
+        writeln!(cikti, "- **Filtre:** {}", filtre.aciklama())?;
+    }
     if let Some((en_eski, en_yeni)) = &ozet.zaman_araligi {
         writeln!(cikti, "- **Zaman aralığı:** {en_eski} → {en_yeni}")?;
     }

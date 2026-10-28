@@ -24,13 +24,14 @@ use std::io::{self, Write};
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_DUSUK_SEVIYE, ESIK};
 use crate::depo::{AltGrup, Depo, UcKayit};
 use crate::drain::Ayarlar;
+use crate::filtre::Filtre;
 use crate::karsilastirma::{
     ANLAMLILIK, ARTIS_KATI, Degisim, Karsilastirma, KarsilastirmaHatasi, Pencere,
 };
 use crate::kayit::Seviye;
 use crate::okuyucu::OrnekKaynagi;
 use crate::parmak_izi::ParmakIzi;
-use crate::zaman::{Zaman, ZamanNoktasi, sure_yaz};
+use crate::zaman::{Zaman, ZamanNoktasi, sure_tam_yaz, sure_yaz};
 
 /// Tabloda varsayılan olarak gösterilecek satır sayısı.
 pub const VARSAYILAN_ILK: usize = 10;
@@ -113,6 +114,8 @@ pub struct RaporAyarlari {
     pub karsilastir: Option<ZamanNoktasi>,
     /// Ani artışların arandığı dilimlerin uzunluğu, dakika; None ise ani artış aranmaz.
     pub ani_artis: Option<u16>,
+    /// Hangi kayıtların özetleneceği; boşsa hepsi.
+    pub filtre: Filtre,
 }
 
 impl Default for RaporAyarlari {
@@ -123,6 +126,7 @@ impl Default for RaporAyarlari {
             ilk: Some(VARSAYILAN_ILK),
             karsilastir: None,
             ani_artis: None,
+            filtre: Filtre::default(),
         }
     }
 }
@@ -289,15 +293,54 @@ impl fmt::Display for OzetHatasi {
 
 impl std::error::Error for OzetHatasi {}
 
+/// Raporun hangi kayıtlarla çıkarıldığı: verilen filtre, logun sonuna göre çözülmüş
+/// sınırları ve filtreye uyan kayıt sayısı.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FiltreOzeti {
+    /// `--seviye` verildiyse en düşük seviye.
+    pub seviye: Option<Seviye>,
+    /// Zaman sınırları: başlangıç dahil, bitiş hariç.
+    pub baslangic: Option<Zaman>,
+    pub bitis: Option<Zaman>,
+    /// `--son` verildiyse süresi, saniye.
+    pub son: Option<u64>,
+    pub kayit_sayisi: usize,
+}
+
+impl FiltreOzeti {
+    /// Metin ve Markdown'daki açıklaması:
+    /// "WARNING ve üstü, 2026-10-24 16:31:07 ve sonrası (son 2 sa 0 dk): 12 kayıt"
+    pub fn aciklama(&self) -> String {
+        let mut parcalar = Vec::new();
+        if let Some(seviye) = self.seviye {
+            parcalar.push(format!("{} ve üstü", seviye.ad()));
+        }
+        let son = self
+            .son
+            .map(|saniye| format!(" (son {})", sure_tam_yaz(saniye)))
+            .unwrap_or_default();
+        match (self.baslangic, self.bitis) {
+            (Some(bas), Some(bit)) => parcalar.push(format!("{bas} ile {bit} arası")),
+            (Some(bas), None) => parcalar.push(format!("{bas} ve sonrası{son}")),
+            (None, Some(bit)) => parcalar.push(format!("{bit} öncesi")),
+            (None, None) => {}
+        }
+        format!("{}: {} kayıt", parcalar.join(", "), self.kayit_sayisi)
+    }
+}
+
 /// Raporun bütün bilgileri. Bir kez hesaplanır; metin, JSON ve Markdown çıktıları aynı özeti
 /// farklı biçimlerde yazar. Böylece üç biçimdeki sayılar hep aynıdır.
 pub struct Ozet {
     /// Dosyanın yolu, ekranda gösterileceği haliyle.
     pub dosya: String,
+    /// Dosyanın satır ve kayıt sayıları; filtre verilse de dosyanın tamamınındır.
     pub satir_sayisi: usize,
     pub kayit_sayisi: usize,
     pub devam_satiri_sayisi: usize,
     pub yetim_satir_sayisi: usize,
+    /// Filtre verildiyse açıklaması; özetin geri kalanı yalnızca filtreye uyan kayıtlardandır.
+    pub filtre: Option<FiltreOzeti>,
     /// En eski ve en yeni kaydın zamanı, logda yazıldığı gibi; hiç kayıt yoksa None.
     pub zaman_araligi: Option<(String, String)>,
     /// Her seviyeden kaç kayıt var; en önemli seviye başta.
@@ -347,6 +390,13 @@ impl Ozet {
             kayit_sayisi: sayilar.kayit,
             devam_satiri_sayisi: sayilar.devam,
             yetim_satir_sayisi: sayilar.yetim,
+            filtre: depo.filtre().map(|cozulmus| FiltreOzeti {
+                seviye: ayarlar.filtre.seviye,
+                baslangic: cozulmus.baslangic(),
+                bitis: cozulmus.bitis(),
+                son: ayarlar.filtre.son,
+                kayit_sayisi: depo.kayit_sayisi(),
+            }),
             zaman_araligi: depo
                 .zaman_araligi()
                 .map(|(en_eski, en_yeni)| (en_eski.to_owned(), en_yeni.to_owned())),
@@ -424,6 +474,9 @@ pub fn metin_yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     writeln!(cikti, "  Kayıt         : {}", ozet.kayit_sayisi)?;
     writeln!(cikti, "  Devam satırı  : {}", ozet.devam_satiri_sayisi)?;
     writeln!(cikti, "  Yetim satır   : {}", ozet.yetim_satir_sayisi)?;
+    if let Some(filtre) = &ozet.filtre {
+        writeln!(cikti, "  Filtre        : {}", filtre.aciklama())?;
+    }
     if let Some((en_eski, en_yeni)) = &ozet.zaman_araligi {
         writeln!(cikti, "  Zaman aralığı : {en_eski} → {en_yeni}")?;
     }
@@ -619,7 +672,12 @@ pub fn ani_artis_basligi(ani_artislar: &AniArtislar) -> String {
     );
     let dilim_sayisi = ani_artislar.dilim_sayisi;
     if ani_artislar.aralik.is_none() {
-        format!("Ani artışlar ({kapsam} dilimler): logda kayıt yok")
+        let neden = if ani_artislar.filtreli {
+            "filtreye uyan kayıt yok"
+        } else {
+            "logda kayıt yok"
+        };
+        format!("Ani artışlar ({kapsam} dilimler): {neden}")
     } else if !ani_artislar.yeterli() {
         format!(
             "Ani artışlar ({kapsam} {dilim_sayisi} dilim): olağan seviyeyi ölçmek için en az {EN_AZ_DILIM} dilim gerekir"
@@ -922,7 +980,7 @@ pub fn gorunur(metin: &str) -> Cow<'_, str> {
 mod testler {
     use super::*;
     use crate::ani_artis::{deneme_logu, karisik_seviyeli_log};
-    use crate::depo;
+    use crate::depo::{self, DepoAyarlari};
     use crate::okuyucu::YenidenOkuyucu;
     use std::io::Cursor;
 
@@ -1763,7 +1821,8 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             .map(|alt| (alt.ilk_kayit(), alt.ornek().to_owned()))
             .collect();
         assert_eq!(tahmini.len(), 5);
-        let mut kaynak = YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), depo.dizin().to_vec());
+        let mut kaynak =
+            YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), depo.dizin().to_vec(), None);
         depo.ornekleri_tamamla(&mut kaynak).unwrap();
         // Bölünen parçanın örneği artık ilk kaydının kendi mesajı; tahmini örnek (aynı maskeli
         // mesajlı ilk kaydınki) en az birinde farklıydı
@@ -2061,6 +2120,49 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
     }
 
     #[test]
+    fn filtre_raporda_yazilir() {
+        use crate::filtre::Filtre;
+        let ayarlar = RaporAyarlari {
+            filtre: Filtre {
+                seviye: Some(Seviye::Error),
+                son: Some(5_400),
+                ..Filtre::default()
+            },
+            ..RaporAyarlari::default()
+        };
+        let ozet = Ozet::metinden("ornek.log", ORNEK_LOG, &ayarlar).unwrap();
+        // Dosyanın sayıları değişmez; filtre satırı onların altında
+        let mut cikti = Vec::new();
+        metin_yaz(&mut cikti, &ozet).unwrap();
+        let metin = String::from_utf8(cikti).unwrap();
+        assert!(
+            metin.starts_with(
+                "ornek.log: 203 satır\n  Kayıt         : 59\n  Devam satırı  : 141\n  Yetim satır   : 3\n  Filtre        : ERROR ve üstü, 2026-10-24 17:01:07 ve sonrası (son 1 sa 30 dk): 3 kayıt\n  Zaman aralığı : 2026-10-24 17:05:13 → 2026-10-24 17:55:03\n"
+            ),
+            "{metin}"
+        );
+        assert!(metin.contains("\nSeviyeler:\n  CRITICAL     2\n  ERROR        1\n\n"));
+
+        // Öteki açıklamalar
+        let mut filtre = FiltreOzeti {
+            seviye: None,
+            baslangic: Some(Zaman::kayittan("2026-10-24 16:00:00")),
+            bitis: Some(Zaman::kayittan("2026-10-24 17:00:00")),
+            son: None,
+            kayit_sayisi: 13,
+        };
+        assert_eq!(
+            filtre.aciklama(),
+            "2026-10-24 16:00:00 ile 2026-10-24 17:00:00 arası: 13 kayıt"
+        );
+        filtre.baslangic = None;
+        assert_eq!(filtre.aciklama(), "2026-10-24 17:00:00 öncesi: 13 kayıt");
+        filtre.bitis = None;
+        filtre.seviye = Some(Seviye::Warning);
+        assert_eq!(filtre.aciklama(), "WARNING ve üstü: 13 kayıt");
+    }
+
+    #[test]
     fn ozet_sayilari_ve_gosterilecek_satirlar() {
         let ozet = Ozet::metinden("ornek.log", ORNEK_LOG, &RaporAyarlari::default()).unwrap();
 
@@ -2081,9 +2183,22 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             log_metni: &str,
             ayarlar: &RaporAyarlari,
         ) -> Result<Ozet, OzetHatasi> {
-            let mut depo = depo::metinden_ayarlarla(log_metni, &ayarlar.drain);
-            let mut kaynak =
-                YenidenOkuyucu::new(Cursor::new(log_metni.as_bytes()), depo.dizin().to_vec());
+            let filtre = &ayarlar.filtre;
+            let en_yeni = if filtre.sonu_gerekir() {
+                crate::okuyucu::en_yeni_zaman(log_metni.as_bytes()).unwrap()
+            } else {
+                None
+            };
+            let depo_ayarlari = DepoAyarlari {
+                drain: ayarlar.drain.clone(),
+                filtre: (!filtre.bos_mu()).then(|| filtre.coz(en_yeni).expect("geçerli filtre")),
+            };
+            let mut depo = Depo::doldur(depo_ayarlari, log_metni.as_bytes()).unwrap();
+            let mut kaynak = YenidenOkuyucu::new(
+                Cursor::new(log_metni.as_bytes()),
+                depo.dizin().to_vec(),
+                depo.filtre().copied(),
+            );
             Ozet::hesapla(dosya.to_owned(), &mut depo, ayarlar, &mut kaynak)
         }
     }

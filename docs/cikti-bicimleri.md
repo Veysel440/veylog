@@ -76,6 +76,24 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
 - `satirlar` en fazla `--ilk` kadar satırdır; `gosterilmeyen` dışarıda kalanların sayısıdır.
   Bütün satırlar için `--hepsi`.
 
+### Filtre
+
+`filtre` alanı yalnızca bir filtre (`--seviye`, `--baslangic`, `--bitis`, `--son`) verilince,
+yetim satır sayısından sonra eklenir. Zaman sınırları logun sonuna göre çözülmüş halleriyle
+yazılır; verilmeyenler `null`'dır. `kayit_sayisi` filtreye uyan kayıtlardır; dosyanın bütün
+kayıtları en üstteki `kayit_sayisi`dır.
+
+<!-- denetim: veylog --bicim json --seviye warning --baslangic 16:00 ornekler/laravel.log | jq '.filtre' -->
+```json
+{
+  "en_dusuk_seviye": "WARNING",
+  "baslangic": "2026-10-24 16:00:00",
+  "bitis": null,
+  "son_saniye": null,
+  "kayit_sayisi": 13
+}
+```
+
 ### Karşılaştırma
 
 `karsilastirma` alanı yalnızca `--karsilastir` verilince eklenir; normal raporun biçimi

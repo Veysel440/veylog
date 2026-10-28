@@ -634,6 +634,136 @@ fn gecici_dosya_olusturulamazsa_rapor_yine_cikar() {
 }
 
 #[test]
+fn filtreler_raporu_daraltir() {
+    let cikti = veylog(&["--seviye", "error", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    // Dosyanın sayıları değişmez; seviyeler ve kalıplar yalnızca filtreye uyanlardan
+    assert!(
+        stdout.starts_with(
+            "ornekler/laravel.log: 203 satır\n  Kayıt         : 59\n  Devam satırı  : 141\n  Yetim satır   : 3\n  Filtre        : ERROR ve üstü: 18 kayıt\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\nSeviyeler:\n  CRITICAL     2\n  ERROR       16\n\n"),
+        "{stdout}"
+    );
+
+    // Zaman aralığı: başlangıç dahil, bitiş hariç; JSON'da çözülmüş sınırlar
+    let cikti = veylog(&[
+        "-b",
+        "json",
+        "--baslangic",
+        "16:00",
+        "--bitis",
+        "17:00",
+        "ornekler/laravel.log",
+    ]);
+    assert!(cikti.status.success());
+    let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
+    assert_eq!(rapor["filtre"]["baslangic"], "2026-10-24 16:00:00");
+    assert_eq!(rapor["filtre"]["bitis"], "2026-10-24 17:00:00");
+    assert_eq!(rapor["kayit_sayisi"], 59);
+    assert_eq!(rapor["zaman_araligi"]["en_eski"], "2026-10-24 16:02:44");
+    assert_eq!(rapor["zaman_araligi"]["en_yeni"], "2026-10-24 16:58:12");
+}
+
+#[test]
+fn son_standart_girdiden_de_okunur() {
+    // `--son` için en yeni kayıt önce bulunur: standart girdi geçici bir dosyaya kopyalanır,
+    // iki kez okunur, iş bitince kopya kalmaz
+    let gecici_klasor = std::env::temp_dir().join(format!("veylog-{}-son", process::id()));
+    fs::create_dir_all(&gecici_klasor).unwrap();
+    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+        .args(["--son", "30dk", "-a", "1", "-"])
+        .env("TMPDIR", &gecici_klasor)
+        .env("TMP", &gecici_klasor)
+        .env("TEMP", &gecici_klasor)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("veylog çalıştırılamadı");
+    surec
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&fs::read("ornekler/laravel.log").unwrap())
+        .unwrap();
+    let cikti = surec.wait_with_output().unwrap();
+    assert!(cikti.status.success(), "{}", metin(&cikti.stderr));
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains(
+            "  Filtre        : 2026-10-24 18:01:07 ve sonrası (son 30 dk): 3 kayıt\n  Zaman aralığı : 2026-10-24 18:12:19 → 2026-10-24 18:31:07\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .contains("\nAni artışlar (WARNING ve üstü, 1 dakikalık 20 dilim, puan > 3,5): yok\n"),
+        "{stdout}"
+    );
+    let kalanlar: Vec<_> = fs::read_dir(&gecici_klasor).unwrap().collect();
+    assert!(kalanlar.is_empty(), "{kalanlar:?}");
+    fs::remove_dir(&gecici_klasor).ok();
+}
+
+#[test]
+fn filtre_hatalari_kullanim_hatasidir() {
+    for (argumanlar, beklenen) in [
+        (
+            &[
+                "--baslangic",
+                "17:00",
+                "--bitis",
+                "16:00",
+                "ornekler/laravel.log",
+            ][..],
+            "veylog: filtre aralığı boş: başlangıç (2026-10-24 17:00:00) bitişten (2026-10-24 16:00:00) önce olmalı\n",
+        ),
+        (
+            &["--son", "1sa", "--bitis", "16:00", "ornekler/laravel.log"],
+            "veylog: --son ile --bitis birlikte kullanılamaz\n",
+        ),
+        (
+            &[
+                "--seviye",
+                "emergency",
+                "-k",
+                "15:00",
+                "ornekler/laravel.log",
+            ],
+            "veylog: karşılaştırma için filtreye uyan kayıt yok\n",
+        ),
+    ] {
+        let cikti = veylog(argumanlar);
+        assert_eq!(cikti.status.code(), Some(2), "{argumanlar:?}");
+        assert!(cikti.stdout.is_empty());
+        assert!(
+            metin(&cikti.stderr).starts_with(beklenen),
+            "{}",
+            metin(&cikti.stderr)
+        );
+    }
+    // Filtreye uyan kayıt yoksa rapor yine yazılır
+    let cikti = veylog(&["--seviye", "emergency", "-a", "1", "ornekler/laravel.log"]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains("  Filtre        : EMERGENCY ve üstü: 0 kayıt\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.ends_with(
+            "\nAni artışlar (WARNING ve üstü, 1 dakikalık dilimler): filtreye uyan kayıt yok\n"
+        ),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn ani_artis_dilimi_denetlenir() {
     let cikti = veylog(&["--ani-artis", "0", "ornekler/laravel.log"]);
     assert_eq!(cikti.status.code(), Some(2));

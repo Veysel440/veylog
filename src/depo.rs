@@ -24,20 +24,24 @@
 //! grup bölünür; bölünen parçanın ilk kaydı alt grubun ilk kaydı değilse mesajı depoda yoktur,
 //! girdiden yeniden okunur (`ornekleri_tamamla`).
 //!
+//! Filtre verildiyse (`filtre` modülü) filtreye uymayan kayıt depoya hiç girmez; yalnızca
+//! sayılır. Depodaki kayıtların sıra numaraları da yalnızca filtreye uyanlar arasındadır.
+//!
 //! Bellek böylece dosyanın boyuyla değil, farklı mesajların ve alt grupların sayısıyla büyür;
 //! kayıt sayısıyla yalnızca sütunlar büyür.
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
-use std::io;
+use std::io::{self, BufRead};
 use std::rc::Rc;
 
 use crate::drain::{self, Kume, Kumeleyici};
 use crate::farkli_sayac::FarkliSayaci;
+use crate::filtre::CozulmusFiltre;
 use crate::kayit::{Kayit, KayitAlici, KayitBilgisi, SatirSayilari, Seviye};
 use crate::maske::maskele;
-use crate::okuyucu::{DIZIN_ARALIGI, OkumaSonucu, OrnekIstegi, OrnekKaynagi};
+use crate::okuyucu::{self, DIZIN_ARALIGI, OkumaSonucu, OrnekIstegi, OrnekKaynagi};
 use crate::parmak_izi::{Istisna, IstisnaTaslagi, ParmakIzi};
 use crate::sutunlar::{KayitSutunlari, SutunOkuyucu};
 use crate::zaman::Zaman;
@@ -156,6 +160,8 @@ impl AltGrup {
 #[derive(Debug)]
 pub struct Depo {
     kumeleyici: Kumeleyici,
+    /// Filtre; None ise bütün kayıtlar alınır.
+    filtre: Option<CozulmusFiltre>,
     sayilar: SatirSayilari,
     gecersiz_utf8: bool,
     sutunlar: KayitSutunlari,
@@ -187,17 +193,24 @@ impl KayitAlici for Depo {
     fn kayit(&mut self, kayit: &Kayit<'_>, bilgi: KayitBilgisi) {
         let zaman = Zaman::kayittan(kayit.zaman());
         let seviye = kayit.seviye();
+        if let Some(filtre) = &self.filtre
+            && !filtre.gecer(zaman.saniye(), seviye)
+        {
+            return;
+        }
+        // Kaydın depodaki sıra numarası: filtreye uyan kayıtlar arasında kaçıncı olduğu
+        let sira = self.sutunlar.len();
         self.seviye_sayilari[seviye as usize] += 1;
         // `Iterator::min_by_key` aynı zamanlılardan ilkini, `max_by_key` sonuncusunu verir
         match &mut self.en_eski {
-            Some(uc) if zaman < uc.zaman => uc.degistir(zaman, bilgi.sira, kayit.zaman()),
+            Some(uc) if zaman < uc.zaman => uc.degistir(zaman, sira, kayit.zaman()),
             Some(_) => {}
-            None => self.en_eski = Some(UcKayit::new(zaman, bilgi.sira, kayit.zaman())),
+            None => self.en_eski = Some(UcKayit::new(zaman, sira, kayit.zaman())),
         }
         match &mut self.en_yeni {
-            Some(uc) if zaman >= uc.zaman => uc.degistir(zaman, bilgi.sira, kayit.zaman()),
+            Some(uc) if zaman >= uc.zaman => uc.degistir(zaman, sira, kayit.zaman()),
             Some(_) => {}
-            None => self.en_yeni = Some(UcKayit::new(zaman, bilgi.sira, kayit.zaman())),
+            None => self.en_yeni = Some(UcKayit::new(zaman, sira, kayit.zaman())),
         }
         self.ham_mesajlar.ekle(kayit.mesaj());
 
@@ -216,16 +229,16 @@ impl KayitAlici for Depo {
                 let alt = &mut self.alt_gruplar[no as usize];
                 alt.adet += 1;
                 if zaman < alt.ilk.zaman {
-                    alt.ilk.degistir(zaman, bilgi.sira, kayit.zaman());
+                    alt.ilk.degistir(zaman, sira, kayit.zaman());
                 }
                 if zaman > alt.son.zaman {
-                    alt.son.degistir(zaman, bilgi.sira, kayit.zaman());
+                    alt.son.degistir(zaman, sira, kayit.zaman());
                 }
                 no
             }
             None => {
                 let no = numara(self.alt_gruplar.len());
-                let uc = UcKayit::new(zaman, bilgi.sira, kayit.zaman());
+                let uc = UcKayit::new(zaman, sira, kayit.zaman());
                 let ornek = if maskelendi {
                     Rc::from(kayit.mesaj())
                 } else {
@@ -234,7 +247,7 @@ impl KayitAlici for Depo {
                 self.alt_gruplar.push(AltGrup {
                     anahtar,
                     adet: 1,
-                    ilk_kayit: bilgi.sira,
+                    ilk_kayit: sira,
                     ornek,
                     ornek_kesin: true,
                     ilk: uc.clone(),
@@ -245,17 +258,27 @@ impl KayitAlici for Depo {
             }
         };
         self.sutunlar.ekle(zaman.saniye(), no);
-        if bilgi.sira.is_multiple_of(DIZIN_ARALIGI) {
+        if sira.is_multiple_of(DIZIN_ARALIGI) {
             self.dizin.push(bilgi.konum);
         }
     }
 }
 
+/// Deponun kayıtları nasıl alacağı.
+#[derive(Debug, Clone, Default)]
+pub struct DepoAyarlari {
+    /// Kayıtların mesajlarının kümeleneceği Drain ayarları.
+    pub drain: drain::Ayarlar,
+    /// Filtre, logun sonuna göre çözülmüş olarak; None ise bütün kayıtlar alınır.
+    pub filtre: Option<CozulmusFiltre>,
+}
+
 impl Depo {
-    /// Boş bir depo; kayıtların mesajları bu ayarlarla kümelenir.
-    pub fn new(drain: drain::Ayarlar) -> Depo {
+    /// Boş bir depo.
+    pub fn new(ayarlar: DepoAyarlari) -> Depo {
         Depo {
-            kumeleyici: Kumeleyici::new(drain),
+            kumeleyici: Kumeleyici::new(ayarlar.drain),
+            filtre: ayarlar.filtre,
             sayilar: SatirSayilari::default(),
             gecersiz_utf8: false,
             sutunlar: KayitSutunlari::default(),
@@ -274,6 +297,19 @@ impl Depo {
             alt_gruplar: Vec::new(),
             alt_grup_sirasi: HashMap::new(),
         }
+    }
+
+    /// Girdiyi baştan sona okuyup depoyu doldurur.
+    pub fn doldur(ayarlar: DepoAyarlari, girdi: impl BufRead) -> io::Result<Depo> {
+        let mut depo = Depo::new(ayarlar);
+        let sonuc = okuyucu::oku(girdi, &mut depo)?;
+        depo.okuma_bitti(sonuc);
+        Ok(depo)
+    }
+
+    /// Kayıtları süzen filtre; yoksa None.
+    pub fn filtre(&self) -> Option<&CozulmusFiltre> {
+        self.filtre.as_ref()
     }
 
     /// Okuma bitince satır sayılarını ve geçersiz UTF-8 bilgisini kaydeder. Drain ilk turda
@@ -420,6 +456,8 @@ impl Depo {
         self.gecersiz_utf8
     }
 
+    /// Depodaki (filtre varsa filtreye uyan) kayıt sayısı. Dosyadaki bütün kayıtlar:
+    /// `sayilar().kayit`.
     pub fn kayit_sayisi(&self) -> usize {
         self.sutunlar.len()
     }
@@ -579,10 +617,11 @@ pub fn metinden(metin: &str) -> Depo {
 /// Testler için: metni okuyup depoya doldurur.
 #[cfg(test)]
 pub fn metinden_ayarlarla(metin: &str, ayarlar: &drain::Ayarlar) -> Depo {
-    let mut depo = Depo::new(ayarlar.clone());
-    let sonuc = crate::okuyucu::oku(metin.as_bytes(), &mut depo).expect("bellekten okuma");
-    depo.okuma_bitti(sonuc);
-    depo
+    let ayarlar = DepoAyarlari {
+        drain: ayarlar.clone(),
+        filtre: None,
+    };
+    Depo::doldur(ayarlar, metin.as_bytes()).expect("bellekten okuma")
 }
 
 #[cfg(test)]
@@ -715,6 +754,51 @@ mod testler {
         assert_eq!(depo.alt_gruplar()[0].adet(), 2);
         assert_eq!(depo.taslaklar.len(), 1);
         assert_eq!(depo.izler.len(), 1);
+    }
+
+    #[test]
+    fn filtreye_uymayan_kayit_depoya_girmez() {
+        use crate::filtre::Filtre;
+        use crate::zaman::ZamanNoktasi;
+        let metin = "[2026-10-24 10:00:00] local.INFO: Başladı\n\
+                     [2026-10-24 10:00:01] local.ERROR: Kuyruk 1 dolu\n\
+                     [2026-10-24 11:00:00] local.ERROR: Kuyruk 2 dolu\n\
+                     [2026-10-24 10:30:00] local.WARNING: Disk doluyor";
+        let filtre = Filtre {
+            seviye: Some(Seviye::Warning),
+            bitis: ZamanNoktasi::ayristir("2026-10-24 11:00"),
+            ..Filtre::default()
+        }
+        .coz(None)
+        .unwrap();
+        let ayarlar = DepoAyarlari {
+            filtre: Some(filtre),
+            ..DepoAyarlari::default()
+        };
+        let depo = Depo::doldur(ayarlar, metin.as_bytes()).unwrap();
+        // Dosyada 4 kayıt; filtreye uyan 2
+        assert_eq!(depo.sayilar().kayit, 4);
+        assert_eq!(depo.kayit_sayisi(), 2);
+        assert_eq!(
+            depo.seviye_sayilari(),
+            [(Seviye::Error, 1), (Seviye::Warning, 1)]
+        );
+        assert_eq!(
+            depo.zaman_araligi(),
+            Some(("2026-10-24 10:00:01", "2026-10-24 10:30:00"))
+        );
+        assert_eq!(
+            depo.maskeli_mesajlar(),
+            ["Kuyruk <SAYI> dolu", "Disk doluyor"]
+        );
+        // Sıra numaraları ve dizin yalnızca depodaki kayıtlar arasında
+        let ilkler: Vec<usize> = depo.alt_gruplar().iter().map(AltGrup::ilk_kayit).collect();
+        assert_eq!(ilkler, [0, 1]);
+        assert_eq!(
+            depo.dizin(),
+            [metin.find("[2026-10-24 10:00:01]").unwrap() as u64]
+        );
+        assert!(depo.filtre().is_some());
     }
 
     #[test]

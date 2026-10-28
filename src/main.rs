@@ -4,6 +4,7 @@ mod ani_artis;
 mod depo;
 mod drain;
 mod farkli_sayac;
+mod filtre;
 mod istatistik;
 mod json;
 mod json_okuyucu;
@@ -27,7 +28,8 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use depo::Depo;
+use depo::{Depo, DepoAyarlari};
+use filtre::FiltreHatasi;
 use komut_satiri::{Bicim, KULLANIM, Komut, Secenekler};
 use okuyucu::{Kopyalayan, OrnekIstegi, OrnekKaynagi, YenidenOkuyucu};
 use rapor::{Ozet, OzetHatasi, gorunur};
@@ -99,9 +101,13 @@ fn main() {
             );
             process::exit(1);
         }
-        // Karşılaştırma noktası logun dışındaysa bu, seçeneğin bu dosyaya uymadığı bir
-        // kullanım hatasıdır
+        // Karşılaştırma noktası logun dışındaysa ya da filtrenin aralığı boşsa bu, seçeneğin
+        // bu dosyaya uymadığı bir kullanım hatasıdır
         Err(Hata::Ozet(hata @ OzetHatasi::Karsilastirma(_))) => {
+            eprintln!("veylog: {hata}");
+            process::exit(2);
+        }
+        Err(Hata::Filtre(hata)) => {
             eprintln!("veylog: {hata}");
             process::exit(2);
         }
@@ -124,15 +130,20 @@ enum Hata {
     Okuma(io::Error),
     /// Standart girdinin geçici kopyası yazılamadı.
     Kopya(io::Error),
+    /// Filtrenin aralığı boş.
+    Filtre(FiltreHatasi),
     Ozet(OzetHatasi),
 }
 
 /// Girdiyi okur ve özetler. Okunan satırlar bırakılır; bellekte depo kalır.
 ///
-/// Ani artışların ve bazı kalıpların örnekleri için girdinin bir kısmı yeniden okunabilir.
-/// Dosya ise aynı dosya yeniden okunur. Standart girdi (ya da `<(zcat ...)` gibi bir boru)
-/// yalnızca bir kez okunabildiği için `--ani-artis` verildiyse okunurken geçici bir dosyaya
-/// kopyalanır. Geçici dosya oluşturulamazsa girdi kopyalanmadan okunur: yeniden okunamayan
+/// Girdi en fazla iki kez okunur. Logun sonuna göre çözülen bir filtre (`--son 2sa`,
+/// `--baslangic 15:00`) önce en yeni kaydı bilmeyi gerektirir: log bir kez taranır, sonra
+/// filtreyle okunur. Ani artışların ve bazı kalıpların örnekleri için de girdinin bir kısmı
+/// yeniden okunabilir. Dosya ise aynı dosya yeniden okunur. Standart girdi (ya da
+/// `<(zcat ...)` gibi bir boru) yalnızca bir kez okunabildiği için o zaman ilk okunuşunda
+/// geçici bir dosyaya kopyalanır. Ön tarama için kopya şarttır. Yalnızca ani artışlar için
+/// gerekiyorsa ve geçici dosya oluşturulamazsa girdi kopyalanmadan okunur: yeniden okunamayan
 /// kayıtların yerine aynı alt gruptaki ilk kaydın mesajı örnek olur.
 fn ozet_cikar(
     secenekler: &Secenekler,
@@ -140,55 +151,73 @@ fn ozet_cikar(
     yol_metni: &str,
     gosterilen_yol: &str,
 ) -> Result<Ozet, Hata> {
-    let mut depo = Depo::new(secenekler.rapor.drain.clone());
-    let yeniden_okunacak = secenekler.rapor.ani_artis.is_some();
+    let on_tarama = secenekler.rapor.filtre.sonu_gerekir();
     let dosya = if standart_girdi {
         None
     } else {
         Some(dosyayi_ac(&secenekler.dosya).map_err(Hata::Okuma)?)
     };
+    let mut kopya = None;
+    let mut depo;
     // Normal bir dosya değilse (boru, aygıt) standart girdi gibi bir kez okunur
-    let dosya = match dosya {
+    let girdi = match dosya {
         Some(dosya) if dosya.metadata().is_ok_and(|bilgi| bilgi.is_file()) => {
             let mut girdi = BufReader::with_capacity(TAMPON, dosya);
-            let sonuc = okuyucu::oku(&mut girdi, &mut depo).map_err(Hata::Okuma)?;
-            depo.okuma_bitti(sonuc);
-            Ok(girdi)
+            let en_yeni = if on_tarama {
+                let en_yeni = okuyucu::en_yeni_zaman(&mut girdi).map_err(Hata::Okuma)?;
+                girdi.seek(SeekFrom::Start(0)).map_err(Hata::Okuma)?;
+                en_yeni
+            } else {
+                None
+            };
+            depo = depoyu_doldur(secenekler, en_yeni, &mut girdi)?;
+            Some(girdi)
         }
-        akis => Err(akis),
-    };
-    let mut kopya = None;
-    if let Err(akis) = &dosya {
-        let ic: Box<dyn io::BufRead + '_> = match akis {
-            Some(akis) => Box::new(BufReader::with_capacity(TAMPON, akis)),
-            None => Box::new(io::stdin().lock()),
-        };
-        let gecici = if yeniden_okunacak {
-            GeciciDosya::olustur()
-                .inspect_err(|hata| {
-                    eprintln!(
-                        "Uyarı: girdinin geçici kopyası oluşturulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
-                    );
-                })
-                .ok()
-        } else {
+        akis => {
+            let ic: Box<dyn io::BufRead + '_> = match &akis {
+                Some(akis) => Box::new(BufReader::with_capacity(TAMPON, akis)),
+                None => Box::new(io::stdin().lock()),
+            };
+            let gecici = if on_tarama {
+                Some(GeciciDosya::olustur().map_err(Hata::Kopya)?)
+            } else if secenekler.rapor.ani_artis.is_some() {
+                GeciciDosya::olustur()
+                    .inspect_err(|hata| {
+                        eprintln!(
+                            "Uyarı: girdinin geçici kopyası oluşturulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
+                        );
+                    })
+                    .ok()
+            } else {
+                None
+            };
+            match gecici {
+                Some(gecici) => {
+                    let mut kopyalayan =
+                        Kopyalayan::new(ic, BufWriter::with_capacity(TAMPON, gecici.dosya()));
+                    if on_tarama {
+                        // Ön tarama girdiyi kopyalar; asıl okuma kopyadan yapılır
+                        let en_yeni =
+                            okuyucu::en_yeni_zaman(&mut kopyalayan).map_err(Hata::Okuma)?;
+                        kopyayi_bitir(kopyalayan)?;
+                        let mut kopyasi = gecici.dosya();
+                        kopyasi.seek(SeekFrom::Start(0)).map_err(Hata::Kopya)?;
+                        depo = depoyu_doldur(
+                            secenekler,
+                            en_yeni,
+                            BufReader::with_capacity(TAMPON, kopyasi),
+                        )?;
+                    } else {
+                        depo = depoyu_doldur(secenekler, None, &mut kopyalayan)?;
+                        kopyayi_bitir(kopyalayan)?;
+                    }
+                    kopya = Some(gecici);
+                }
+                None => depo = depoyu_doldur(secenekler, None, ic)?,
+            }
             None
-        };
-        let sonuc = if let Some(gecici) = gecici {
-            let mut kopyalayan =
-                Kopyalayan::new(ic, BufWriter::with_capacity(TAMPON, gecici.dosya()));
-            let sonuc = okuyucu::oku(&mut kopyalayan, &mut depo).map_err(Hata::Okuma)?;
-            kopyalayan
-                .bitir()
-                .and_then(|mut yazici| yazici.flush())
-                .map_err(Hata::Kopya)?;
-            kopya = Some(gecici);
-            sonuc
-        } else {
-            okuyucu::oku(ic, &mut depo).map_err(Hata::Okuma)?
-        };
-        depo.okuma_bitti(sonuc);
-    }
+        }
+    };
     if depo.gecersiz_utf8() {
         eprintln!(
             "Uyarı: {gosterilen_yol} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi."
@@ -196,17 +225,19 @@ fn ozet_cikar(
     }
 
     let dizin = depo.dizin().to_vec();
-    let mut kaynak: Box<dyn OrnekKaynagi + '_> = match (dosya, &kopya) {
-        (Ok(girdi), _) => Box::new(YenidenOkuyucu::new(girdi, dizin)),
-        (Err(_), Some(gecici)) => {
+    let filtre = depo.filtre().copied();
+    let mut kaynak: Box<dyn OrnekKaynagi + '_> = match (girdi, &kopya) {
+        (Some(girdi), _) => Box::new(YenidenOkuyucu::new(girdi, dizin, filtre)),
+        (None, Some(gecici)) => {
             let mut dosya = gecici.dosya();
             dosya.seek(SeekFrom::Start(0)).map_err(Hata::Kopya)?;
             Box::new(YenidenOkuyucu::new(
                 BufReader::with_capacity(TAMPON, dosya),
                 dizin,
+                filtre,
             ))
         }
-        (Err(_), None) => Box::new(OkunamazKaynak),
+        (None, None) => Box::new(OkunamazKaynak),
     };
     let ozet = Ozet::hesapla(
         yol_metni.to_owned(),
@@ -221,6 +252,34 @@ fn ozet_cikar(
         );
     }
     Ok(ozet)
+}
+
+/// Filtreyi logun sonuna göre çözer, girdiyi okuyup depoyu doldurur. `en_yeni`: ön taramada
+/// bulunan en yeni kaydın zamanı; filtre logun sonunu gerektirmiyorsa None.
+fn depoyu_doldur(
+    secenekler: &Secenekler,
+    en_yeni: Option<zaman::Zaman>,
+    girdi: impl io::BufRead,
+) -> Result<Depo, Hata> {
+    let rapor = &secenekler.rapor;
+    let filtre = if rapor.filtre.bos_mu() {
+        None
+    } else {
+        Some(rapor.filtre.coz(en_yeni).map_err(Hata::Filtre)?)
+    };
+    let ayarlar = DepoAyarlari {
+        drain: rapor.drain.clone(),
+        filtre,
+    };
+    Depo::doldur(ayarlar, girdi).map_err(Hata::Okuma)
+}
+
+/// Kopyalanan girdinin kopyasını diske yazar; kopyalanırken bir hata olduysa onu döndürür.
+fn kopyayi_bitir<R: io::BufRead, W: Write>(kopyalayan: Kopyalayan<R, W>) -> Result<(), Hata> {
+    kopyalayan
+        .bitir()
+        .and_then(|mut yazici| yazici.flush())
+        .map_err(Hata::Kopya)
 }
 
 /// Log dosyasını açar. Bir klasör verildiyse açmaya çalışmaz: Linux'ta bunun hatası "Is a

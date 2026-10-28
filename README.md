@@ -176,6 +176,10 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `-b`, `--bicim <ad>` | Çıktının biçimi: `metin`, `json` ya da `markdown`. | `metin` |
 | `-k`, `--karsilastir <zaman>` | Logu bu anda ikiye böl ve iki yarıyı karşılaştır. Zaman: `15:00`, `15:00:30`, `2026-10-24` ya da `"2026-10-24 15:00"`. | |
 | `-a`, `--ani-artis <dakika>` | Logu bu uzunlukta dilimlere böl; her kalıbın WARNING ve üstündeki kayıtlarının olağan seviyesinden sıçradığı anları bul (1–1440). | |
+| `--seviye <seviye>` | Yalnızca bu seviye ve üstündeki kayıtlar: `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`. | |
+| `--baslangic <zaman>` | Yalnızca bu andan (dahil) sonraki kayıtlar. Zaman `--karsilastir` gibi yazılır. | |
+| `--bitis <zaman>` | Yalnızca bu andan (hariç) önceki kayıtlar. | |
+| `--son <süre>` | Yalnızca logun son kısmı: en yeni kayıttan bu kadar öncesinden bu yana. Süre: `30dk`, `2sa`, `1g`, `1sa30dk`. | |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
 
@@ -191,6 +195,10 @@ veylog --karsilastir 15:00 storage/logs/laravel.log
 
 # Beşer dakikalık dilimlerde olağan seviyesinden sıçrayan hatalar
 veylog --ani-artis 5 storage/logs/laravel.log
+
+# Logun son iki saatindeki hatalar; ya da yalnızca dünkü 14:00–16:00
+veylog --seviye error --son 2sa storage/logs/laravel.log
+veylog --baslangic "2026-10-23 14:00" --bitis "2026-10-23 16:00" storage/logs/laravel.log
 
 # Sıkıştırılmış bir günlük log ya da sunucudaki bir log: dosya yerine - standart girdidir
 zcat laravel-2026-10-24.log.gz | veylog -
@@ -212,9 +220,18 @@ Kullanım: veylog [SEÇENEKLER] <log-dosyası>
 Ayrıntılar için: veylog --yardim
 ```
 
+Filtreler (`--seviye`, `--baslangic`, `--bitis`, `--son`) raporu yalnızca uyan kayıtlarla
+çıkarır: kalıplar, seviyeler, zaman aralığı, karşılaştırma ve ani artışlar onlardandır.
+Dosyanın satır ve kayıt sayıları dosyanın tamamınındır; uyan kayıt sayısı `Filtre` satırında
+yazar. Yalnızca saat verilmiş bir sınır (`--baslangic 15:00`) `--karsilastir` gibi logun son
+gününe uygulanır. `--son` ve yalnızca saat verilmiş sınırlar logun sonunu bilmeyi gerektirir:
+log önce bir kez taranır (standart girdi o sırada geçici bir dosyaya kopyalanır). Filtreye
+uymayan kayıtlar maskelenmediği ve kümelenmediği için filtreli bir rapor daha hızlı çıkar:
+500 MB'lık bir logun son iki saati 2,5 saniyede özetlenir.
+
 Çıkış kodları betiklerin hatanın türünü ayırt edebilmesi içindir: `0` başarılı, `1` dosya
 okunamadı ya da çıktı yazılamadı, `2` kullanım hatası (bilinmeyen seçenek, geçersiz değer,
-logun dışında kalan bir karşılaştırma noktası).
+logun dışında kalan bir karşılaştırma noktası, boş bir filtre aralığı).
 
 ## Örnekler
 
@@ -363,7 +380,7 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
 
 ## Kalite
 
-- **Testler:** 233 birim testi her modülü ayrı ayrı, 28 uçtan uca test derlenmiş programı
+- **Testler:** 244 birim testi her modülü ayrı ayrı, 31 uçtan uca test derlenmiş programı
   çalıştırıp kullanıcının gördüğünü sınar: çıktı metinleri karakter karakter, JSON
   serde_json ile ayrıştırılarak, Markdown tablosu satır satır.
 - **Referans karşılaştırmaları:** yukarıdaki tabloda. Kümeleme gerçek ve sentetik loglarda
@@ -372,7 +389,7 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
   ([ayrıntılar](docs/nasil-calisir.md#değişken-konumlar)).
 - **Mutasyon testleri:** koda bilerek küçük hatalar yerleştirilip (bir karşılaştırmayı
   çevirmek, bir sınırı kaydırmak, bir kuralı silmek) testlerin yakaladığı denetlendi;
-  geliştirme adımlarında denenen 147 mutasyonun 146'sı yakalandı. Kalan biri sonucu hiç
+  geliştirme adımlarında denenen 170 mutasyonun 169'u yakalandı. Kalan biri sonucu hiç
   değiştirmeyen (eşdeğer) bir mutasyondu.
 - **CI/CD:** `main` dalına her gönderimde ve her PR'da Linux, macOS ve Windows'ta testler;
   `rustfmt`, `clippy -D warnings` ve en düşük Rust sürümü (1.88). Her sürüm etiketinde dört
