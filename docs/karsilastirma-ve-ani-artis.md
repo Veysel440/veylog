@@ -3,8 +3,9 @@
 veylog bir logda iki soruya istatistikle cevap verir: "Dağıtımdan sonra ne değişti?"
 (`--karsilastir`) ve "Hangi hata bir anda patladı?" (`--ani-artis`). Bu belge iki yöntemi,
 eşiklerin neden öyle seçildiğini ve nasıl sınandıklarını anlatır. Kalıpların nasıl
-çıkarıldığı [nasıl çalışır](nasil-calisir.md) belgesinde. Örneklerdeki çıktılar Türkçe arayüzledir; varsayılan arayüz İngilizce olduğu için Türkçe
-çıktı `--dil tr` ya da `VEYLOG_LANG=tr` ile alınır.
+çıkarıldığı [nasıl çalışır](nasil-calisir.md) belgesinde. Örneklerdeki çıktılar Türkçe
+arayüzledir; varsayılan arayüz İngilizce olduğu için Türkçe çıktı `--dil tr` ya da
+`VEYLOG_LANG=tr` ile alınır.
 
 ## Zaman aralıklarını karşılaştırma
 

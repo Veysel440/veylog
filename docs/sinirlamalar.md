@@ -212,7 +212,7 @@ bir iştir.
 ## Arayüz dili
 
 - Logun içeriği çevrilmez: Türkçe bir logun mesajları İngilizce raporda da Türkçedir.
-- JSON'un alan adları ve yer tutucuları her dilde Türkçedir (`kaliplar`, `<SAYI>`); bilerek:
+- JSON'un alan adları ve yer tutucuları her dilde İngilizcedir (`patterns`, `<NUM>`); bilerek:
   JSON'u okuyan betikler dile bağlı olmasın.
 - Yalnızca İngilizce ve Türkçe vardır; dil ortamın yerel ayarından (`LANG`) seçilmez, Türkçe
   ayarlı bir sistemde de varsayılan İngilizcedir. `VEYLOG_LANG=tr` (ya da `VEYLOG_DIL=tr`)

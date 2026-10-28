@@ -11,7 +11,14 @@ All notable changes to this project are documented in this file. The format is b
 - **Breaking:** the interface is now in English by default. Turkish is selected with
   `--lang tr` (`--dil tr`) or the new `VEYLOG_LANG=tr` environment variable; `VEYLOG_DIL=tr`
   keeps working, and `VEYLOG_LANG` is read first when both are set. The English help says
-  how to get the Turkish one. JSON output does not change.
+  how to get the Turkish one.
+- **Breaking:** JSON output is now in English: field names (`patterns.rows`, `level`,
+  `count`, `exception.method`, `spikes.count`...), fixed values (`location`: `method` or
+  `line`; `sort`: `severity`, `count` or `newest`; `time_zone.source`: `option` or `log`),
+  the placeholders in patterns (`<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>`) and the name of
+  standard input (`<standard input>`). JSON is still the same in both interface languages.
+  Every old name and its new one are listed in
+  [docs/cikti-bicimleri.md](https://github.com/Veysel440/veylog/blob/main/docs/cikti-bicimleri.md#eski-alan-adları).
 
 ### Fixes
 

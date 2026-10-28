@@ -1,5 +1,8 @@
 //! JSON çıktısı: özeti başka programların (jq, CI adımları, betikler) okuyabileceği biçimde yazar.
 //!
+//! Alan adları, sabit değerler (`method`, `severity`) ve yer tutucular (`<NUM>`) İngilizcedir
+//! ve arayüzün dilinden bağımsızdır: betikler dil değişince bozulmaz.
+//!
 //! JSON yazmak için bir kütüphane kullanılmadı: yalnızca yazıyoruz ve yapı küçük. JSON'un
 //! kendisi bir Rust `enum`'ıyla modellenir (serde_json'daki `Value` türü de böyle bir enum'dır)
 //! ve özyinelemeli olarak yazılır. Doğruluğu testlerde serde_json ile ayrıştırılarak denetlenir;
@@ -8,6 +11,7 @@
 use std::io::{self, Write};
 
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_AZ_MAD, EN_DUSUK_SEVIYE, ESIK};
+use crate::dil;
 use crate::karsilastirma::{ANLAMLILIK, ARTIS_KATI, Degisim, EN_AZ_KAYIT, Karsilastirma, Pencere};
 use crate::rapor::{FiltreOzeti, KalipSatiri, Ozet, SaatDilimiOzeti};
 use crate::zaman::Zaman;
@@ -110,22 +114,21 @@ fn metin_yaz(cikti: &mut impl Write, metin: &str) -> io::Result<()> {
 
 /// Özeti JSON olarak yazar.
 ///
-/// `--ilk` ve `--siralama` burada da geçerlidir: "satirlar" dizisi tablodaki satırlardır,
-/// "gosterilmeyen" sınır yüzünden dışarıda kalanların sayısıdır. Bütün satırlar için `--hepsi`.
+/// `--ilk` ve `--siralama` burada da geçerlidir: "rows" dizisi tablodaki satırlardır, "omitted"
+/// sınır yüzünden dışarıda kalanların sayısıdır. Bütün satırlar için `--hepsi`.
 pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     ozet_json(ozet).yaz(cikti, 0)?;
     writeln!(cikti)
 }
 
 /// Özetin JSON ağacı. Kalıplar ve örnekler kısaltılmadan tam halleriyle yazılır. Bütün
-/// zamanlar raporun saat diliminde, `2026-10-24 16:10:00` biçimindedir; dilim `saat_dilimi`
+/// zamanlar raporun saat diliminde, `2026-10-24 16:10:00` biçimindedir; dilim `time_zone`
 /// alanındadır.
 fn ozet_json(ozet: &Ozet) -> Json {
     let zaman_araligi = match ozet.zaman_araligi {
-        Some((en_eski, en_yeni)) => Json::Nesne(vec![
-            ("en_eski", zaman(en_eski)),
-            ("en_yeni", zaman(en_yeni)),
-        ]),
+        Some((en_eski, en_yeni)) => {
+            Json::Nesne(vec![("oldest", zaman(en_eski)), ("newest", zaman(en_yeni))])
+        }
         None => Json::Yok,
     };
     let seviyeler = ozet
@@ -141,76 +144,76 @@ fn ozet_json(ozet: &Ozet) -> Json {
     let analiz = &ozet.analiz;
 
     let mut alanlar = vec![
-        ("surum", metin(env!("CARGO_PKG_VERSION"))),
-        ("dosya", metin(&ozet.dosya)),
-        ("satir_sayisi", Json::Sayi(ozet.satir_sayisi)),
-        ("kayit_sayisi", Json::Sayi(ozet.kayit_sayisi)),
-        ("devam_satiri_sayisi", Json::Sayi(ozet.devam_satiri_sayisi)),
-        ("yetim_satir_sayisi", Json::Sayi(ozet.yetim_satir_sayisi)),
+        ("version", metin(env!("CARGO_PKG_VERSION"))),
+        ("file", metin(&ozet.dosya)),
+        ("lines", Json::Sayi(ozet.satir_sayisi)),
+        ("records", Json::Sayi(ozet.kayit_sayisi)),
+        ("continuation_lines", Json::Sayi(ozet.devam_satiri_sayisi)),
+        ("orphan_lines", Json::Sayi(ozet.yetim_satir_sayisi)),
     ];
     // Filtre yalnızca verildiyse yazılır; normal raporun biçimi değişmez
     if let Some(filtre) = &ozet.filtre {
-        alanlar.push(("filtre", filtre_json(filtre)));
+        alanlar.push(("filter", filtre_json(filtre)));
     }
     alanlar.extend([
-        ("zaman_araligi", zaman_araligi),
+        ("time_range", zaman_araligi),
         (
-            "saat_dilimi",
+            "time_zone",
             ozet.saat_dilimi
                 .as_ref()
                 .map_or(Json::Yok, saat_dilimi_json),
         ),
-        ("seviyeler", Json::Nesne(seviyeler)),
+        ("levels", Json::Nesne(seviyeler)),
         (
-            "kaliplar",
+            "patterns",
             Json::Nesne(vec![
-                ("ham_mesaj_sayisi", Json::Sayi(analiz.ham_mesaj_sayisi)),
+                ("distinct_messages", Json::Sayi(analiz.ham_mesaj_sayisi)),
                 (
-                    "ham_mesaj_yaklasik",
+                    "distinct_messages_estimated",
                     Json::Mantiksal(analiz.ham_mesaj_yaklasik),
                 ),
+                ("masked_messages", Json::Sayi(analiz.maskeli_mesaj_sayisi)),
+                ("drain_patterns", Json::Sayi(analiz.kalip_sayisi)),
+                ("groups", Json::Sayi(analiz.satirlar.len())),
                 (
-                    "maskeli_mesaj_sayisi",
-                    Json::Sayi(analiz.maskeli_mesaj_sayisi),
+                    "threshold",
+                    Json::Ondalik(ozet.ayarlar.drain.benzerlik_esigi),
                 ),
-                ("kalip_sayisi", Json::Sayi(analiz.kalip_sayisi)),
-                ("grup_sayisi", Json::Sayi(analiz.satirlar.len())),
-                ("esik", Json::Ondalik(ozet.ayarlar.drain.benzerlik_esigi)),
-                ("konum", metin(ozet.ayarlar.konum_turu.ad())),
-                ("siralama", metin(ozet.ayarlar.siralama.ad())),
-                ("gosterilmeyen", Json::Sayi(ozet.gosterilmeyen())),
-                ("satirlar", Json::Dizi(satirlar)),
+                ("location", metin(ozet.ayarlar.konum_turu.ingilizce_ad())),
+                ("sort", metin(ozet.ayarlar.siralama.ingilizce_ad())),
+                ("omitted", Json::Sayi(ozet.gosterilmeyen())),
+                ("rows", Json::Dizi(satirlar)),
             ]),
         ),
     ]);
     // Karşılaştırma ve ani artışlar yalnızca istendiyse yazılır; normal raporun biçimi değişmez
     if let Some(karsilastirma) = &ozet.karsilastirma {
-        alanlar.push(("karsilastirma", karsilastirma_json(ozet, karsilastirma)));
+        alanlar.push(("comparison", karsilastirma_json(ozet, karsilastirma)));
     }
     if let Some(ani_artislar) = &ozet.ani_artislar {
-        alanlar.push(("ani_artislar", ani_artis_json(ozet, ani_artislar)));
+        alanlar.push(("spikes", ani_artis_json(ozet, ani_artislar)));
     }
     Json::Nesne(alanlar)
 }
 
-/// Filtrenin JSON'u: verilmeyen sınırlar null'dır. `kayit_sayisi` filtreye uyan kayıtlardır;
-/// dosyanın bütün kayıtları en üstteki `kayit_sayisi`dır.
+/// Filtrenin JSON'u: verilmeyen sınırlar null'dır. `records` filtreye uyan kayıtlardır;
+/// dosyanın bütün kayıtları en üstteki `records`tır.
 fn filtre_json(filtre: &FiltreOzeti) -> Json {
     let zaman_ya_da_yok = |zaman: Option<Zaman>| zaman.map_or(Json::Yok, self::zaman);
     Json::Nesne(vec![
         (
-            "en_dusuk_seviye",
+            "min_level",
             filtre.seviye.map_or(Json::Yok, |seviye| metin(seviye.ad())),
         ),
-        ("baslangic", zaman_ya_da_yok(filtre.baslangic)),
-        ("bitis", zaman_ya_da_yok(filtre.bitis)),
+        ("since", zaman_ya_da_yok(filtre.baslangic)),
+        ("until", zaman_ya_da_yok(filtre.bitis)),
         (
-            "son_saniye",
+            "last_seconds",
             filtre
                 .son
                 .map_or(Json::Yok, |saniye| Json::Sayi(saniye as usize)),
         ),
-        ("kayit_sayisi", Json::Sayi(filtre.kayit_sayisi)),
+        ("records", Json::Sayi(filtre.kayit_sayisi)),
     ])
 }
 
@@ -224,19 +227,19 @@ fn saat_dilimi_json(dilim: &SaatDilimiOzeti) -> Json {
         .map(|kaynak| Json::Metin(kaynak.to_string()))
         .collect();
     Json::Nesne(vec![
-        ("dilim", Json::Metin(dilim.dilim.to_string())),
+        ("zone", Json::Metin(dilim.dilim.to_string())),
         (
-            "kaynak",
-            metin(if dilim.verildi { "secenek" } else { "log" }),
+            "source",
+            metin(if dilim.verildi { "option" } else { "log" }),
         ),
-        ("cevrilen_kayit", Json::Sayi(dilim.sayilar.cevrilen)),
-        ("cevrilen_dilimler", Json::Dizi(cevrilen_dilimler)),
-        ("dilimsiz_kayit", Json::Sayi(dilim.sayilar.yazilmamis)),
+        ("converted_records", Json::Sayi(dilim.sayilar.cevrilen)),
+        ("converted_from", Json::Dizi(cevrilen_dilimler)),
+        ("records_without_zone", Json::Sayi(dilim.sayilar.yazilmamis)),
     ])
 }
 
 /// Karşılaştırmanın JSON'u: nokta, iki yarı, "artan" eşikleri ve üç liste. Listeler en fazla
-/// `--ilk` kadar satır içerir; "gosterilmeyen" dışarıda kalanları sayar.
+/// `--ilk` kadar satır içerir; "omitted" dışarıda kalanları sayar.
 fn karsilastirma_json(ozet: &Ozet, karsilastirma: &Karsilastirma) -> Json {
     let liste = |degisimler: &[Degisim]| {
         let satirlar = ozet
@@ -245,30 +248,30 @@ fn karsilastirma_json(ozet: &Ozet, karsilastirma: &Karsilastirma) -> Json {
             .map(|degisim| degisim_json(ozet, degisim))
             .collect();
         Json::Nesne(vec![
-            ("kalip_sayisi", Json::Sayi(degisimler.len())),
-            ("gosterilmeyen", Json::Sayi(ozet.disarida_kalan(degisimler))),
-            ("satirlar", Json::Dizi(satirlar)),
+            ("count", Json::Sayi(degisimler.len())),
+            ("omitted", Json::Sayi(ozet.disarida_kalan(degisimler))),
+            ("rows", Json::Dizi(satirlar)),
         ])
     };
     Json::Nesne(vec![
-        ("nokta", zaman(karsilastirma.nokta)),
-        ("once", pencere_json(&karsilastirma.once)),
-        ("sonra", pencere_json(&karsilastirma.sonra)),
-        ("artis_kati", Json::Ondalik(ARTIS_KATI)),
-        ("anlamlilik", Json::Ondalik(ANLAMLILIK)),
-        ("en_az_kayit", Json::Sayi(EN_AZ_KAYIT)),
-        ("yeni", liste(&karsilastirma.yeni)),
-        ("kaybolan", liste(&karsilastirma.kaybolan)),
-        ("artan", liste(&karsilastirma.artan)),
+        ("point", zaman(karsilastirma.nokta)),
+        ("before", pencere_json(&karsilastirma.once)),
+        ("after", pencere_json(&karsilastirma.sonra)),
+        ("min_factor", Json::Ondalik(ARTIS_KATI)),
+        ("significance", Json::Ondalik(ANLAMLILIK)),
+        ("min_records", Json::Sayi(EN_AZ_KAYIT)),
+        ("new", liste(&karsilastirma.yeni)),
+        ("gone", liste(&karsilastirma.kaybolan)),
+        ("increased", liste(&karsilastirma.artan)),
     ])
 }
 
 fn pencere_json(pencere: &Pencere) -> Json {
     Json::Nesne(vec![
-        ("baslangic", zaman(pencere.baslangic)),
-        ("bitis", zaman(pencere.bitis)),
-        ("saniye", Json::Sayi(pencere.saniye)),
-        ("kayit_sayisi", Json::Sayi(pencere.kayit_sayisi)),
+        ("start", zaman(pencere.baslangic)),
+        ("end", zaman(pencere.bitis)),
+        ("seconds", Json::Sayi(pencere.saniye)),
+        ("records", Json::Sayi(pencere.kayit_sayisi)),
     ])
 }
 
@@ -276,17 +279,17 @@ fn pencere_json(pencere: &Pencere) -> Json {
 fn degisim_json(ozet: &Ozet, degisim: &Degisim) -> Json {
     let mut alanlar = satir_alanlari(&ozet.analiz.satirlar[degisim.satir]);
     alanlar.extend([
-        ("once", Json::Sayi(degisim.once)),
-        ("sonra", Json::Sayi(degisim.sonra)),
+        ("before", Json::Sayi(degisim.once)),
+        ("after", Json::Sayi(degisim.sonra)),
         // Yenilerde kat sonsuzdur; JSON'da sonsuz olmadığı için null yazılır
-        ("kat", Json::Ondalik(degisim.kat)),
-        ("p_degeri", Json::Ondalik(degisim.p_degeri)),
+        ("factor", Json::Ondalik(degisim.kat)),
+        ("p_value", Json::Ondalik(degisim.p_degeri)),
     ]);
     Json::Nesne(alanlar)
 }
 
 /// Ani artışların JSON'u: dilimler, eşikler ve en fazla `--ilk` kadar artış. Logda kayıt yoksa
-/// "baslangic" ve "bitis" null'dır; log `en_az_dilim`'den kısaysa artış aranmaz.
+/// "start" ve "end" null'dır; log `min_slices`'tan kısaysa artış aranmaz.
 fn ani_artis_json(ozet: &Ozet, ani_artislar: &AniArtislar) -> Json {
     let (baslangic, bitis) = match ani_artislar.aralik {
         Some((baslangic, bitis)) => (zaman(baslangic), zaman(bitis)),
@@ -300,47 +303,47 @@ fn ani_artis_json(ozet: &Ozet, ani_artislar: &AniArtislar) -> Json {
         .collect();
     Json::Nesne(vec![
         (
-            "dilim_dakika",
+            "slice_minutes",
             Json::Sayi(usize::from(ani_artislar.dilim_dakika)),
         ),
-        ("en_dusuk_seviye", metin(EN_DUSUK_SEVIYE.ad())),
-        ("baslangic", baslangic),
-        ("bitis", bitis),
-        ("dilim_sayisi", Json::Sayi(ani_artislar.dilim_sayisi)),
-        ("en_az_dilim", Json::Sayi(EN_AZ_DILIM)),
-        ("esik", Json::Ondalik(ESIK)),
-        ("en_az_mad", Json::Ondalik(EN_AZ_MAD)),
-        ("artis_sayisi", Json::Sayi(artislar.len())),
-        ("gosterilmeyen", Json::Sayi(ozet.disarida_kalan(artislar))),
-        ("satirlar", Json::Dizi(satirlar)),
+        ("min_level", metin(EN_DUSUK_SEVIYE.ad())),
+        ("start", baslangic),
+        ("end", bitis),
+        ("slices", Json::Sayi(ani_artislar.dilim_sayisi)),
+        ("min_slices", Json::Sayi(EN_AZ_DILIM)),
+        ("threshold", Json::Ondalik(ESIK)),
+        ("min_mad", Json::Ondalik(EN_AZ_MAD)),
+        ("count", Json::Sayi(artislar.len())),
+        ("omitted", Json::Sayi(ozet.disarida_kalan(artislar))),
+        ("rows", Json::Dizi(satirlar)),
     ])
 }
 
 /// Bir ani artış: kalıp satırının alanları, kalıbın olağan seviyesi ve artışın kendisi.
-/// Satırın alanları (seviye, ilk, son, örnek) bütün kalıbındır; artışınkiler "artis"te.
+/// Satırın alanları (seviye, ilk, son, örnek) bütün kalıbındır; artışınkiler "spike"ta.
 fn artis_json(ozet: &Ozet, artis: &AniArtis) -> Json {
     let mut alanlar = satir_alanlari(&ozet.analiz.satirlar[artis.satir]);
     alanlar.extend([
-        ("olagan", Json::Ondalik(artis.olagan)),
+        ("usual", Json::Ondalik(artis.olagan)),
         ("mad", Json::Ondalik(artis.mad)),
         (
-            "artis",
+            "spike",
             Json::Nesne(vec![
-                ("baslangic", zaman(artis.baslangic)),
-                ("bitis", zaman(artis.bitis)),
-                ("dilim_sayisi", Json::Sayi(artis.dilim_sayisi)),
-                ("kayit_sayisi", Json::Sayi(artis.kayit_sayisi)),
-                ("seviye", metin(artis.seviye.ad())),
-                ("ilk", zaman(artis.ilk)),
-                ("son", zaman(artis.son)),
-                ("ornek", metin(&artis.ornek)),
+                ("start", zaman(artis.baslangic)),
+                ("end", zaman(artis.bitis)),
+                ("slices", Json::Sayi(artis.dilim_sayisi)),
+                ("records", Json::Sayi(artis.kayit_sayisi)),
+                ("level", metin(artis.seviye.ad())),
+                ("first", zaman(artis.ilk)),
+                ("last", zaman(artis.son)),
+                ("sample", metin(&artis.ornek)),
                 (
-                    "zirve",
+                    "peak",
                     Json::Nesne(vec![
-                        ("baslangic", zaman(artis.zirve_baslangic)),
-                        ("bitis", zaman(artis.zirve_bitis)),
-                        ("adet", Json::Sayi(artis.zirve_adet)),
-                        ("puan", Json::Ondalik(artis.puan)),
+                        ("start", zaman(artis.zirve_baslangic)),
+                        ("end", zaman(artis.zirve_bitis)),
+                        ("count", Json::Sayi(artis.zirve_adet)),
+                        ("score", Json::Ondalik(artis.puan)),
                     ]),
                 ),
             ]),
@@ -354,10 +357,11 @@ fn satir_json(satir: &KalipSatiri) -> Json {
     Json::Nesne(satir_alanlari(satir))
 }
 
-/// Bir kalıp satırının alanları. İstisnası olmayan satırlarda "istisna" null'dır; istisnanın
-/// uygulama kodunda yeri bulunamadıysa "dosya", "satir" ve "metot" null'dır. View hatalarında
-/// konum bir şablondur; şablonun satırı bilinmediği için "satir" null'dır. "metot" konumun
-/// içinde bulunduğu fonksiyondur; konum satırla belirlendiyse null'dır.
+/// Bir kalıp satırının alanları. İstisnası olmayan satırlarda "exception" null'dır; istisnanın
+/// uygulama kodunda yeri bulunamadıysa "file", "line" ve "method" null'dır. View hatalarında
+/// konum bir şablondur; şablonun satırı bilinmediği için "line" null'dır. "method" konumun
+/// içinde bulunduğu fonksiyondur; konum satırla belirlendiyse null'dır. Kalıptaki yer
+/// tutucular İngilizce adlarıyladır (`<NUM>`).
 fn satir_alanlari(satir: &KalipSatiri) -> Vec<(&'static str, Json)> {
     let istisna = match &satir.parmak_izi {
         Some(parmak_izi) => {
@@ -371,24 +375,27 @@ fn satir_alanlari(satir: &KalipSatiri) -> Vec<(&'static str, Json)> {
                 None => (Json::Yok, Json::Yok),
             };
             Json::Nesne(vec![
-                ("sinif", Json::Metin(parmak_izi.sinif())),
-                ("dosya", dosya),
-                ("satir", satir_no),
-                ("metot", parmak_izi.metot().map_or(Json::Yok, metin)),
+                ("class", Json::Metin(parmak_izi.sinif())),
+                ("file", dosya),
+                ("line", satir_no),
+                ("method", parmak_izi.metot().map_or(Json::Yok, metin)),
             ])
         }
         None => Json::Yok,
     };
 
     vec![
-        ("adet", Json::Sayi(satir.adet)),
-        ("seviye", metin(satir.seviye.ad())),
-        ("ilk", zaman(satir.ilk)),
-        ("son", zaman(satir.son)),
-        ("kalip", metin(&satir.kalip)),
-        ("ornek", metin(&satir.ornek)),
-        ("degiskenler", degiskenler_json(satir)),
-        ("istisna", istisna),
+        ("count", Json::Sayi(satir.adet)),
+        ("level", metin(satir.seviye.ad())),
+        ("first", zaman(satir.ilk)),
+        ("last", zaman(satir.son)),
+        (
+            "pattern",
+            metin(&dil::ingilizce_yer_tutucular(&satir.kalip)),
+        ),
+        ("sample", metin(&satir.ornek)),
+        ("variables", degiskenler_json(satir)),
+        ("exception", istisna),
     ]
 }
 
@@ -404,13 +411,13 @@ fn degiskenler_json(satir: &KalipSatiri) -> Json {
                     .degerler
                     .iter()
                     .map(|(deger, adet)| {
-                        Json::Nesne(vec![("deger", metin(deger)), ("adet", Json::Sayi(*adet))])
+                        Json::Nesne(vec![("value", metin(deger)), ("count", Json::Sayi(*adet))])
                     })
                     .collect();
                 Json::Nesne(vec![
-                    ("konum", Json::Sayi(degisken.konum)),
-                    ("degerler", Json::Dizi(degerler)),
-                    ("baska", Json::Sayi(degisken.baska)),
+                    ("position", Json::Sayi(degisken.konum)),
+                    ("values", Json::Dizi(degerler)),
+                    ("others", Json::Sayi(degisken.baska)),
                 ])
             })
             .collect(),
@@ -514,46 +521,46 @@ mod testler {
     fn ornek_log_raporu_gecerli_ve_dogru() {
         let rapor = ornek_rapor(&RaporAyarlari::default());
 
-        assert_eq!(rapor["dosya"], "ornekler/laravel.log");
-        assert_eq!(rapor["satir_sayisi"], 205);
-        assert_eq!(rapor["zaman_araligi"]["en_eski"], "2026-10-24 08:59:58");
-        assert_eq!(rapor["seviyeler"]["CRITICAL"], 2);
-        assert_eq!(rapor["seviyeler"]["ERROR"], 16);
+        assert_eq!(rapor["file"], "ornekler/laravel.log");
+        assert_eq!(rapor["lines"], 205);
+        assert_eq!(rapor["time_range"]["oldest"], "2026-10-24 08:59:58");
+        assert_eq!(rapor["levels"]["CRITICAL"], 2);
+        assert_eq!(rapor["levels"]["ERROR"], 16);
 
-        let kaliplar = &rapor["kaliplar"];
-        assert_eq!(kaliplar["kalip_sayisi"], 23);
-        assert_eq!(kaliplar["grup_sayisi"], 24);
-        assert_eq!(kaliplar["esik"], 0.7);
-        assert_eq!(kaliplar["konum"], "metot");
-        assert_eq!(kaliplar["siralama"], "onem");
+        let kaliplar = &rapor["patterns"];
+        assert_eq!(kaliplar["drain_patterns"], 23);
+        assert_eq!(kaliplar["groups"], 24);
+        assert_eq!(kaliplar["threshold"], 0.7);
+        assert_eq!(kaliplar["location"], "method");
+        assert_eq!(kaliplar["sort"], "severity");
         // Varsayılan --ilk 10: on satır yazılır, kalanlar sayılır
-        assert_eq!(kaliplar["satirlar"].as_array().unwrap().len(), 10);
-        assert_eq!(kaliplar["gosterilmeyen"], 14);
+        assert_eq!(kaliplar["rows"].as_array().unwrap().len(), 10);
+        assert_eq!(kaliplar["omitted"], 14);
 
         // Zamanlar ve metinler kısaltılmadan, sınıf adı tam haliyle
-        let redis = &kaliplar["satirlar"][0];
-        assert_eq!(redis["seviye"], "CRITICAL");
-        assert_eq!(redis["ilk"], "2026-10-24 17:05:13");
+        let redis = &kaliplar["rows"][0];
+        assert_eq!(redis["level"], "CRITICAL");
+        assert_eq!(redis["first"], "2026-10-24 17:05:13");
         assert_eq!(
-            redis["istisna"]["dosya"],
+            redis["exception"]["file"],
             "app/Http/Middleware/HizSiniri.php"
         );
-        assert_eq!(redis["istisna"]["satir"], 22);
+        assert_eq!(redis["exception"]["line"], 22);
         // Konumun içinde bulunduğu fonksiyon, tam adıyla
         assert_eq!(
-            redis["istisna"]["metot"],
+            redis["exception"]["method"],
             r"App\Http\Middleware\HizSiniri->handle"
         );
 
-        let kayit = &kaliplar["satirlar"][3];
+        let kayit = &kaliplar["rows"][3];
         assert_eq!(
-            kayit["istisna"]["sinif"],
+            kayit["exception"]["class"],
             r"Illuminate\Database\UniqueConstraintViolationException"
         );
-        // Terminal 80 karakterde keser; JSON'daki kalıp tam haliyle 257 karakter
-        let kalip = kayit["kalip"].as_str().unwrap();
-        assert_eq!(kalip.chars().count(), 257);
-        assert!(kalip.ends_with("values <*> <EPOSTA>, <ZAMAN>, <ZAMAN>))"));
+        // Terminal 80 karakterde keser; JSON'daki kalıp tam haliyle 251 karakter
+        let kalip = kayit["pattern"].as_str().unwrap();
+        assert_eq!(kalip.chars().count(), 251);
+        assert!(kalip.ends_with("values <*> <EMAIL>, <TIME>, <TIME>))"));
     }
 
     #[test]
@@ -562,25 +569,25 @@ mod testler {
             ilk: None,
             ..RaporAyarlari::default()
         });
-        let satirlar = rapor["kaliplar"]["satirlar"].as_array().unwrap();
+        let satirlar = rapor["patterns"]["rows"].as_array().unwrap();
         let girisler = satirlar
             .iter()
-            .find(|satir| satir["kalip"] == "Kullanıcı <SAYI> <*> yaptı")
+            .find(|satir| satir["pattern"] == "Kullanıcı <NUM> <*> yaptı")
             .unwrap();
         assert_eq!(
-            girisler["degiskenler"],
+            girisler["variables"],
             serde_json::json!([{
-                "konum": 3,
-                "degerler": [{"deger": "giriş", "adet": 8}, {"deger": "çıkış", "adet": 1}],
-                "baska": 0
+                "position": 3,
+                "values": [{"value": "giriş", "count": 8}, {"value": "çıkış", "count": 1}],
+                "others": 0
             }])
         );
         // Jokersiz kalıpta boş dizi
         let sepet = satirlar
             .iter()
-            .find(|satir| satir["kalip"] == "Sepet önbellekten okundu")
+            .find(|satir| satir["pattern"] == "Sepet önbellekten okundu")
             .unwrap();
-        assert_eq!(sepet["degiskenler"], serde_json::json!([]));
+        assert_eq!(sepet["variables"], serde_json::json!([]));
         // Birden çok joker ve listelenmeyen değerler
         let log: String = (0..7)
             .map(|sira| {
@@ -594,19 +601,19 @@ mod testler {
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         let rapor: serde_json::Value = serde_json::from_slice(&cikti).unwrap();
-        let satir = &rapor["kaliplar"]["satirlar"][0];
-        assert_eq!(satir["kalip"], "Durum: <*> için <*> işlendi");
-        let degiskenler = satir["degiskenler"].as_array().unwrap();
+        let satir = &rapor["patterns"]["rows"][0];
+        assert_eq!(satir["pattern"], "Durum: <*> için <*> işlendi");
+        let degiskenler = satir["variables"].as_array().unwrap();
         assert_eq!(degiskenler.len(), 2);
-        assert_eq!(degiskenler[0]["konum"], 2);
-        assert_eq!(degiskenler[0]["degerler"].as_array().unwrap().len(), 5);
-        assert_eq!(degiskenler[0]["baska"], 2);
-        assert_eq!(degiskenler[1]["konum"], 4);
+        assert_eq!(degiskenler[0]["position"], 2);
+        assert_eq!(degiskenler[0]["values"].as_array().unwrap().len(), 5);
+        assert_eq!(degiskenler[0]["others"], 2);
+        assert_eq!(degiskenler[1]["position"], 4);
         assert_eq!(
-            degiskenler[1]["degerler"],
-            serde_json::json!([{"deger": "OLAY_0", "adet": 4}, {"deger": "OLAY_1", "adet": 3}])
+            degiskenler[1]["values"],
+            serde_json::json!([{"value": "OLAY_0", "count": 4}, {"value": "OLAY_1", "count": 3}])
         );
-        assert_eq!(degiskenler[1]["baska"], 0);
+        assert_eq!(degiskenler[1]["others"], 0);
     }
 
     #[test]
@@ -616,16 +623,16 @@ mod testler {
             ..RaporAyarlari::default()
         };
         let rapor = ornek_rapor(&ayarlar);
-        assert_eq!(rapor["kaliplar"]["konum"], "satir");
-        let redis = &rapor["kaliplar"]["satirlar"][0];
-        assert_eq!(redis["istisna"]["satir"], 22);
-        assert!(redis["istisna"]["metot"].is_null());
+        assert_eq!(rapor["patterns"]["location"], "line");
+        let redis = &rapor["patterns"]["rows"][0];
+        assert_eq!(redis["exception"]["line"], 22);
+        assert!(redis["exception"]["method"].is_null());
     }
 
     #[test]
     fn saat_dilimi_yazilir() {
         // Laravel'in biçiminde saat dilimi yazılmaz: alan null
-        assert!(ornek_rapor(&RaporAyarlari::default())["saat_dilimi"].is_null());
+        assert!(ornek_rapor(&RaporAyarlari::default())["time_zone"].is_null());
         // Yaz saatinden kış saatine geçen bir log: zamanlar ilk dilimde (+03:00)
         let metin = "[2026-10-25T02:30:00+03:00] local.ERROR: Kuyruk 1 dolu\n\
                      [2026-10-25T02:10:00+02:00] local.ERROR: Kuyruk 2 dolu";
@@ -634,22 +641,22 @@ mod testler {
         yaz(&mut cikti, &ozet).unwrap();
         let rapor: serde_json::Value = serde_json::from_slice(&cikti).unwrap();
         assert_eq!(
-            rapor["saat_dilimi"],
+            rapor["time_zone"],
             serde_json::json!({
-                "dilim": "+03:00",
-                "kaynak": "log",
-                "cevrilen_kayit": 1,
-                "cevrilen_dilimler": ["+02:00"],
-                "dilimsiz_kayit": 0
+                "zone": "+03:00",
+                "source": "log",
+                "converted_records": 1,
+                "converted_from": ["+02:00"],
+                "records_without_zone": 0
             })
         );
         assert_eq!(
-            rapor["zaman_araligi"],
-            serde_json::json!({"en_eski": "2026-10-25 02:30:00", "en_yeni": "2026-10-25 03:10:00"})
+            rapor["time_range"],
+            serde_json::json!({"oldest": "2026-10-25 02:30:00", "newest": "2026-10-25 03:10:00"})
         );
-        let satir = &rapor["kaliplar"]["satirlar"][0];
+        let satir = &rapor["patterns"]["rows"][0];
         assert_eq!(
-            (&satir["ilk"], &satir["son"]),
+            (&satir["first"], &satir["last"]),
             (&"2026-10-25 02:30:00".into(), &"2026-10-25 03:10:00".into())
         );
     }
@@ -660,7 +667,7 @@ mod testler {
         use crate::kayit::Seviye;
         assert!(
             ornek_rapor(&RaporAyarlari::default())
-                .get("filtre")
+                .get("filter")
                 .is_none()
         );
         let ayarlar = RaporAyarlari {
@@ -673,135 +680,135 @@ mod testler {
         };
         let rapor = ornek_rapor(&ayarlar);
         assert_eq!(
-            rapor["filtre"],
+            rapor["filter"],
             serde_json::json!({
-                "en_dusuk_seviye": "WARNING",
-                "baslangic": "2026-10-24 16:00:00",
-                "bitis": null,
-                "son_saniye": null,
-                "kayit_sayisi": 13
+                "min_level": "WARNING",
+                "since": "2026-10-24 16:00:00",
+                "until": null,
+                "last_seconds": null,
+                "records": 13
             })
         );
         // Dosyanın kayıt sayısı değişmez; seviyeler filtreye uyanlardır
-        assert_eq!(rapor["kayit_sayisi"], 59);
-        assert!(rapor["seviyeler"].get("INFO").is_none());
+        assert_eq!(rapor["records"], 59);
+        assert!(rapor["levels"].get("INFO").is_none());
         // Alan yetim satırlardan sonra, zaman aralığından önce yazılır
         let ozet = Ozet::metinden("ornekler/laravel.log", ORNEK_LOG, &ayarlar).unwrap();
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         let metin = String::from_utf8(cikti).unwrap();
         let yer = |alan: &str| metin.find(&format!("\n  \"{alan}\": ")).unwrap();
-        assert!(yer("yetim_satir_sayisi") < yer("filtre"));
-        assert!(yer("filtre") < yer("zaman_araligi"));
+        assert!(yer("orphan_lines") < yer("filter"));
+        assert!(yer("filter") < yer("time_range"));
     }
 
     #[test]
     fn karsilastirma_istenirse_yazilir() {
         // İstenmediyse alan hiç yok: normal raporun biçimi değişmez
         let normal = ornek_rapor(&RaporAyarlari::default());
-        assert!(normal.get("karsilastirma").is_none());
+        assert!(normal.get("comparison").is_none());
 
         let rapor = ornek_rapor(&RaporAyarlari {
             karsilastir: ZamanNoktasi::ayristir("16:11"),
             ..RaporAyarlari::default()
         });
-        let karsilastirma = &rapor["karsilastirma"];
-        assert_eq!(karsilastirma["nokta"], "2026-10-24 16:11:00");
+        let karsilastirma = &rapor["comparison"];
+        assert_eq!(karsilastirma["point"], "2026-10-24 16:11:00");
         // `json!`: serde_json'un JSON yazımına benzeyen makrosu; karşılaştırmak için bir değer üretir
         assert_eq!(
-            karsilastirma["once"],
+            karsilastirma["before"],
             serde_json::json!({
-                "baslangic": "2026-10-24 08:59:58",
-                "bitis": "2026-10-24 16:11:00",
-                "saniye": 25_862,
-                "kayit_sayisi": 39
+                "start": "2026-10-24 08:59:58",
+                "end": "2026-10-24 16:11:00",
+                "seconds": 25_862,
+                "records": 39
             })
         );
         assert_eq!(
-            karsilastirma["sonra"],
+            karsilastirma["after"],
             serde_json::json!({
-                "baslangic": "2026-10-24 16:11:00",
-                "bitis": "2026-10-24 18:31:07",
-                "saniye": 8_408,
-                "kayit_sayisi": 20
+                "start": "2026-10-24 16:11:00",
+                "end": "2026-10-24 18:31:07",
+                "seconds": 8_408,
+                "records": 20
             })
         );
-        assert_eq!(karsilastirma["artis_kati"], 2.0);
-        assert_eq!(karsilastirma["anlamlilik"], 0.01);
-        assert_eq!(karsilastirma["en_az_kayit"], 2);
-        assert_eq!(karsilastirma["yeni"]["kalip_sayisi"], 3);
+        assert_eq!(karsilastirma["min_factor"], 2.0);
+        assert_eq!(karsilastirma["significance"], 0.01);
+        assert_eq!(karsilastirma["min_records"], 2);
+        assert_eq!(karsilastirma["new"]["count"], 3);
         // Varsayılan --ilk 10: on bir kaybolanın onu yazılır, biri sayılır
-        let kaybolan = &karsilastirma["kaybolan"];
-        assert_eq!(kaybolan["kalip_sayisi"], 11);
-        assert_eq!(kaybolan["satirlar"].as_array().unwrap().len(), 10);
-        assert_eq!(kaybolan["gosterilmeyen"], 1);
-        assert_eq!(kaybolan["satirlar"][0]["kat"], 0.0);
+        let kaybolan = &karsilastirma["gone"];
+        assert_eq!(kaybolan["count"], 11);
+        assert_eq!(kaybolan["rows"].as_array().unwrap().len(), 10);
+        assert_eq!(kaybolan["omitted"], 1);
+        assert_eq!(kaybolan["rows"][0]["factor"], 0.0);
         // Yenide kat sonsuz; JSON'da sonsuz olmadığı için null
-        assert!(karsilastirma["yeni"]["satirlar"][0]["kat"].is_null());
+        assert!(karsilastirma["new"]["rows"][0]["factor"].is_null());
 
-        let artan = &karsilastirma["artan"]["satirlar"][0];
+        let artan = &karsilastirma["increased"]["rows"][0];
         assert_eq!(
-            (&artan["adet"], &artan["once"], &artan["sonra"]),
+            (&artan["count"], &artan["before"], &artan["after"]),
             (&6.into(), &1.into(), &5.into())
         );
         // scipy.stats.binom.sf(4, 6, 8408 / 34270)
-        let p_degeri = artan["p_degeri"].as_f64().unwrap();
+        let p_degeri = artan["p_value"].as_f64().unwrap();
         assert!((p_degeri - 0.00424335232204597).abs() < 1e-15);
     }
 
     #[test]
     fn ani_artislar_istenirse_yazilir() {
         let normal = ornek_rapor(&RaporAyarlari::default());
-        assert!(normal.get("ani_artislar").is_none());
+        assert!(normal.get("spikes").is_none());
 
         let rapor = ornek_rapor(&RaporAyarlari {
             ani_artis: Some(10),
             ..RaporAyarlari::default()
         });
-        let ani_artislar = &rapor["ani_artislar"];
+        let ani_artislar = &rapor["spikes"];
         // Satırlar dışındaki alanlar: dilimler ve eşikler
         let mut ust_bilgi = ani_artislar.clone();
-        ust_bilgi.as_object_mut().unwrap().remove("satirlar");
+        ust_bilgi.as_object_mut().unwrap().remove("rows");
         assert_eq!(
             ust_bilgi,
             serde_json::json!({
-                "dilim_dakika": 10,
-                "en_dusuk_seviye": "WARNING",
-                "baslangic": "2026-10-24 08:50:00",
-                "bitis": "2026-10-24 18:40:00",
-                "dilim_sayisi": 59,
-                "en_az_dilim": 10,
-                "esik": 3.5,
+                "slice_minutes": 10,
+                "min_level": "WARNING",
+                "start": "2026-10-24 08:50:00",
+                "end": "2026-10-24 18:40:00",
+                "slices": 59,
+                "min_slices": 10,
+                "threshold": 3.5,
                 // Rust 1.0'ı "1" diye yazar; serde_json onu tamsayı olarak okur
-                "en_az_mad": 1,
-                "artis_sayisi": 1,
-                "gosterilmeyen": 0
+                "min_mad": 1,
+                "count": 1,
+                "omitted": 0
             })
         );
 
         // Satır: kalıp satırının alanları, olağan seviye ve artışın kendisi
-        let satir = &ani_artislar["satirlar"][0];
-        assert_eq!(satir["adet"], 6);
-        assert!(satir["kalip"].as_str().unwrap().starts_with("cURL error"));
-        assert_eq!(satir["istisna"]["dosya"], "app/Services/OdemeServisi.php");
-        assert_eq!(satir["olagan"].as_f64(), Some(0.0));
+        let satir = &ani_artislar["rows"][0];
+        assert_eq!(satir["count"], 6);
+        assert!(satir["pattern"].as_str().unwrap().starts_with("cURL error"));
+        assert_eq!(satir["exception"]["file"], "app/Services/OdemeServisi.php");
+        assert_eq!(satir["usual"].as_f64(), Some(0.0));
         assert_eq!(satir["mad"].as_f64(), Some(0.0));
         assert_eq!(
-            satir["artis"],
+            satir["spike"],
             serde_json::json!({
-                "baslangic": "2026-10-24 16:10:00",
-                "bitis": "2026-10-24 16:20:00",
-                "dilim_sayisi": 1,
-                "kayit_sayisi": 6,
-                "seviye": "ERROR",
-                "ilk": "2026-10-24 16:10:02",
-                "son": "2026-10-24 16:16:02",
-                "ornek": "cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat",
-                "zirve": {
-                    "baslangic": "2026-10-24 16:10:00",
-                    "bitis": "2026-10-24 16:20:00",
-                    "adet": 6,
-                    "puan": CARPAN * 6.0
+                "start": "2026-10-24 16:10:00",
+                "end": "2026-10-24 16:20:00",
+                "slices": 1,
+                "records": 6,
+                "level": "ERROR",
+                "first": "2026-10-24 16:10:02",
+                "last": "2026-10-24 16:16:02",
+                "sample": "cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.odeme.test/v1/tahsilat",
+                "peak": {
+                    "start": "2026-10-24 16:10:00",
+                    "end": "2026-10-24 16:20:00",
+                    "count": 6,
+                    "score": CARPAN * 6.0
                 }
             })
         );
@@ -819,38 +826,38 @@ mod testler {
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         let rapor: serde_json::Value = serde_json::from_slice(&cikti).unwrap();
-        let ani_artislar = &rapor["ani_artislar"];
+        let ani_artislar = &rapor["spikes"];
 
         // Üç artışın ikisi yazılır, biri sayılır
-        assert_eq!(ani_artislar["artis_sayisi"], 3);
-        assert_eq!(ani_artislar["gosterilmeyen"], 1);
-        let satirlar = ani_artislar["satirlar"].as_array().unwrap();
+        assert_eq!(ani_artislar["count"], 3);
+        assert_eq!(ani_artislar["omitted"], 1);
+        let satirlar = ani_artislar["rows"].as_array().unwrap();
         assert_eq!(satirlar.len(), 2);
 
         // Üç dilimlik artış: zirve ortadaki dilim
-        assert_eq!(satirlar[0]["kalip"], "Kuyruk dolu");
+        assert_eq!(satirlar[0]["pattern"], "Kuyruk dolu");
         assert_eq!(
-            satirlar[0]["artis"],
+            satirlar[0]["spike"],
             serde_json::json!({
-                "baslangic": "2026-10-24 10:30:00",
-                "bitis": "2026-10-24 10:33:00",
-                "dilim_sayisi": 3,
-                "kayit_sayisi": 22,
-                "seviye": "ERROR",
-                "ilk": "2026-10-24 10:30:30",
-                "son": "2026-10-24 10:32:36",
-                "ornek": "Kuyruk dolu",
-                "zirve": {
-                    "baslangic": "2026-10-24 10:31:00",
-                    "bitis": "2026-10-24 10:32:00",
-                    "adet": 9,
-                    "puan": CARPAN * 9.0
+                "start": "2026-10-24 10:30:00",
+                "end": "2026-10-24 10:33:00",
+                "slices": 3,
+                "records": 22,
+                "level": "ERROR",
+                "first": "2026-10-24 10:30:30",
+                "last": "2026-10-24 10:32:36",
+                "sample": "Kuyruk dolu",
+                "peak": {
+                    "start": "2026-10-24 10:31:00",
+                    "end": "2026-10-24 10:32:00",
+                    "count": 9,
+                    "score": CARPAN * 9.0
                 }
             })
         );
         // Olağan seviyesi 2 olan kalıp
-        assert_eq!(satirlar[1]["kalip"], "Yavaş istek");
-        assert_eq!(satirlar[1]["olagan"].as_f64(), Some(2.0));
+        assert_eq!(satirlar[1]["pattern"], "Yavaş istek");
+        assert_eq!(satirlar[1]["usual"].as_f64(), Some(2.0));
         assert_eq!(satirlar[1]["mad"].as_f64(), Some(0.0));
     }
 
@@ -864,11 +871,11 @@ mod testler {
         let mut cikti = Vec::new();
         yaz(&mut cikti, &ozet).unwrap();
         let rapor: serde_json::Value = serde_json::from_slice(&cikti).unwrap();
-        let ani_artislar = &rapor["ani_artislar"];
-        assert!(ani_artislar["baslangic"].is_null());
-        assert!(ani_artislar["bitis"].is_null());
-        assert_eq!(ani_artislar["dilim_sayisi"], 0);
-        assert_eq!(ani_artislar["satirlar"], serde_json::json!([]));
+        let ani_artislar = &rapor["spikes"];
+        assert!(ani_artislar["start"].is_null());
+        assert!(ani_artislar["end"].is_null());
+        assert_eq!(ani_artislar["slices"], 0);
+        assert_eq!(ani_artislar["rows"], serde_json::json!([]));
     }
 
     #[test]
@@ -877,27 +884,27 @@ mod testler {
             ilk: None,
             ..RaporAyarlari::default()
         });
-        let satirlar = rapor["kaliplar"]["satirlar"].as_array().unwrap();
+        let satirlar = rapor["patterns"]["rows"].as_array().unwrap();
         assert_eq!(satirlar.len(), 24);
-        assert_eq!(rapor["kaliplar"]["gosterilmeyen"], 0);
+        assert_eq!(rapor["patterns"]["omitted"], 0);
 
         // Kuyruk hatası tamamen vendor içinde: istisna var, konumu yok
         let kuyruk = satirlar
             .iter()
-            .find(|satir| satir["kalip"].as_str().unwrap().contains("FaturaGonder"))
+            .find(|satir| satir["pattern"].as_str().unwrap().contains("FaturaGonder"))
             .unwrap();
         assert_eq!(
-            kuyruk["istisna"]["sinif"],
+            kuyruk["exception"]["class"],
             r"Illuminate\Queue\MaxAttemptsExceededException"
         );
-        assert!(kuyruk["istisna"]["dosya"].is_null());
-        assert!(kuyruk["istisna"]["satir"].is_null());
+        assert!(kuyruk["exception"]["file"].is_null());
+        assert!(kuyruk["exception"]["line"].is_null());
 
         // İstisnasız bir kayıt
         let giris = satirlar
             .iter()
-            .find(|satir| satir["kalip"].as_str().unwrap().starts_with("Kullanıcı"))
+            .find(|satir| satir["pattern"].as_str().unwrap().starts_with("Kullanıcı"))
             .unwrap();
-        assert!(giris["istisna"].is_null());
+        assert!(giris["exception"].is_null());
     }
 }

@@ -3,8 +3,9 @@
 Bu belge veylog'un bir log dosyasını adım adım nasıl özetlediğini, her adımın gerekçesini
 ve gerçek loglarda nasıl sınandığını anlatır. Örnekler depodaki kurgusal loglardandır
 (`ornekler/`). Karşılaştırma ve ani artışların istatistiği ayrı bir belgede:
-[karşılaştırma ve ani artışlar](karsilastirma-ve-ani-artis.md). Örneklerdeki çıktılar Türkçe arayüzledir; varsayılan arayüz İngilizce olduğu için Türkçe
-çıktı `--dil tr` ya da `VEYLOG_LANG=tr` ile alınır.
+[karşılaştırma ve ani artışlar](karsilastirma-ve-ani-artis.md). Örneklerdeki çıktılar Türkçe
+arayüzledir; varsayılan arayüz İngilizce olduğu için Türkçe çıktı `--dil tr` ya da
+`VEYLOG_LANG=tr` ile alınır.
 
 ```text
 laravel.log
@@ -1004,7 +1005,7 @@ dizisini tutar. Tahmin Ertl'in sapmasız tahmincisiyle hesaplanır
 ([2017](https://arxiv.org/abs/1702.01284)); asıl formül küçük sayılarda saptığı için başka
 araçlar deneysel düzeltme tabloları kullanır, bu tahminci kullanmaz. Standart hata %0,41;
 1'den 18 milyona kadar denenen sayılarda en büyük hata %0,6 çıktı. Tahmin olan sayının önünde
-`≈` yazar; JSON'da `ham_mesaj_yaklasik` alanı `true` olur.
+`≈` yazar; JSON'da `distinct_messages_estimated` alanı `true` olur.
 
 Dev satırlara ve kayıtlara karşı sınırlar:
 
@@ -1168,11 +1169,11 @@ denetler.
   de okur (`2sa`, `2h`).
 - Tekil ve çoğul: Türkçede sayıdan sonra ad çekimsizdir (`1 kayıt`, `3 kayıt`), İngilizcede
   değildir (`1 record`, `3 records`).
-- Yer tutucular: kalıplar depoda Türkçe adlarla (`<SAYI>`) saklanır ve kümelenir; metin ve
-  Markdown çıktısı onları İngilizcede `<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>` diye gösterir.
+- Yer tutucular: kalıplar depoda Türkçe adlarla (`<SAYI>`) saklanır ve kümelenir; İngilizce
+  arayüz ve JSON onları `<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>` diye gösterir.
 
-JSON çıktısı her dilde aynıdır: alan adları, değerler (`"konum": "metot"`) ve yer tutucular
-değişmez. JSON'u okuyan bir betik, onu çalıştıranın dilinden bağımsız çalışmalıdır. Seviye
+JSON çıktısı her dilde aynıdır ve İngilizcedir: alan adları, değerler
+(`"location": "method"`) ve yer tutucular değişmez. JSON'u okuyan bir betik, onu çalıştıranın dilinden bağımsız çalışmalıdır. Seviye
 adları (`ERROR`) ve zamanlar zaten iki dilde aynıdır. Logun kendi içeriği (mesajlar, örnekler)
 çevrilmez.
 

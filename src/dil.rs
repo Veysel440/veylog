@@ -6,9 +6,9 @@
 //! iş parçacığında üretilir. Testler kendi iş parçacıklarında çalışır: bir testin seçtiği dil
 //! ötekileri etkilemez.
 //!
-//! Değişmeyenler: JSON çıktısı (alan adları, `metot` gibi değerler ve `<SAYI>` gibi yer
-//! tutucular) dilden bağımsızdır; betikler dil değişince bozulmasın. Seviye adları (`ERROR`) ve
-//! zamanlar her dilde aynıdır.
+//! Değişmeyenler: JSON çıktısı (alan adları, `method` gibi değerler ve `<NUM>` gibi yer
+//! tutucular) dilden bağımsızdır ve İngilizcedir; betikler dil değişince bozulmasın. Seviye
+//! adları (`ERROR`) ve zamanlar her dilde aynıdır.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -169,8 +169,8 @@ pub fn liste<S: AsRef<str>>(ogeler: &[S]) -> String {
     }
 }
 
-/// Maskelemenin yer tutucuları (Türkçe adlarıyla depoda ve JSON'da) ve İngilizce adları.
-/// `<URL>`, `<UUID>` ve `<IP>` iki dilde aynıdır.
+/// Maskelemenin yer tutucuları: Türkçe adları (depoda ve Türkçe arayüzde) ve İngilizce adları
+/// (İngilizce arayüzde ve JSON'da). `<URL>`, `<UUID>` ve `<IP>` iki dilde aynıdır.
 const YER_TUTUCULAR: [(&str, &str); 4] = [
     ("<SAYI>", "<NUM>"),
     ("<YOL>", "<PATH>"),
@@ -179,9 +179,18 @@ const YER_TUTUCULAR: [(&str, &str); 4] = [
 ];
 
 /// Kalıptaki yer tutucuları seçili dilde gösterir: İngilizcede `<SAYI>` → `<NUM>`. Kalıp
-/// Türkçe adlarla saklanır ve kümelenir; çeviri yalnızca metin ve Markdown çıktısındadır.
+/// Türkçe adlarla saklanır ve kümelenir; çeviri yalnızca çıktıdadır.
 pub fn yer_tutucular(kalip: &str) -> Cow<'_, str> {
-    if simdiki() == Dil::Tr || !kalip.contains('<') {
+    if simdiki() == Dil::Tr {
+        return Cow::Borrowed(kalip);
+    }
+    ingilizce_yer_tutucular(kalip)
+}
+
+/// Kalıptaki yer tutucuların İngilizce adları, seçili dilden bağımsız: JSON her dilde bunları
+/// yazar.
+pub fn ingilizce_yer_tutucular(kalip: &str) -> Cow<'_, str> {
+    if !kalip.contains('<') {
         return Cow::Borrowed(kalip);
     }
     let mut sonuc = Cow::Borrowed(kalip);

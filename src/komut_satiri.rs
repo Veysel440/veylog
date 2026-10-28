@@ -699,7 +699,7 @@ Examples:
   veylog storage/logs/laravel.log
   veylog --threshold 0.8 --top 20 storage/logs/laravel.log
   veylog --sort newest --all storage/logs/laravel.log
-  veylog --format json --all storage/logs/laravel.log | jq '.kaliplar.satirlar[0]'
+  veylog --format json --all storage/logs/laravel.log | jq '.patterns.rows[0]'
   veylog --format markdown storage/logs/laravel.log > report.md
   veylog --compare 15:00 storage/logs/laravel.log
   veylog --spikes 1 storage/logs/laravel.log
@@ -796,7 +796,7 @@ ve --bitis zamanları raporun saat dilimindedir. JSON çıktısı her dilde ayn�
   veylog --dil tr storage/logs/laravel.log
   veylog --esik 0,8 --ilk 20 storage/logs/laravel.log
   veylog --siralama yeni --hepsi storage/logs/laravel.log
-  veylog --bicim json --hepsi storage/logs/laravel.log | jq '.kaliplar.satirlar[0]'
+  veylog --bicim json --hepsi storage/logs/laravel.log | jq '.patterns.rows[0]'
   veylog --bicim markdown storage/logs/laravel.log > rapor.md
   veylog --karsilastir 15:00 storage/logs/laravel.log
   veylog --ani-artis 1 storage/logs/laravel.log

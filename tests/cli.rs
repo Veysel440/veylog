@@ -182,8 +182,8 @@ fn standart_girdiden_okunur() {
     let cikti = surec.wait_with_output().unwrap();
     assert!(cikti.status.success());
     let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
-    assert_eq!(rapor["dosya"], "<standart girdi>");
-    assert_eq!(rapor["kayit_sayisi"], 59);
+    assert_eq!(rapor["file"], "<standard input>");
+    assert_eq!(rapor["records"], 59);
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn eksi_sifir_esik_sifir_yazilir() {
     let cikti = veylog(&["--esik", "-0", "-b", "json", "ornekler/laravel.log"]);
     assert!(cikti.status.success());
     let stdout = metin(&cikti.stdout);
-    assert!(stdout.contains("\"esik\": 0,\n"), "{stdout}");
+    assert!(stdout.contains("\"threshold\": 0,\n"), "{stdout}");
 }
 
 #[test]
@@ -311,12 +311,12 @@ fn json_bicimi_gecerli_ve_tam() {
     // Başka bir programın yapacağı gibi: çıktıyı bir JSON ayrıştırıcısına ver
     let rapor: serde_json::Value =
         serde_json::from_slice(&cikti.stdout).expect("geçerli JSON değil");
-    assert_eq!(rapor["surum"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(rapor["kayit_sayisi"], 59);
-    assert_eq!(rapor["kaliplar"]["grup_sayisi"], 24);
+    assert_eq!(rapor["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(rapor["records"], 59);
+    assert_eq!(rapor["patterns"]["groups"], 24);
     // --hepsi: bütün satırlar, gösterilmeyen yok
-    assert_eq!(rapor["kaliplar"]["satirlar"].as_array().unwrap().len(), 24);
-    assert_eq!(rapor["kaliplar"]["gosterilmeyen"], 0);
+    assert_eq!(rapor["patterns"]["rows"].as_array().unwrap().len(), 24);
+    assert_eq!(rapor["patterns"]["omitted"], 0);
 }
 
 #[test]
@@ -388,11 +388,11 @@ fn logdaki_kontrol_karakterleri_terminale_ulasmaz() {
 
     // JSON ham mesajı kaybetmez: kaçışları çözülünce logdaki metnin aynısı çıkar
     let rapor: serde_json::Value = serde_json::from_slice(&ciktilar[1].1.stdout).unwrap();
-    let ornekler: Vec<&str> = rapor["kaliplar"]["satirlar"]
+    let ornekler: Vec<&str> = rapor["patterns"]["rows"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|satir| satir["ornek"].as_str().unwrap())
+        .map(|satir| satir["sample"].as_str().unwrap())
         .collect();
     assert!(
         ornekler.contains(&"\u{1b}]0;başlık\u{7}Ödeme tamam\rHATA"),
@@ -453,13 +453,10 @@ fn karsilastirma_raporu() {
     let cikti = veylog(&["-b", "json", "-k", "16:11", "ornekler/laravel.log"]);
     assert!(cikti.status.success());
     let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
-    let artan = &rapor["karsilastirma"]["artan"];
-    assert_eq!(artan["kalip_sayisi"], 1);
+    let artan = &rapor["comparison"]["increased"];
+    assert_eq!(artan["count"], 1);
     assert_eq!(
-        (
-            &artan["satirlar"][0]["once"],
-            &artan["satirlar"][0]["sonra"]
-        ),
+        (&artan["rows"][0]["before"], &artan["rows"][0]["after"]),
         (&1.into(), &5.into())
     );
 }
@@ -556,7 +553,7 @@ fn saat_dilimi_verilirse_zamanlar_ona_cevrilir() {
     let json = metin(&cikti.stdout);
     assert!(
         json.contains(
-            "\"zaman_araligi\": {\n    \"en_eski\": \"2026-10-24 12:00:00\",\n    \"en_yeni\": \"2026-10-24 14:45:00\"\n  },\n  \"saat_dilimi\": {\n    \"dilim\": \"+03:00\",\n    \"kaynak\": \"secenek\",\n    \"cevrilen_kayit\": 2,\n    \"cevrilen_dilimler\": [\n      \"+00:00\"\n    ],\n    \"dilimsiz_kayit\": 0\n  },"
+            "\"time_range\": {\n    \"oldest\": \"2026-10-24 12:00:00\",\n    \"newest\": \"2026-10-24 14:45:00\"\n  },\n  \"time_zone\": {\n    \"zone\": \"+03:00\",\n    \"source\": \"option\",\n    \"converted_records\": 2,\n    \"converted_from\": [\n      \"+00:00\"\n    ],\n    \"records_without_zone\": 0\n  },"
         ),
         "{json}"
     );
@@ -624,7 +621,7 @@ fn saat_dilimi_yazilmamis_logda_dilim_satiri_yok() {
     let cikti = veylog(&["ornekler/laravel.log"]);
     assert!(!metin(&cikti.stdout).contains("Saat dilimi"));
     let cikti = veylog(&["--bicim", "json", "ornekler/laravel.log"]);
-    assert!(metin(&cikti.stdout).contains("\n  \"saat_dilimi\": null,\n"));
+    assert!(metin(&cikti.stdout).contains("\n  \"time_zone\": null,\n"));
     // Verilirse zamanlar olduğu gibi kalır; rapor bunu söyler
     let cikti = veylog(&["--saat-dilimi", "+03:00", "ornekler/laravel.log"]);
     let stdout = metin(&cikti.stdout);
@@ -665,9 +662,9 @@ fn ani_artis_raporu() {
     let cikti = veylog(&["-b", "json", "-a", "10", "ornekler/laravel.log"]);
     assert!(cikti.status.success());
     let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
-    let ani_artislar = &rapor["ani_artislar"];
-    assert_eq!(ani_artislar["artis_sayisi"], 1);
-    assert_eq!(ani_artislar["satirlar"][0]["artis"]["zirve"]["adet"], 6);
+    let ani_artislar = &rapor["spikes"];
+    assert_eq!(ani_artislar["count"], 1);
+    assert_eq!(ani_artislar["rows"][0]["spike"]["peak"]["count"], 6);
 }
 
 /// İki saatlik bir log: "Kuyruk <SAYI> dolu" on dakikada bir WARNING, 11:00'de 8 WARNING'lik bir
@@ -840,11 +837,11 @@ fn filtreler_raporu_daraltir() {
     ]);
     assert!(cikti.status.success());
     let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
-    assert_eq!(rapor["filtre"]["baslangic"], "2026-10-24 16:00:00");
-    assert_eq!(rapor["filtre"]["bitis"], "2026-10-24 17:00:00");
-    assert_eq!(rapor["kayit_sayisi"], 59);
-    assert_eq!(rapor["zaman_araligi"]["en_eski"], "2026-10-24 16:02:44");
-    assert_eq!(rapor["zaman_araligi"]["en_yeni"], "2026-10-24 16:58:12");
+    assert_eq!(rapor["filter"]["since"], "2026-10-24 16:00:00");
+    assert_eq!(rapor["filter"]["until"], "2026-10-24 17:00:00");
+    assert_eq!(rapor["records"], 59);
+    assert_eq!(rapor["time_range"]["oldest"], "2026-10-24 16:02:44");
+    assert_eq!(rapor["time_range"]["newest"], "2026-10-24 16:58:12");
 }
 
 #[test]
@@ -995,20 +992,20 @@ fn json_satirlari_ve_windows_yollari() {
 
     let cikti = veylog(&["-b", "json", "--hepsi", "ornekler/karisik.log"]);
     let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
-    let curl = rapor["kaliplar"]["satirlar"]
+    let curl = rapor["patterns"]["rows"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|satir| satir["kalip"].as_str().unwrap().starts_with("cURL"))
+        .find(|satir| satir["pattern"].as_str().unwrap().starts_with("cURL"))
         .unwrap();
-    assert_eq!(curl["adet"], 3);
+    assert_eq!(curl["count"], 3);
     assert_eq!(
-        curl["istisna"],
+        curl["exception"],
         serde_json::json!({
-            "sinif": r"Illuminate\Http\Client\ConnectionException",
-            "dosya": "app/Services/OdemeServisi.php",
-            "satir": 22,
-            "metot": null
+            "class": r"Illuminate\Http\Client\ConnectionException",
+            "file": "app/Services/OdemeServisi.php",
+            "line": 22,
+            "method": null
         })
     );
 }
@@ -1052,19 +1049,19 @@ fn view_hatalari_middleware_ve_kok() {
     // JSON'da şablonun satırı yok: null
     let cikti = veylog(&["-b", "json", "--hepsi", "ornekler/karisik.log"]);
     let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
-    let route = rapor["kaliplar"]["satirlar"]
+    let route = rapor["patterns"]["rows"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|satir| satir["kalip"].as_str().unwrap().starts_with("Route"))
+        .find(|satir| satir["pattern"].as_str().unwrap().starts_with("Route"))
         .unwrap();
     assert_eq!(
-        route["istisna"],
+        route["exception"],
         serde_json::json!({
-            "sinif": r"Illuminate\View\ViewException",
-            "dosya": "resources/views/panel/kampanyalar.blade.php",
-            "satir": null,
-            "metot": null
+            "class": r"Illuminate\View\ViewException",
+            "file": "resources/views/panel/kampanyalar.blade.php",
+            "line": null,
+            "method": null
         })
     );
 
@@ -1109,11 +1106,11 @@ fn istisna_metni_baglamdaki_istisnayla_birlesir() {
         "{stdout}"
     );
     let rapor: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
-    let satir = &rapor["kaliplar"]["satirlar"][0];
-    assert_eq!(satir["adet"], 2);
-    assert_eq!(satir["istisna"]["sinif"], "RuntimeException");
-    assert_eq!(satir["istisna"]["dosya"], "app/Services/OdemeServisi.php");
-    assert_eq!(satir["istisna"]["satir"], 64);
+    let satir = &rapor["patterns"]["rows"][0];
+    assert_eq!(satir["count"], 2);
+    assert_eq!(satir["exception"]["class"], "RuntimeException");
+    assert_eq!(satir["exception"]["file"], "app/Services/OdemeServisi.php");
+    assert_eq!(satir["exception"]["line"], 64);
 }
 
 /// Bir dağıtımı aşan log. Dağıtımdan sonra `SiparisServisi.php`'nin başına dört satır
@@ -1208,20 +1205,20 @@ fn satirlar_kaysa_da_hata_ayni_kalir() {
     );
 
     let rapor: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(rapor["kaliplar"]["konum"], "metot");
-    let kargo = &rapor["kaliplar"]["satirlar"][0];
-    assert_eq!(kargo["adet"], 3);
+    assert_eq!(rapor["patterns"]["location"], "method");
+    let kargo = &rapor["patterns"]["rows"][0];
+    assert_eq!(kargo["count"], 3);
     assert_eq!(
-        kargo["istisna"],
+        kargo["exception"],
         serde_json::json!({
-            "sinif": "ErrorException",
-            "dosya": "app/Services/SiparisServisi.php",
-            "satir": 38,
-            "metot": r"App\Services\SiparisServisi->kargoUcreti"
+            "class": "ErrorException",
+            "file": "app/Services/SiparisServisi.php",
+            "line": 38,
+            "method": r"App\Services\SiparisServisi->kargoUcreti"
         })
     );
     assert_eq!(
-        rapor["kaliplar"]["satirlar"][1]["istisna"]["metot"],
+        rapor["patterns"]["rows"][1]["exception"]["method"],
         r"App\Services\SiparisServisi->{closure:olustur()}"
     );
 
@@ -1394,8 +1391,8 @@ fn kayitsiz_logda_filtre_sinirlari_1970_olmaz() {
     }
     let cikti = veylog(&["-b", "json", "--son", "1sa", yol]);
     let json: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
-    assert_eq!(json["filtre"]["baslangic"], serde_json::Value::Null);
-    assert_eq!(json["filtre"]["son_saniye"], 3600);
+    assert_eq!(json["filter"]["since"], serde_json::Value::Null);
+    assert_eq!(json["filter"]["last_seconds"], 3600);
     fs::remove_file(&bos).ok();
 }
 
@@ -1513,28 +1510,28 @@ fn kategorik_konumlar_raporda_degerleriyle_gorunur() {
     let cikti = veylog(&["-b", "json", "ornekler/kuyruk.log"]);
     assert!(cikti.status.success());
     let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
-    let satirlar = rapor["kaliplar"]["satirlar"].as_array().unwrap();
+    let satirlar = rapor["patterns"]["rows"].as_array().unwrap();
     let isler = satirlar
         .iter()
-        .find(|satir| satir["kalip"] == "İş tamamlandı: <*>")
+        .find(|satir| satir["pattern"] == "İş tamamlandı: <*>")
         .unwrap();
     assert_eq!(
-        isler["degiskenler"],
+        isler["variables"],
         serde_json::json!([{
-            "konum": 3,
-            "degerler": [
-                {"deger": "App\\Jobs\\FaturaGonder", "adet": 2},
-                {"deger": "App\\Jobs\\EpostaGonder", "adet": 1},
-                {"deger": "App\\Jobs\\StokGuncelle", "adet": 1}
+            "position": 3,
+            "values": [
+                {"value": "App\\Jobs\\FaturaGonder", "count": 2},
+                {"value": "App\\Jobs\\EpostaGonder", "count": 1},
+                {"value": "App\\Jobs\\StokGuncelle", "count": 1}
             ],
-            "baska": 0
+            "others": 0
         }])
     );
     let kuyruk = satirlar
         .iter()
-        .find(|satir| satir["kalip"] == "Kuyruk durdu: emails")
+        .find(|satir| satir["pattern"] == "Kuyruk durdu: emails")
         .unwrap();
-    assert_eq!(kuyruk["degiskenler"], serde_json::json!([]));
+    assert_eq!(kuyruk["variables"], serde_json::json!([]));
 
     // Markdown: değerler sütunu, her değer kod olarak
     let cikti = veylog(&["-b", "markdown", "ornekler/kuyruk.log"]);
@@ -2296,7 +2293,7 @@ fn json_her_dilde_ayni() {
     let turkce = girdiyle(&["-b", "json", "-"], &log, &[]);
     let ingilizce = girdiyle(&["--lang", "en", "-b", "json", "-"], &log, &[]);
     assert_eq!(metin(&ingilizce.stdout), metin(&turkce.stdout));
-    assert!(metin(&turkce.stdout).contains("\"dosya\": \"<standart girdi>\""));
+    assert!(metin(&turkce.stdout).contains("\"file\": \"<standard input>\""));
     let metin_raporu = girdiyle(&["--lang", "en", "-"], &log, &[]);
     assert!(metin(&metin_raporu.stdout).starts_with("<standard input>: 205 lines\n"));
 }

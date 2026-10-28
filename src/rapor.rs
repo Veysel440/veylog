@@ -57,7 +57,7 @@ impl Siralama {
     /// Bütün sıralamalar. Yardım metni ve hata mesajları bu listeden üretilir.
     pub const HEPSI: [Siralama; 3] = [Siralama::Onem, Siralama::Adet, Siralama::Yeni];
 
-    /// Komut satırındaki Türkçe adı; JSON'da da bu yazılır.
+    /// Komut satırındaki Türkçe adı.
     pub fn ad(self) -> &'static str {
         match self {
             Siralama::Onem => "onem",
@@ -66,7 +66,7 @@ impl Siralama {
         }
     }
 
-    /// Komut satırındaki İngilizce adı.
+    /// Komut satırındaki İngilizce adı; JSON'da da bu yazılır.
     pub fn ingilizce_ad(self) -> &'static str {
         match self {
             Siralama::Onem => "severity",

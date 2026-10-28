@@ -296,8 +296,9 @@ setx VEYLOG_LANG tr
 
 Placeholders follow the interface language (`<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>` in English;
 `<SAYI>`, `<YOL>`, `<EPOSTA>`, `<ZAMAN>` in Turkish); JSON output is the same in both
-languages. Every option and every value also has a Turkish name, accepted in either language.
-The detailed documentation is in Turkish and uses these names:
+languages, with English field names and placeholders. Every option and every value also has a
+Turkish name, accepted in either language. The detailed documentation is in Turkish and uses
+these names:
 
 | English | Turkish | English | Turkish |
 |---|---|---|---|
@@ -477,7 +478,7 @@ Patterns: 11 distinct messages → 11 after masking → 6 Drain patterns (thresh
 ```
 
 The five most frequent values of a position are listed and the rest are summarized as
-`+N more`. In JSON, the `degiskenler` array of each row carries the same information
+`+N more`. In JSON, the `variables` array of each row carries the same information
 ([output formats](docs/cikti-bicimleri.md), in Turkish). Which tokens count as code-like, and
 why queue names do not merge, is explained under
 [categorical positions](docs/nasil-calisir.md#kategorik-konumlar) (in Turkish).
@@ -486,23 +487,20 @@ why queue names do not merge, is explained under
 
 ```bash
 # Errors and their location in application code, tab-separated
-veylog --format json --all laravel.log | jq -r '.kaliplar.satirlar[]
-  | select(.seviye == "CRITICAL" or .seviye == "ERROR")
-  | "\(.adet)\t\(.istisna.dosya // "-")\t\(.istisna.metot // "-")\t\(.kalip)"'
+veylog --format json --all laravel.log | jq -r '.patterns.rows[]
+  | select(.level == "CRITICAL" or .level == "ERROR")
+  | "\(.count)\t\(.exception.file // "-")\t\(.exception.method // "-")\t\(.pattern)"'
 
 # CI step: fail if the log contains a CRITICAL record
-veylog --format json laravel.log | jq -e '.seviyeler.CRITICAL // 0 | . == 0'
+veylog --format json laravel.log | jq -e '.levels.CRITICAL // 0 | . == 0'
 
 # CI step: fail if there is a spike
-veylog --format json --spikes 5 laravel.log | jq -e '.ani_artislar.artis_sayisi == 0'
+veylog --format json --spikes 5 laravel.log | jq -e '.spikes.count == 0'
 ```
 
-JSON keys are in Turkish: `kaliplar.satirlar` is the pattern table, `seviye` the level, `adet`
-the count, `kalip` the pattern, `istisna` the exception (`dosya` file, `metot` method),
-`seviyeler` the level counts and `ani_artislar.artis_sayisi` the number of spikes. Every field
-is listed in [output formats](docs/cikti-bicimleri.md) (in Turkish). `--format markdown`
-writes the same summary as tables that can be pasted into GitHub issues and pull request
-descriptions.
+Every field is described in [output formats](docs/cikti-bicimleri.md) (in Turkish; the field
+names are English). `--format markdown` writes the same summary as tables that can be pasted
+into GitHub issues and pull request descriptions.
 
 ## How it works
 

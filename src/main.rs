@@ -46,9 +46,9 @@ fn standart_girdi_adi() -> &'static str {
     dil::sec("<standart girdi>", "<standard input>")
 }
 
-/// JSON çıktısında standart girdinin adı: JSON dilden bağımsızdır, her dilde (0.1.0'daki gibi)
+/// JSON çıktısında standart girdinin adı: JSON dilden bağımsızdır ve İngilizcedir, her dilde
 /// bu yazılır.
-const STANDART_GIRDI_JSON: &str = "<standart girdi>";
+const STANDART_GIRDI_JSON: &str = "<standard input>";
 
 /// Okuma tamponunun boyu. Satırlar tampondan kopyalanmadan bulunur; büyük bir tampon daha az
 /// sistem çağrısı demektir.

@@ -436,7 +436,7 @@ Kalıplar: 11 farklı mesaj → maskeleyince 11 → Drain ile 6 kalıp (eşik 0,
 ```
 
 Bir konumun en sık beş değeri yazılır, kalanı `+N başka` olur. JSON'da her satırın
-`degiskenler` dizisi aynı bilgiyi taşır ([çıktı biçimleri](docs/cikti-bicimleri.md)).
+`variables` dizisi aynı bilgiyi taşır ([çıktı biçimleri](docs/cikti-bicimleri.md)).
 Hangi belirteçlerin kodsal sayıldığı ve neden kuyruk adlarının birleşmediği
 [kategorik konumlar](docs/nasil-calisir.md#kategorik-konumlar) bölümünde.
 
@@ -444,15 +444,15 @@ Hangi belirteçlerin kodsal sayıldığı ve neden kuyruk adlarının birleşmed
 
 ```bash
 # Hatalar ve uygulama kodundaki yerleri, sekmeyle ayrılmış
-veylog --bicim json --hepsi laravel.log | jq -r '.kaliplar.satirlar[]
-  | select(.seviye == "CRITICAL" or .seviye == "ERROR")
-  | "\(.adet)\t\(.istisna.dosya // "-")\t\(.istisna.metot // "-")\t\(.kalip)"'
+veylog --bicim json --hepsi laravel.log | jq -r '.patterns.rows[]
+  | select(.level == "CRITICAL" or .level == "ERROR")
+  | "\(.count)\t\(.exception.file // "-")\t\(.exception.method // "-")\t\(.pattern)"'
 
 # CI adımı: logda CRITICAL varsa başarısız ol
-veylog --bicim json laravel.log | jq -e '.seviyeler.CRITICAL // 0 | . == 0'
+veylog --bicim json laravel.log | jq -e '.levels.CRITICAL // 0 | . == 0'
 
 # CI adımı: bir ani artış varsa başarısız ol
-veylog --bicim json --ani-artis 5 laravel.log | jq -e '.ani_artislar.artis_sayisi == 0'
+veylog --bicim json --ani-artis 5 laravel.log | jq -e '.spikes.count == 0'
 ```
 
 `--bicim markdown` aynı özeti GitHub issue ve PR açıklamalarına yapıştırılabilecek tablolar
