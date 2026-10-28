@@ -8,6 +8,7 @@ ve gerçek loglarda nasıl sınandığını anlatır. Örnekler depodaki kurgusa
 ```text
 laravel.log
   → kayıtlara ayır    59 kayıt, 45 farklı mesaj
+  → saat dilimi       zamanlar tek bir dilime çevrilir (--saat-dilimi)
   → filtre            isteğe bağlı (--seviye, --baslangic, --bitis, --son)
   → maskele           27 farklı mesaj
   → Drain             23 kalıp
@@ -32,8 +33,10 @@ ait olmayan ilk satırlar "yetim satır" olarak ayrıca sayılır. Her satır ta
 gider: başlık, devam ya da yetim.
 
 - Zaman Laravel'in biçiminde (`2026-10-24 14:03:11`) ya da Monolog'un varsayılanı ISO 8601
-  biçiminde olabilir; saniyeden sonra kesir ve saat dilimi gelebilir.
-- Biçimi doğru ama takvimde olmayan bir zaman (`2026-02-30`, `24:00:00`) başlık sayılmaz.
+  biçiminde olabilir; saniyeden sonra kesir ve saat dilimi (`Z`, `+03:00`, `+0300`) gelebilir
+  ([saat dilimleri](#saat-dilimleri)).
+- Biçimi doğru ama takvimde olmayan bir zaman (`2026-02-30`, `24:00:00`) ya da saat dilimi
+  (`+25:00`) başlık sayılmaz.
   Laravel böyle bir zaman yazmaz; ama mesajlar satır sonu içerebildiği için loglanan bir
   kullanıcı girdisindeki bir satır başlık gibi görünebilir. Kabul edilseydi süre hesapları
   bozulurdu: 30 Şubat sıralamada 1 Mart'tan önce gelir ama saniyesi 2 Mart'ınkidir.
@@ -407,6 +410,55 @@ konum gösterilirken kaçış çözülür ve ayraç `/` olur:
 konumu böylece migration dosyası olarak bulundu; önceden vendor'daki `Connection.php:822`
 görünüyordu.
 
+## Saat dilimleri
+
+Laravel'in varsayılan biçimi saat dilimi yazmaz (`2026-10-24 14:03:11`); zaman uygulamanın
+saat dilimindedir (`config/app.php`'deki `timezone`). Monolog'un ISO 8601 biçimi ve JSON
+satırları yazar (`2026-10-24T14:03:11.123456+03:00`). Bir logda saat dilimleri karışabilir:
+
+- Yaz saatine geçişi kapsayan bir log: `+03:00` ile yazılmış kayıtların ardından `+02:00`
+  ile yazılmışlar gelir. Saat dilimi yok sayılsa 02:30'da yazılan bir kayıt 03:10'dakinden
+  sonra sıralanırdı; gerçekte ondan 40 dakika öncedir.
+- Saat dilimi değiştirilmiş bir uygulama ya da farklı dilimlerdeki sunucuların birleştirilmiş
+  logları.
+
+Bütün zamanlar bu yüzden tek bir dilimde, raporun saat diliminde karşılaştırılır ve
+gösterilir. Raporun dilimi `--saat-dilimi` ile verilir (`+03:00`, `-05:30`, `Z`); verilmezse
+logda saat dilimi yazılı ilk kaydınkidir. Her kaydın zamanı okunurken bu dilime çevrilir:
+
+```text
+zaman (raporun diliminde) = yazılan zaman − kaydın dilimi + raporun dilimi
+2026-10-25T02:10:00+02:00 → 02:10 − 2 sa + 3 sa = 03:10 (+03:00'da)
+```
+
+Saat dilimi yazılmamış bir kayıt raporun diliminde yazılmış sayılır: gerçek dilimini bilmenin
+yolu yoktur. Raporun dilimi verilmediyse ilk dilimli kayıtta belirlenir ve bir daha değişmez;
+ondan önce gelen dilimsiz kayıtlar zaten bu dilimde sayılacakları için çevrilmeleri gerekmez.
+Böylece her kayıt geldiği anda çevrilir; logun tamamını önce okumak gerekmez.
+
+Raporda saat dilimi ayrı bir satırdadır; kaç kaydın çevrildiği de yazar:
+
+```text
+  Zaman aralığı : 2026-10-24 12:00:00 → 2026-10-24 14:45:00
+  Saat dilimi   : +03:00 (--saat-dilimi); 2 kayıt +00:00 diliminden çevrildi
+```
+
+Logda hiç saat dilimi yazılmamışsa ve verilmediyse satır çıkmaz; zamanlar logdaki gibidir.
+`--saat-dilimi` saat dilimi yazılmamış bir loga verilirse zamanlar değişmez, rapor bunu söyler.
+Zamanlar her yerde tek biçimde yazılır: `2026-10-24 14:03:11`; kesir ve dilim yazılmaz.
+
+Logun sonunu bilmeyi gerektiren filtreler (`--son`) için yapılan ön tarama, ani artışların
+örneklerini bulmak için logun ortasından yapılan yeniden okuma da aynı çeviriyi yapar. Ön tarama
+logu aynı sırayla okuduğu için aynı dilimi bulur. Yeniden okuma deponun bulduğu dilimle başlar:
+dilim belliyken bir kaydın zamanı yalnızca kendisine bağlıdır, okumaya nereden başlandığına
+bağlı değildir. Filtrelerin, `--karsilastir`'ın ve ani artış dilimlerinin zamanları da raporun
+dilimindedir: `--saat-dilimi +03:00 --baslangic 14:00` UTC'de yazılmış bir logun 11:00'den
+sonrasıdır.
+
+Saat dilimleri adla (`Europe/Istanbul`) değil farkla (`+03:00`) verilir. Adla verilen bir
+dilimin farkı yaz saatine göre değişir; bunu bilmek için IANA saat dilimi veritabanı gerekir.
+Logda zaten her kaydın kendi farkı yazılıdır.
+
 ## Filtreler
 
 Filtre kayıtlar okunurken uygulanır: filtreye uymayan bir kayıt maskelenmez, kümelenmez,
@@ -455,10 +507,10 @@ kayıtlar tablonun bir satırını oluşturur ([bellekte nasıl toplandıkları]
 Her satıra şu bilgiler eklenir:
 
 - **seviye:** satırdaki kayıtların en önemlisi.
-- **ilk / son:** ilk ve son görülme zamanı. Tek günlük logda yalnızca saat, birden çok günü
-  kapsayan logda ay ve gün de (`10-23 23:59:58`), birden çok yıla yayılan logda yıl da
-  (`2025-07-23 08:37:53`) gösterilir. Zamanlar metin olarak değil tarih olarak
-  karşılaştırılır; aynı logdaki iki zaman biçimi (`2026-10-24 10:00:00` ve
+- **ilk / son:** ilk ve son görülme zamanı, raporun saat diliminde. Tek günlük logda yalnızca
+  saat, birden çok günü kapsayan logda ay ve gün de (`10-23 23:59:58`), birden çok yıla
+  yayılan logda yıl da (`2025-07-23 08:37:53`) gösterilir. Zamanlar metin olarak değil tarih
+  olarak karşılaştırılır; aynı logdaki iki zaman biçimi (`2026-10-24 10:00:00` ve
   `2026-10-24T09:00:00+00:00`) doğru sıralanır.
 - **örnek:** satırdaki ilk kaydın maskelenmemiş mesajı; `<SAYI>` ve `<*>`'ın arkasındaki
   gerçek değerleri gösterir. Kalıp ham mesajla aynıysa gösterilmez.

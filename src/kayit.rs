@@ -25,7 +25,7 @@ use std::borrow::Cow;
 use std::mem;
 
 use crate::json_okuyucu::{self, Deger};
-use crate::zaman::Zaman;
+use crate::zaman::{self, Zaman};
 
 /// Laravel log seviyeleri. Sıralama önem sırasıdır: Debug en düşük, Emergency en yüksek.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -433,11 +433,13 @@ fn mesaji_ayir(metin: &str) -> (&str, &str) {
 /// - Laravel'in varsayılanı: `2026-10-24 14:03:11`
 /// - Monolog'un varsayılanı olan ISO 8601: `2026-10-24T14:03:11+03:00`
 ///
-/// Saniyeden sonra kesir (`.123456`) ve saat dilimi (`Z`, `+03:00`, `+0300`) gelebilir.
+/// Saniyeden sonra kesir (`.123456`) ve saat dilimi (`Z`, `+03:00`, `+0300`) gelebilir
+/// (`zaman::zaman_eki`).
 ///
-/// Biçimi doğru ama takvimde olmayan bir zaman (`2026-02-30`, `25:00:00`) reddedilir. Laravel
-/// böyle bir zaman yazmaz; ama mesajlar satır sonu içerebildiği için, loglanan bir kullanıcı
-/// girdisindeki satır bir başlık gibi görünebilir. Kabul edilseydi süre hesapları bozulurdu.
+/// Biçimi doğru ama takvimde olmayan bir zaman (`2026-02-30`, `25:00:00`) ya da saat dilimi
+/// (`+25:00`) reddedilir. Laravel böyle bir zaman yazmaz; ama mesajlar satır sonu içerebildiği
+/// için, loglanan bir kullanıcı girdisindeki satır bir başlık gibi görünebilir. Kabul edilseydi
+/// süre hesapları bozulurdu.
 fn zaman_gecerli_mi(metin: &str) -> bool {
     let baytlar = metin.as_bytes();
     if baytlar.len() < 19 {
@@ -454,28 +456,7 @@ fn zaman_gecerli_mi(metin: &str) -> bool {
             _ => bayt.is_ascii_digit(),
         });
     // `&&` kısa devre yapar: `Zaman::kayittan` yalnızca biçim doğruysa çağrılır
-    tarih_saat_gecerli && zaman_eki_gecerli_mi(ek) && Zaman::kayittan(metin).takvimde_var_mi()
-}
-
-/// Saniyeden sonra gelen kısım: isteğe bağlı kesir, ardından isteğe bağlı saat dilimi.
-fn zaman_eki_gecerli_mi(mut ek: &[u8]) -> bool {
-    if let Some(kesir) = ek.strip_prefix(b".") {
-        let rakam_sayisi = kesir
-            .iter()
-            .take_while(|bayt| bayt.is_ascii_digit())
-            .count();
-        if rakam_sayisi == 0 {
-            return false;
-        }
-        ek = &kesir[rakam_sayisi..];
-    }
-    match ek {
-        [] | [b'Z'] => true,
-        [b'+' | b'-', s1, s2, b':', d1, d2] | [b'+' | b'-', s1, s2, d1, d2] => {
-            [s1, s2, d1, d2].iter().all(|bayt| bayt.is_ascii_digit())
-        }
-        _ => false,
-    }
+    tarih_saat_gecerli && zaman::zaman_eki(ek).is_some() && Zaman::kayittan(metin).takvimde_var_mi()
 }
 
 /// Testlerde kayıtları toplamak için: her kaydın sahiplenilmiş bir kopyası.
@@ -761,6 +742,9 @@ mod testler {
             "2026-10-24 24:00:00",
             "2026-10-24 23:60:00",
             "2026-10-24T23:59:60+03:00",
+            "2026-10-24T14:03:11+24:00",
+            "2026-10-24T14:03:11-03:60",
+            "2026-10-24T14:03:11+0390",
         ] {
             let satir = format!("[{zaman}] local.ERROR: x");
             assert!(baslik_ayristir(&satir).is_none(), "{satir}");

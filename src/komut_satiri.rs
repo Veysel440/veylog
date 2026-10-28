@@ -7,6 +7,7 @@
 //! veylog --karsilastir 15:00 storage/logs/laravel.log
 //! veylog --ani-artis 1 storage/logs/laravel.log
 //! veylog --seviye error --son 2sa storage/logs/laravel.log
+//! veylog --saat-dilimi +03:00 storage/logs/laravel.log
 //! zcat laravel-2026-10-24.log.gz | veylog -
 //! ```
 //!
@@ -27,13 +28,13 @@ use crate::ani_artis::{EN_DUSUK_SEVIYE, EN_UZUN_DILIM};
 use crate::filtre::sure_ayristir;
 use crate::kayit::Seviye;
 use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
-use crate::zaman::ZamanNoktasi;
+use crate::zaman::{SaatDilimi, ZamanNoktasi};
 
 /// Kısa kullanım satırı; hata mesajlarının altında da gösterilir.
 pub const KULLANIM: &str = "Kullanım: veylog [SEÇENEKLER] <log-dosyası>";
 
 /// Bilinen uzun seçenekler. Yazım hatası yapıldığında öneri bu listeden seçilir.
-const UZUN_SECENEKLER: [&str; 15] = [
+const UZUN_SECENEKLER: [&str; 16] = [
     "--esik",
     "--ilk",
     "--hepsi",
@@ -45,6 +46,7 @@ const UZUN_SECENEKLER: [&str; 15] = [
     "--baslangic",
     "--bitis",
     "--son",
+    "--saat-dilimi",
     "--yardim",
     "--surum",
     "--help",
@@ -260,6 +262,10 @@ where
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
                 rapor.filtre.son = Some(son_ayristir(ad, &deger)?);
             }
+            "--saat-dilimi" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                rapor.saat_dilimi = Some(saat_dilimi_ayristir(ad, &deger)?);
+            }
             "-h" | "--yardim" | "--help" => {
                 deger_almaz(ad, bitisik)?;
                 return Ok(Komut::Yardim);
@@ -327,6 +333,10 @@ Seçenekler:
                           {seviye} ve üstündeki kayıtlarının olağan seviyesinden sıçradığı
                           anları bul. Dilim 1 ile {EN_UZUN_DILIM} dakika arası; 1 verilirse her
                           dakika ayrı sayılır.
+      --saat-dilimi <dilim>
+                          Zamanları bu saat diliminde göster: +03:00, -05:30, Z (UTC). Saat
+                          dilimi yazılı kayıtlar bu dilime çevrilir, yazılmamışlar bu dilimde
+                          sayılır. Verilmezse logda saat dilimi yazılı ilk kaydınki.
 
 Filtreler (raporu yalnızca uyan kayıtlarla çıkarır; satır ve kayıt sayıları dosyanındır):
       --seviye <seviye>   Bu seviye ve üstündekiler: {seviyeler}.
@@ -345,7 +355,8 @@ seçeneklerde bitişik de yazılabilir (-n20); ondalık ayracı virgül de olabi
 Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biçim, --karşılaştır,
 --ani-artış). --ilk her biçimde ve her bölümde geçerlidir; JSON'da bütün satırlar için
 --hepsi. --siralama kalıp tablosunun ve karşılaştırmanın sırasını belirler; ani artışlar
-puanı en yüksek olan başta olacak şekilde dizilir.
+puanı en yüksek olan başta olacak şekilde dizilir. --karsilastir, --baslangic ve --bitis
+zamanları raporun saat dilimindedir.
 
 Çıkış kodları: 0 başarılı, 1 dosya okunamadı ya da çıktı yazılamadı, 2 kullanım hatası
 (karşılaştırma noktasının logun dışında kalması da).
@@ -359,6 +370,7 @@ puanı en yüksek olan başta olacak şekilde dizilir.
   veylog --karsilastir 15:00 storage/logs/laravel.log
   veylog --ani-artis 1 storage/logs/laravel.log
   veylog --seviye error --son 2sa storage/logs/laravel.log
+  veylog --saat-dilimi +03:00 storage/logs/laravel.log
   zcat laravel-2026-10-24.log.gz | veylog -
 ",
         surum = env!("CARGO_PKG_VERSION"),
@@ -512,6 +524,16 @@ fn sinir_ayristir(ad: &str, deger: &str) -> Result<ZamanNoktasi, SecenekHatasi> 
 }
 
 /// `--son`: bir süre, saniye olarak.
+fn saat_dilimi_ayristir(ad: &str, deger: &str) -> Result<SaatDilimi, SecenekHatasi> {
+    SaatDilimi::ayristir(deger).ok_or_else(|| {
+        gecersiz(
+            ad,
+            deger,
+            "bir saat dilimi olmalı (ör. +03:00, -05:30, +0530, Z; en fazla ±23:59)",
+        )
+    })
+}
+
 fn son_ayristir(ad: &str, deger: &str) -> Result<u64, SecenekHatasi> {
     sure_ayristir(&sadelestir(deger)).ok_or_else(|| {
         gecersiz(
@@ -665,6 +687,36 @@ mod testler {
         assert_eq!(
             hata(&["--son", "2 saat", "a.log"]).to_string(),
             "--son için geçersiz değer \"2 saat\": bir süre olmalı (ör. 30dk, 2sa, 1g, 1sa30dk; birimler: sn, dk, sa, g)"
+        );
+    }
+
+    #[test]
+    fn saat_dilimi_okunur() {
+        assert_eq!(ozet(&["a.log"]).rapor.saat_dilimi, None);
+        for (argumanlar, beklenen) in [
+            (&["--saat-dilimi", "+03:00", "a.log"][..], "+03:00"),
+            // Eksiyle başlayan değer seçenek sanılmaz
+            (&["--saat-dilimi", "-05:30", "a.log"], "-05:30"),
+            (&["--saat-dilimi=Z", "a.log"], "+00:00"),
+            (&["a.log", "--saat-dilimi", "+0530"], "+05:30"),
+        ] {
+            let dilim = ozet(argumanlar).rapor.saat_dilimi.unwrap();
+            assert_eq!(dilim.to_string(), beklenen, "{argumanlar:?}");
+        }
+        assert_eq!(
+            hata(&["--saat-dilimi", "3", "a.log"]).to_string(),
+            "--saat-dilimi için geçersiz değer \"3\": bir saat dilimi olmalı (ör. +03:00, -05:30, +0530, Z; en fazla ±23:59)"
+        );
+        assert_eq!(
+            hata(&["--saat-dilimi"]),
+            SecenekHatasi::DegerEksik("--saat-dilimi".to_string())
+        );
+        assert_eq!(
+            hata(&["--saat-dilim", "+03:00", "a.log"]),
+            SecenekHatasi::BilinmeyenSecenek {
+                secenek: "--saat-dilim".to_string(),
+                oneri: Some("--saat-dilimi")
+            }
         );
     }
 
@@ -987,6 +1039,7 @@ mod testler {
         assert!(metin.contains("[varsayılan: 10]"));
         assert!(metin.contains("[varsayılan: metin]"));
         assert!(metin.contains("-k, --karsilastir <zaman>"));
+        assert!(metin.contains("--saat-dilimi <dilim>"));
         // Seviye ve en uzun dilim sabitlerden okunur
         assert!(metin.contains("-a, --ani-artis <dakika>"));
         assert!(metin.contains("WARNING ve üstündeki kayıtlarının"));

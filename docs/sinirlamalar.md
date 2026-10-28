@@ -50,8 +50,13 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
 
 ## Zaman ve okuma
 
-- Saat dilimi yok sayılır: farklı saat dilimleriyle yazılmış kayıtlar (`+03:00` ve `+00:00`)
-  aynı dosyada karışırsa zaman aralığı, sıralama, karşılaştırma ve ani artışlar kayabilir.
+- Saat dilimi yazılmamış kayıtlar (Laravel'in varsayılan biçimi) raporun diliminde yazılmış
+  sayılır ([saat dilimleri](nasil-calisir.md#saat-dilimleri)). Saat dilimi yazılı ve yazılmamış
+  kayıtlar aynı logda karışıyorsa ve uygulamanın dilimi ilk yazılı dilimden farklıysa
+  dilimsizlerin zamanı kayar; rapor kaç kaydın dilimsiz olduğunu söyler. `--saat-dilimi`
+  dilimsiz bir logdaki zamanları değiştiremez.
+- Saat dilimi adla (`Europe/Istanbul`) verilemez, farkla verilir (`+03:00`); yaz saati
+  değişikliğini kayıtlardaki farklar zaten taşır.
 - JSON satırlarında yalnızca Monolog'un alan adları tanınır (`message`, `level_name`,
   `datetime`); başka bir JSON şeması (ör. Elastic'in ECS'i, `@timestamp`) kayıt sayılmaz.
 - Bellek dosyanın boyuyla değil, farklı mesajların sayısıyla büyür

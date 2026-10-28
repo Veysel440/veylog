@@ -16,7 +16,10 @@
 //! - **İstisnalar.** Parmak izleri ve projelerin kökleri. Kökü kendi yollarında olmayan bir
 //!   kaydın istisnası taslak olarak saklanır; parmak izi okuma bitince çıkarılır.
 //! - **Sayılar.** Seviyeler, farklı ham mesajlar (`farkli_sayac` modülü), en eski ve en yeni
-//!   kayıt.
+//!   kayıt, kaç kaydın başka bir saat diliminden çevrildiği.
+//!
+//! Kayıt zamanları raporun saat dilimine çevrilerek alınır (`zaman::DilimCevirici`): sütunlardaki,
+//! alt gruplardaki ve filtredeki bütün zamanlar bu dilimdedir.
 //!
 //! Drain ilk turda bir yaprakta değişken bir konum bulursa (`drain` modülü) kayıtlar okuma
 //! bitince ikinci kez kümelenir. Girdi yeniden okunmaz: her kaydın maskeli mesajı sütunlardaki
@@ -44,37 +47,7 @@ use crate::maske::maskele;
 use crate::okuyucu::{self, DIZIN_ARALIGI, OkumaSonucu, OrnekIstegi, OrnekKaynagi};
 use crate::parmak_izi::{Istisna, IstisnaTaslagi, ParmakIzi};
 use crate::sutunlar::{KayitSutunlari, SutunOkuyucu};
-use crate::zaman::Zaman;
-
-/// Bir kaydın zamanı ve logdaki yeri: bir alt grubun ya da bütün logun en eski veya en yeni
-/// kaydı. Zaman logda yazıldığı gibi de saklanır (`metin`): raporda öyle gösterilir.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UcKayit {
-    pub zaman: Zaman,
-    /// Kaydın sıra numarası.
-    pub sira: usize,
-    /// "2026-10-24 14:03:11" ya da "2026-10-24T14:03:11.123456+03:00"
-    pub metin: String,
-}
-
-impl UcKayit {
-    fn new(zaman: Zaman, sira: usize, metin: &str) -> UcKayit {
-        UcKayit {
-            zaman,
-            sira,
-            metin: metin.to_owned(),
-        }
-    }
-
-    /// Yerine başka bir kaydı koyar. Metnin belleği yeniden kullanılır: sıralı bir logda en
-    /// yeni kayıt her kayıtta değişir.
-    fn degistir(&mut self, zaman: Zaman, sira: usize, metin: &str) {
-        self.zaman = zaman;
-        self.sira = sira;
-        self.metin.clear();
-        self.metin.push_str(metin);
-    }
-}
+use crate::zaman::{DilimCevirici, KayitDilimi, SaatDilimi, Zaman};
 
 /// Bir kaydın istisnası: yok, parmak izi belli ya da bütün kökler bilinince çıkarılacak.
 /// Numaralar depodaki listelerin sırasıdır.
@@ -108,9 +81,9 @@ pub struct AltGrup {
     /// Örnek ilk kaydın kendi mesajı mı? İkinci kümeleme turunda bölünen bir alt grubun
     /// parçasında, girdi yeniden okunana kadar aynı maskeli mesajlı bir başka kaydınkidir.
     ornek_kesin: bool,
-    /// En erken ve en geç kaydı; zamanı aynı olanlardan logda önce geleni.
-    ilk: UcKayit,
-    son: UcKayit,
+    /// En erken ve en geç kaydının zamanı.
+    ilk: Zaman,
+    son: Zaman,
 }
 
 impl AltGrup {
@@ -147,13 +120,24 @@ impl AltGrup {
         self.ornek_kesin
     }
 
-    pub fn ilk(&self) -> &UcKayit {
-        &self.ilk
+    pub fn ilk(&self) -> Zaman {
+        self.ilk
     }
 
-    pub fn son(&self) -> &UcKayit {
-        &self.son
+    pub fn son(&self) -> Zaman {
+        self.son
     }
+}
+
+/// Kayıtların saat dilimleri: raporun dilimine nasıl alındıkları.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DilimSayilari {
+    /// Başka bir dilimde yazılmış, raporun dilimine çevrilen kayıtlar.
+    pub cevrilen: usize,
+    /// Çevrilen kayıtların dilimleri, küçükten büyüğe.
+    pub cevrilen_dilimler: BTreeSet<SaatDilimi>,
+    /// Saat dilimi yazılmamış, raporun diliminde yazılmış sayılan kayıtlar.
+    pub yazilmamis: usize,
 }
 
 /// Özetin deposu. Kayıtları `KayitAlici` olarak alır.
@@ -162,6 +146,9 @@ pub struct Depo {
     kumeleyici: Kumeleyici,
     /// Filtre; None ise bütün kayıtlar alınır.
     filtre: Option<CozulmusFiltre>,
+    /// Kayıt zamanlarını raporun saat dilimine çevirir.
+    cevirici: DilimCevirici,
+    dilimler: DilimSayilari,
     sayilar: SatirSayilari,
     gecersiz_utf8: bool,
     sutunlar: KayitSutunlari,
@@ -169,10 +156,9 @@ pub struct Depo {
     dizin: Vec<u64>,
     /// `Seviye`nin sırasıyla her seviyenin kayıt sayısı.
     seviye_sayilari: [usize; 8],
-    /// Logun en eski kaydı (aynı zamanlılardan ilki) ve en yeni kaydı (aynı zamanlılardan
-    /// sonuncusu).
-    en_eski: Option<UcKayit>,
-    en_yeni: Option<UcKayit>,
+    /// Logun en eski ve en yeni kaydının zamanı.
+    en_eski: Option<Zaman>,
+    en_yeni: Option<Zaman>,
     ham_mesajlar: FarkliSayaci,
     /// Maskeli mesajlar, ilk görülme sırasıyla; numaraları bu listedeki sıralarıdır. Metinler
     /// `Rc` ile paylaşılır: liste ile sözlük aynı metni gösterir.
@@ -191,7 +177,9 @@ pub struct Depo {
 
 impl KayitAlici for Depo {
     fn kayit(&mut self, kayit: &Kayit<'_>, bilgi: KayitBilgisi) {
-        let zaman = Zaman::kayittan(kayit.zaman());
+        // Zaman raporun saat diliminde: filtre de bu dilimdedir. Dilim, filtreye uymayan
+        // kayıtlarla da belirlenir; ön tarama ve yeniden okuma da her kayda bakar.
+        let (zaman, dilim) = self.cevirici.cevir(kayit.zaman());
         let seviye = kayit.seviye();
         if let Some(filtre) = &self.filtre
             && !filtre.gecer(zaman.saniye(), seviye)
@@ -201,17 +189,16 @@ impl KayitAlici for Depo {
         // Kaydın depodaki sıra numarası: filtreye uyan kayıtlar arasında kaçıncı olduğu
         let sira = self.sutunlar.len();
         self.seviye_sayilari[seviye as usize] += 1;
-        // `Iterator::min_by_key` aynı zamanlılardan ilkini, `max_by_key` sonuncusunu verir
-        match &mut self.en_eski {
-            Some(uc) if zaman < uc.zaman => uc.degistir(zaman, sira, kayit.zaman()),
-            Some(_) => {}
-            None => self.en_eski = Some(UcKayit::new(zaman, sira, kayit.zaman())),
+        match dilim {
+            KayitDilimi::Yazilmamis => self.dilimler.yazilmamis += 1,
+            KayitDilimi::Ayni => {}
+            KayitDilimi::Baska(kendi) => {
+                self.dilimler.cevrilen += 1;
+                self.dilimler.cevrilen_dilimler.insert(kendi);
+            }
         }
-        match &mut self.en_yeni {
-            Some(uc) if zaman >= uc.zaman => uc.degistir(zaman, sira, kayit.zaman()),
-            Some(_) => {}
-            None => self.en_yeni = Some(UcKayit::new(zaman, sira, kayit.zaman())),
-        }
+        self.en_eski = Some(self.en_eski.map_or(zaman, |en_eski| en_eski.min(zaman)));
+        self.en_yeni = Some(self.en_yeni.map_or(zaman, |en_yeni| en_yeni.max(zaman)));
         self.ham_mesajlar.ekle(kayit.mesaj());
 
         let (maskeli, maskelendi) = self.maskeli_no(kayit.mesaj());
@@ -228,17 +215,12 @@ impl KayitAlici for Depo {
             Some(&no) => {
                 let alt = &mut self.alt_gruplar[no as usize];
                 alt.adet += 1;
-                if zaman < alt.ilk.zaman {
-                    alt.ilk.degistir(zaman, sira, kayit.zaman());
-                }
-                if zaman > alt.son.zaman {
-                    alt.son.degistir(zaman, sira, kayit.zaman());
-                }
+                alt.ilk = alt.ilk.min(zaman);
+                alt.son = alt.son.max(zaman);
                 no
             }
             None => {
                 let no = numara(self.alt_gruplar.len());
-                let uc = UcKayit::new(zaman, sira, kayit.zaman());
                 let ornek = if maskelendi {
                     Rc::from(kayit.mesaj())
                 } else {
@@ -250,8 +232,8 @@ impl KayitAlici for Depo {
                     ilk_kayit: sira,
                     ornek,
                     ornek_kesin: true,
-                    ilk: uc.clone(),
-                    son: uc,
+                    ilk: zaman,
+                    son: zaman,
                 });
                 self.alt_grup_sirasi.insert(anahtar, no);
                 no
@@ -271,6 +253,8 @@ pub struct DepoAyarlari {
     pub drain: drain::Ayarlar,
     /// Filtre, logun sonuna göre çözülmüş olarak; None ise bütün kayıtlar alınır.
     pub filtre: Option<CozulmusFiltre>,
+    /// Raporun saat dilimi (`--saat-dilimi`); None ise logda saat dilimi yazılı ilk kaydınki.
+    pub saat_dilimi: Option<SaatDilimi>,
 }
 
 impl Depo {
@@ -279,6 +263,8 @@ impl Depo {
         Depo {
             kumeleyici: Kumeleyici::new(ayarlar.drain),
             filtre: ayarlar.filtre,
+            cevirici: DilimCevirici::new(ayarlar.saat_dilimi),
+            dilimler: DilimSayilari::default(),
             sayilar: SatirSayilari::default(),
             gecersiz_utf8: false,
             sutunlar: KayitSutunlari::default(),
@@ -355,8 +341,7 @@ impl Depo {
     /// sırasıyla yeniden kurulur; sütunlar yeni numaralarla yeniden yazılır.
     ///
     /// Bölünen bir alt grubun parçası: ilk kaydı alt grubun ilk kaydı değilse mesajı depoda
-    /// yoktur; örneği şimdilik alt grubunkidir (`ornek_kesin` false). En eski ve en yeni
-    /// kaydının zamanı da logdaki yazılışı bilinmiyorsa `Zaman` olarak yazılır.
+    /// yoktur; örneği şimdilik alt grubunkidir (`ornek_kesin` false).
     fn bolerek_kur(&mut self) {
         let mut kumeleyici = self.kumeleyici.ikinci_tur();
         let mut alt_gruplar: Vec<AltGrup> = Vec::new();
@@ -371,25 +356,12 @@ impl Depo {
                 ..eski.anahtar
             };
             let zaman = Zaman::saniyeden(saniye);
-            // Kaydın zamanı logda yazıldığı gibi: alt grubunun en eski ya da en yeni kaydıysa
-            // bilinir
-            let uc = || {
-                let metin = [&eski.ilk, &eski.son]
-                    .into_iter()
-                    .find(|uc| uc.sira == sira)
-                    .map_or_else(|| zaman.to_string(), |uc| uc.metin.clone());
-                UcKayit { zaman, sira, metin }
-            };
             let no = match sirasi.get(&anahtar) {
                 Some(&no) => {
                     let alt = &mut alt_gruplar[no as usize];
                     alt.adet += 1;
-                    if zaman < alt.ilk.zaman {
-                        alt.ilk = uc();
-                    }
-                    if zaman > alt.son.zaman {
-                        alt.son = uc();
-                    }
+                    alt.ilk = alt.ilk.min(zaman);
+                    alt.son = alt.son.max(zaman);
                     no
                 }
                 None => {
@@ -400,8 +372,8 @@ impl Depo {
                         ilk_kayit: sira,
                         ornek: Rc::clone(&eski.ornek),
                         ornek_kesin: eski.ornek_kesin && eski.ilk_kayit == sira,
-                        ilk: uc(),
-                        son: uc(),
+                        ilk: zaman,
+                        son: zaman,
                     });
                     sirasi.insert(anahtar, no);
                     no
@@ -525,23 +497,35 @@ impl Depo {
             .collect()
     }
 
-    /// En eski ve en yeni kaydın zamanı, logda yazıldığı gibi. Hiç kayıt yoksa None.
-    ///
-    /// Zamanlar metin olarak değil `Zaman` olarak karşılaştırılır: metin karşılaştırması
-    /// `2026-10-24 10:00:00` ile `2026-10-24T09:00:00+00:00`'ı yanlış sıralardı (boşluk, `T`'den
-    /// önce gelir). Saat dilimi yok sayılır.
-    pub fn zaman_araligi(&self) -> Option<(&str, &str)> {
-        Some((&self.en_eski.as_ref()?.metin, &self.en_yeni.as_ref()?.metin))
+    /// En eski ve en yeni kaydın zamanı, raporun saat diliminde. Hiç kayıt yoksa None.
+    pub fn zaman_araligi(&self) -> Option<(Zaman, Zaman)> {
+        Some((self.en_eski?, self.en_yeni?))
     }
 
     /// En eski kaydın zamanı.
     pub fn en_eski(&self) -> Option<Zaman> {
-        self.en_eski.as_ref().map(|uc| uc.zaman)
+        self.en_eski
     }
 
     /// En yeni kaydın zamanı.
     pub fn en_yeni(&self) -> Option<Zaman> {
-        self.en_yeni.as_ref().map(|uc| uc.zaman)
+        self.en_yeni
+    }
+
+    /// Raporun saat dilimi: verildiyse o, verilmediyse logda saat dilimi yazılı ilk kaydınki.
+    /// İkisi de yoksa None: zamanlar logda yazıldığı gibidir.
+    pub fn saat_dilimi(&self) -> Option<SaatDilimi> {
+        self.cevirici.dilim()
+    }
+
+    /// Saat dilimi komut satırında mı verildi?
+    pub fn saat_dilimi_verildi(&self) -> bool {
+        self.cevirici.verildi()
+    }
+
+    /// Depodaki kayıtların saat dilimleri: kaçının çevrildiği, kaçında dilim yazılmadığı.
+    pub fn dilim_sayilari(&self) -> &DilimSayilari {
+        &self.dilimler
     }
 
     /// Seyrek dizin: her `DIZIN_ARALIGI` kayıtta bir kaydın girdideki konumu.
@@ -619,7 +603,7 @@ pub fn metinden(metin: &str) -> Depo {
 pub fn metinden_ayarlarla(metin: &str, ayarlar: &drain::Ayarlar) -> Depo {
     let ayarlar = DepoAyarlari {
         drain: ayarlar.clone(),
-        filtre: None,
+        ..DepoAyarlari::default()
     };
     Depo::doldur(ayarlar, metin.as_bytes()).expect("bellekten okuma")
 }
@@ -627,6 +611,11 @@ pub fn metinden_ayarlarla(metin: &str, ayarlar: &drain::Ayarlar) -> Depo {
 #[cfg(test)]
 mod testler {
     use super::*;
+
+    /// `Zaman` olarak: "2026-10-24 10:00:00"
+    fn zaman(metin: &str) -> Zaman {
+        Zaman::kayittan(metin)
+    }
 
     #[test]
     fn zaman_araligi_en_eski_ve_en_yeni_kayittir() {
@@ -638,13 +627,13 @@ mod testler {
         );
         assert_eq!(
             depo.zaman_araligi(),
-            Some(("2026-10-24 09:59:59", "2026-10-24 10:00:05"))
+            Some((zaman("2026-10-24 09:59:59"), zaman("2026-10-24 10:00:05")))
         );
         assert_eq!(metinden("").zaman_araligi(), None);
         assert_eq!(metinden("").en_eski(), None);
 
-        // Metin olarak karşılaştırılsaydı en eski 10:00 olurdu: " " < "T". Aynı zamanlılardan
-        // en eski için ilki, en yeni için sonuncusu.
+        // Metin olarak karşılaştırılsaydı en eski 10:00 olurdu: " " < "T". Saat dilimi +00:00
+        // (yazılı ilk kayıttan); 10:00+03:00, 07:00+00:00'dır.
         let depo = metinden(
             "[2026-10-24 10:00:00] local.ERROR: x\n\
              {\"message\":\"y\",\"level_name\":\"INFO\",\"datetime\":\"2026-10-24T09:00:00+00:00\"}\n\
@@ -653,8 +642,69 @@ mod testler {
         );
         assert_eq!(
             depo.zaman_araligi(),
-            Some(("2026-10-24T09:00:00+00:00", "2026-10-24T10:00:00+03:00"))
+            Some((zaman("2026-10-24 07:00:00"), zaman("2026-10-24 10:00:00")))
         );
+    }
+
+    #[test]
+    fn kayitlar_raporun_saat_dilimine_cevrilir() {
+        // Yaz saatinden kış saatine geçen bir log: önce +03:00, sonra +02:00. Raporun dilimi
+        // logda yazılı ilk dilim (+03:00); +02:00'daki kayıtlar bir saat ileri alınır. Dilimsiz
+        // kayıt raporun diliminde sayılır.
+        let metin = "[2026-10-24 23:00:00] local.INFO: Gece görevi\n\
+                     [2026-10-25T02:30:00+03:00] local.ERROR: Kuyruk 1 dolu\n\
+                     [2026-10-25T02:10:00+02:00] local.ERROR: Kuyruk 2 dolu\n\
+                     [2026-10-25T02:40:00+02:00] local.ERROR: Kuyruk 3 dolu";
+        let depo = metinden(metin);
+        assert_eq!(depo.saat_dilimi(), SaatDilimi::ayristir("+03:00"));
+        assert!(!depo.saat_dilimi_verildi());
+        let iki = SaatDilimi::ayristir("+02:00").unwrap();
+        assert_eq!(
+            depo.dilim_sayilari(),
+            &DilimSayilari {
+                cevrilen: 2,
+                cevrilen_dilimler: BTreeSet::from([iki]),
+                yazilmamis: 1,
+            }
+        );
+        // 02:10+02:00 = 03:10+03:00: 02:30'dan sonradır
+        let alt = depo.alt_gruplar();
+        assert_eq!(alt[1].ilk(), zaman("2026-10-25 02:30:00"));
+        assert_eq!(alt[1].son(), zaman("2026-10-25 03:40:00"));
+        let saniyeler: Vec<i64> = depo.kayitlar().map(|(saniye, _)| saniye).collect();
+        assert_eq!(
+            saniyeler,
+            [
+                "2026-10-24 23:00:00",
+                "2026-10-25 02:30:00",
+                "2026-10-25 03:10:00",
+                "2026-10-25 03:40:00"
+            ]
+            .map(|metin| zaman(metin).saniye())
+        );
+
+        // Dilim verilirse her kayıt ona çevrilir; filtre de bu dilimdedir
+        let ayarlar = DepoAyarlari {
+            saat_dilimi: SaatDilimi::ayristir("Z"),
+            filtre: Some(
+                crate::filtre::Filtre {
+                    baslangic: crate::zaman::ZamanNoktasi::ayristir("2026-10-25 00:00"),
+                    ..crate::filtre::Filtre::default()
+                }
+                .coz(None)
+                .unwrap(),
+            ),
+            ..DepoAyarlari::default()
+        };
+        let depo = Depo::doldur(ayarlar, metin.as_bytes()).unwrap();
+        assert!(depo.saat_dilimi_verildi());
+        assert_eq!(depo.kayit_sayisi(), 2);
+        assert_eq!(
+            depo.zaman_araligi(),
+            Some((zaman("2026-10-25 00:10:00"), zaman("2026-10-25 00:40:00")))
+        );
+        assert_eq!(depo.dilim_sayilari().cevrilen, 2);
+        assert_eq!(depo.dilim_sayilari().yazilmamis, 0);
     }
 
     #[test]
@@ -678,8 +728,11 @@ mod testler {
         assert_eq!(seviyeler.iter().map(|&(_, adet)| adet).sum::<usize>(), 59);
         assert_eq!(
             depo.zaman_araligi(),
-            Some(("2026-10-24 08:59:58", "2026-10-24 18:31:07"))
+            Some((zaman("2026-10-24 08:59:58"), zaman("2026-10-24 18:31:07")))
         );
+        // Laravel'in biçiminde saat dilimi yazılmaz
+        assert_eq!(depo.saat_dilimi(), None);
+        assert_eq!(depo.dilim_sayilari().yazilmamis, 59);
         assert_eq!(depo.ham_mesajlar().sayi(), 45);
         assert_eq!(depo.maskeli_mesajlar().len(), 27);
         assert!(!depo.gecersiz_utf8());
@@ -701,11 +754,13 @@ mod testler {
         assert_eq!(alt.len(), 2);
         assert_eq!((alt[0].seviye(), alt[0].adet()), (Seviye::Warning, 5));
         assert_eq!((alt[1].seviye(), alt[1].adet()), (Seviye::Error, 1));
-        // Örnek ilk kaydın mesajı; ilk ve son, aynı zamanlılardan logda önce gelen
+        // Örnek ilk kaydın mesajı; ilk ve son, en erken ve en geç zaman
         assert_eq!(alt[0].ornek(), "Kuyruk 1 dolu");
         assert_eq!(alt[0].ilk_kayit(), 0);
-        assert_eq!((alt[0].ilk().sira, alt[0].son().sira), (1, 3));
-        assert_eq!(alt[0].ilk().metin, "2026-10-24 10:00:01");
+        assert_eq!(
+            (alt[0].ilk(), alt[0].son()),
+            (zaman("2026-10-24 10:00:01"), zaman("2026-10-24 10:00:09"))
+        );
         assert_eq!(alt[1].ilk_kayit(), 2);
 
         // Sütunlar her kaydın zamanını ve alt grubunu tutar
@@ -785,7 +840,7 @@ mod testler {
         );
         assert_eq!(
             depo.zaman_araligi(),
-            Some(("2026-10-24 10:00:01", "2026-10-24 10:30:00"))
+            Some((zaman("2026-10-24 10:00:01"), zaman("2026-10-24 10:30:00")))
         );
         assert_eq!(
             depo.maskeli_mesajlar(),

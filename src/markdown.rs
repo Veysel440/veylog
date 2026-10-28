@@ -31,6 +31,9 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     if let Some((en_eski, en_yeni)) = &ozet.zaman_araligi {
         writeln!(cikti, "- **Zaman aralığı:** {en_eski} → {en_yeni}")?;
     }
+    if let Some(dilim) = &ozet.saat_dilimi {
+        writeln!(cikti, "- **Saat dilimi:** {}", dilim.aciklama())?;
+    }
     let seviyeler: Vec<String> = ozet
         .seviyeler
         .iter()
@@ -159,12 +162,11 @@ fn ani_artis_yaz(
             artis.zirve_adet,
             dilim_araligi(artis.zirve_baslangic, artis.zirve_bitis, gosterim)
         );
-        let (ilk, son) = (artis.ilk.to_string(), artis.son.to_string());
         satir_yaz(
             cikti,
             &[zirve, ondalik(artis.olagan), ondalik_kisa(artis.puan)],
             &ozet.analiz.satirlar[artis.satir],
-            &Hucreler::artistan(artis, &ilk, &son),
+            &Hucreler::artistan(artis),
             gosterim,
         )?;
     }

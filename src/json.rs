@@ -9,7 +9,7 @@ use std::io::{self, Write};
 
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_AZ_MAD, EN_DUSUK_SEVIYE, ESIK};
 use crate::karsilastirma::{ANLAMLILIK, ARTIS_KATI, Degisim, EN_AZ_KAYIT, Karsilastirma, Pencere};
-use crate::rapor::{FiltreOzeti, KalipSatiri, Ozet};
+use crate::rapor::{FiltreOzeti, KalipSatiri, Ozet, SaatDilimiOzeti};
 use crate::zaman::Zaman;
 
 /// Bir JSON değeri. Nesnelerde alanlar eklendikleri sırayla yazılır.
@@ -117,12 +117,14 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     writeln!(cikti)
 }
 
-/// Özetin JSON ağacı. Zamanlar, kalıplar ve örnekler kısaltılmadan tam halleriyle yazılır.
+/// Özetin JSON ağacı. Kalıplar ve örnekler kısaltılmadan tam halleriyle yazılır. Bütün
+/// zamanlar raporun saat diliminde, `2026-10-24 16:10:00` biçimindedir; dilim `saat_dilimi`
+/// alanındadır.
 fn ozet_json(ozet: &Ozet) -> Json {
-    let zaman_araligi = match &ozet.zaman_araligi {
+    let zaman_araligi = match ozet.zaman_araligi {
         Some((en_eski, en_yeni)) => Json::Nesne(vec![
-            ("en_eski", metin(en_eski)),
-            ("en_yeni", metin(en_yeni)),
+            ("en_eski", zaman(en_eski)),
+            ("en_yeni", zaman(en_yeni)),
         ]),
         None => Json::Yok,
     };
@@ -152,6 +154,12 @@ fn ozet_json(ozet: &Ozet) -> Json {
     }
     alanlar.extend([
         ("zaman_araligi", zaman_araligi),
+        (
+            "saat_dilimi",
+            ozet.saat_dilimi
+                .as_ref()
+                .map_or(Json::Yok, saat_dilimi_json),
+        ),
         ("seviyeler", Json::Nesne(seviyeler)),
         (
             "kaliplar",
@@ -202,6 +210,27 @@ fn filtre_json(filtre: &FiltreOzeti) -> Json {
                 .map_or(Json::Yok, |saniye| Json::Sayi(saniye as usize)),
         ),
         ("kayit_sayisi", Json::Sayi(filtre.kayit_sayisi)),
+    ])
+}
+
+/// Saat diliminin JSON'u: raporun dilimi, nereden geldiği (`--saat-dilimi` ya da logda yazılı
+/// ilk dilim) ve kayıtların ona nasıl alındığı.
+fn saat_dilimi_json(dilim: &SaatDilimiOzeti) -> Json {
+    let cevrilen_dilimler = dilim
+        .sayilar
+        .cevrilen_dilimler
+        .iter()
+        .map(|kaynak| Json::Metin(kaynak.to_string()))
+        .collect();
+    Json::Nesne(vec![
+        ("dilim", Json::Metin(dilim.dilim.to_string())),
+        (
+            "kaynak",
+            metin(if dilim.verildi { "secenek" } else { "log" }),
+        ),
+        ("cevrilen_kayit", Json::Sayi(dilim.sayilar.cevrilen)),
+        ("cevrilen_dilimler", Json::Dizi(cevrilen_dilimler)),
+        ("dilimsiz_kayit", Json::Sayi(dilim.sayilar.yazilmamis)),
     ])
 }
 
@@ -351,8 +380,8 @@ fn satir_alanlari(satir: &KalipSatiri) -> Vec<(&'static str, Json)> {
     vec![
         ("adet", Json::Sayi(satir.adet)),
         ("seviye", metin(satir.seviye.ad())),
-        ("ilk", metin(&satir.ilk)),
-        ("son", metin(&satir.son)),
+        ("ilk", zaman(satir.ilk)),
+        ("son", zaman(satir.son)),
         ("kalip", metin(&satir.kalip)),
         ("ornek", metin(&satir.ornek)),
         ("istisna", istisna),
@@ -363,7 +392,7 @@ fn metin(metin: &str) -> Json {
     Json::Metin(metin.to_owned())
 }
 
-/// Bir an, logdaki biçimden bağımsız olarak: "2026-10-24 16:10:00"
+/// Bir an, raporun saat diliminde: "2026-10-24 16:10:00"
 fn zaman(zaman: Zaman) -> Json {
     Json::Metin(zaman.to_string())
 }
@@ -489,6 +518,38 @@ mod testler {
         let kalip = kayit["kalip"].as_str().unwrap();
         assert_eq!(kalip.chars().count(), 257);
         assert!(kalip.ends_with("values <*> <EPOSTA>, <ZAMAN>, <ZAMAN>))"));
+    }
+
+    #[test]
+    fn saat_dilimi_yazilir() {
+        // Laravel'in biçiminde saat dilimi yazılmaz: alan null
+        assert!(ornek_rapor(&RaporAyarlari::default())["saat_dilimi"].is_null());
+        // Yaz saatinden kış saatine geçen bir log: zamanlar ilk dilimde (+03:00)
+        let metin = "[2026-10-25T02:30:00+03:00] local.ERROR: Kuyruk 1 dolu\n\
+                     [2026-10-25T02:10:00+02:00] local.ERROR: Kuyruk 2 dolu";
+        let ozet = Ozet::metinden("a.log", metin, &RaporAyarlari::default()).unwrap();
+        let mut cikti = Vec::new();
+        yaz(&mut cikti, &ozet).unwrap();
+        let rapor: serde_json::Value = serde_json::from_slice(&cikti).unwrap();
+        assert_eq!(
+            rapor["saat_dilimi"],
+            serde_json::json!({
+                "dilim": "+03:00",
+                "kaynak": "log",
+                "cevrilen_kayit": 1,
+                "cevrilen_dilimler": ["+02:00"],
+                "dilimsiz_kayit": 0
+            })
+        );
+        assert_eq!(
+            rapor["zaman_araligi"],
+            serde_json::json!({"en_eski": "2026-10-25 02:30:00", "en_yeni": "2026-10-25 03:10:00"})
+        );
+        let satir = &rapor["kaliplar"]["satirlar"][0];
+        assert_eq!(
+            (&satir["ilk"], &satir["son"]),
+            (&"2026-10-25 02:30:00".into(), &"2026-10-25 03:10:00".into())
+        );
     }
 
     #[test]

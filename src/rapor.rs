@@ -22,7 +22,7 @@ use std::fmt;
 use std::io::{self, Write};
 
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_DUSUK_SEVIYE, ESIK};
-use crate::depo::{AltGrup, Depo, UcKayit};
+use crate::depo::{AltGrup, Depo, DilimSayilari};
 use crate::drain::Ayarlar;
 use crate::filtre::Filtre;
 use crate::karsilastirma::{
@@ -31,7 +31,7 @@ use crate::karsilastirma::{
 use crate::kayit::Seviye;
 use crate::okuyucu::OrnekKaynagi;
 use crate::parmak_izi::ParmakIzi;
-use crate::zaman::{Zaman, ZamanNoktasi, sure_tam_yaz, sure_yaz};
+use crate::zaman::{SaatDilimi, Zaman, ZamanNoktasi, sure_tam_yaz, sure_yaz};
 
 /// Tabloda varsayılan olarak gösterilecek satır sayısı.
 pub const VARSAYILAN_ILK: usize = 10;
@@ -81,9 +81,7 @@ impl Siralama {
     }
 
     /// Satırların sırasını bu sıralamaya göre dizer: `sira`, `satirlar` içindeki sıra
-    /// numaralarıdır. Sıralama kararlıdır: eşit olanlar ilk görüldükleri sırada kalır. Zamanlar
-    /// metin olarak değil `Zaman` olarak karşılaştırılır; böylece aynı logdaki iki zaman biçimi
-    /// (`2026-10-24 10:00:00`, `2026-10-24T10:00:00`) doğru sıralanır.
+    /// numaralarıdır. Sıralama kararlıdır: eşit olanlar ilk görüldükleri sırada kalır.
     fn uygula(self, sira: &mut [usize], satirlar: &[KalipSatiri]) {
         let satir = |numara: &usize| &satirlar[*numara];
         match self {
@@ -97,7 +95,7 @@ impl Siralama {
             }),
             Siralama::Yeni => sira.sort_by_key(|numara| {
                 let satir = satir(numara);
-                Reverse((Zaman::kayittan(&satir.ilk), satir.seviye))
+                Reverse((satir.ilk, satir.seviye))
             }),
         }
     }
@@ -116,6 +114,8 @@ pub struct RaporAyarlari {
     pub ani_artis: Option<u16>,
     /// Hangi kayıtların özetleneceği; boşsa hepsi.
     pub filtre: Filtre,
+    /// Raporun saat dilimi (`--saat-dilimi`); None ise logda saat dilimi yazılı ilk kaydınki.
+    pub saat_dilimi: Option<SaatDilimi>,
 }
 
 impl Default for RaporAyarlari {
@@ -127,6 +127,7 @@ impl Default for RaporAyarlari {
             karsilastir: None,
             ani_artis: None,
             filtre: Filtre::default(),
+            saat_dilimi: None,
         }
     }
 }
@@ -139,10 +140,9 @@ pub struct KalipSatiri {
     pub adet: usize,
     /// Satırdaki kayıtların en önemli seviyesi.
     pub seviye: Seviye,
-    /// İlk görülme zamanı, logda yazıldığı gibi.
-    pub ilk: String,
-    /// Son görülme zamanı, logda yazıldığı gibi.
-    pub son: String,
+    /// İlk ve son görülme zamanı, raporun saat diliminde.
+    pub ilk: Zaman,
+    pub son: Zaman,
     /// Satırdaki ilk kaydın maskelenmemiş mesajı: "Kullanıcı 381 giriş yaptı"
     pub ornek: String,
     /// Kayıtlar bir istisnadan geliyorsa: istisnanın sınıfı ve uygulama kodundaki yeri.
@@ -176,8 +176,8 @@ struct Grup<'d> {
     parmak_izi: Option<&'d ParmakIzi>,
     adet: usize,
     seviye: Seviye,
-    ilk: &'d UcKayit,
-    son: &'d UcKayit,
+    ilk: Zaman,
+    son: Zaman,
     ornek: &'d str,
 }
 
@@ -198,17 +198,11 @@ impl<'d> Grup<'d> {
     }
 
     /// Alt grubu gruba katar: adedi artırır, en yüksek seviyeyi ve zaman aralığını günceller.
-    /// İlk ve son, zamanı aynı olanlardan logda önce gelen kayıttır.
     fn ekle(&mut self, alt_grup: &'d AltGrup) {
         self.adet += alt_grup.adet();
         self.seviye = self.seviye.max(alt_grup.seviye());
-        let (ilk, son) = (alt_grup.ilk(), alt_grup.son());
-        if (ilk.zaman, ilk.sira) < (self.ilk.zaman, self.ilk.sira) {
-            self.ilk = ilk;
-        }
-        if son.zaman > self.son.zaman || (son.zaman == self.son.zaman && son.sira < self.son.sira) {
-            self.son = son;
-        }
+        self.ilk = self.ilk.min(alt_grup.ilk());
+        self.son = self.son.max(alt_grup.son());
     }
 }
 
@@ -244,8 +238,8 @@ pub fn kaliplari_cikar(depo: &Depo, ayarlar: &RaporAyarlari) -> KalipAnalizi {
             kalip: kumeler[grup.kume].metin(),
             adet: grup.adet,
             seviye: grup.seviye,
-            ilk: grup.ilk.metin.clone(),
-            son: grup.son.metin.clone(),
+            ilk: grup.ilk,
+            son: grup.son,
             ornek: grup.ornek.to_owned(),
             parmak_izi: grup.parmak_izi.cloned(),
         })
@@ -329,6 +323,74 @@ impl FiltreOzeti {
     }
 }
 
+/// Raporun saat dilimi ve kayıtların ona nasıl alındığı.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaatDilimiOzeti {
+    /// Raporun saat dilimi: bütün zamanlar bu dilimdedir.
+    pub dilim: SaatDilimi,
+    /// Komut satırında mı verildi (`--saat-dilimi`), logda yazılı ilk dilim mi?
+    pub verildi: bool,
+    /// Kayıtların dilimleri: kaçı çevrildi, kaçında dilim yazılmamış.
+    pub sayilar: DilimSayilari,
+    /// Rapordaki (filtre varsa filtreye uyan) kayıt sayısı.
+    pub kayit_sayisi: usize,
+}
+
+impl SaatDilimiOzeti {
+    /// Metin ve Markdown'daki açıklaması:
+    /// "+03:00 (--saat-dilimi); 1534597 kayıt +00:00 diliminden çevrildi"
+    pub fn aciklama(&self) -> String {
+        let mut parcalar = vec![if self.verildi {
+            format!("{} (--saat-dilimi)", self.dilim)
+        } else {
+            self.dilim.to_string()
+        }];
+        let sayilar = &self.sayilar;
+        if sayilar.cevrilen > 0 {
+            let dilimler: Vec<String> = sayilar
+                .cevrilen_dilimler
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            parcalar.push(match dilimler.as_slice() {
+                [dilim] => format!("{} kayıt {dilim} diliminden çevrildi", sayilar.cevrilen),
+                _ => format!(
+                    "{} kayıt başka dilimlerden çevrildi ({})",
+                    sayilar.cevrilen,
+                    liste_yaz(&dilimler, 3)
+                ),
+            });
+        }
+        if sayilar.yazilmamis > 0 {
+            parcalar.push(if sayilar.yazilmamis == self.kayit_sayisi {
+                "kayıtlarda saat dilimi yazılı değil, zamanlar logdaki gibi".to_string()
+            } else {
+                format!(
+                    "{} kaydın saat dilimi yazılmamış, bu dilimde sayıldı",
+                    sayilar.yazilmamis
+                )
+            });
+        }
+        parcalar.join("; ")
+    }
+}
+
+/// Bir listeyi Türkçe yazar: "a", "a ve b", "a, b ve c". `sinir`'dan fazla öge varsa ilk
+/// `sinir` tanesi ve kalanların sayısı: "a, b, c ve 2 dilim daha". Yalnızca bir öge fazlaysa
+/// o da yazılır; "1 dilim daha" demek onu yazmaktan uzundur.
+fn liste_yaz(ogeler: &[String], sinir: usize) -> String {
+    match ogeler {
+        [] => String::new(),
+        [tek] => tek.clone(),
+        _ if ogeler.len() > sinir + 1 => format!(
+            "{} ve {} dilim daha",
+            ogeler[..sinir].join(", "),
+            ogeler.len() - sinir
+        ),
+        [bas @ .., son] => format!("{} ve {son}", bas.join(", ")),
+    }
+}
+
 /// Raporun bütün bilgileri. Bir kez hesaplanır; metin, JSON ve Markdown çıktıları aynı özeti
 /// farklı biçimlerde yazar. Böylece üç biçimdeki sayılar hep aynıdır.
 pub struct Ozet {
@@ -341,8 +403,10 @@ pub struct Ozet {
     pub yetim_satir_sayisi: usize,
     /// Filtre verildiyse açıklaması; özetin geri kalanı yalnızca filtreye uyan kayıtlardandır.
     pub filtre: Option<FiltreOzeti>,
-    /// En eski ve en yeni kaydın zamanı, logda yazıldığı gibi; hiç kayıt yoksa None.
-    pub zaman_araligi: Option<(String, String)>,
+    /// En eski ve en yeni kaydın zamanı, raporun saat diliminde; hiç kayıt yoksa None.
+    pub zaman_araligi: Option<(Zaman, Zaman)>,
+    /// Raporun saat dilimi; logda saat dilimi yazılmamışsa ve verilmediyse None.
+    pub saat_dilimi: Option<SaatDilimiOzeti>,
     /// Her seviyeden kaç kayıt var; en önemli seviye başta.
     pub seviyeler: Vec<(Seviye, usize)>,
     pub analiz: KalipAnalizi,
@@ -397,9 +461,13 @@ impl Ozet {
                 son: ayarlar.filtre.son,
                 kayit_sayisi: depo.kayit_sayisi(),
             }),
-            zaman_araligi: depo
-                .zaman_araligi()
-                .map(|(en_eski, en_yeni)| (en_eski.to_owned(), en_yeni.to_owned())),
+            zaman_araligi: depo.zaman_araligi(),
+            saat_dilimi: depo.saat_dilimi().map(|dilim| SaatDilimiOzeti {
+                dilim,
+                verildi: depo.saat_dilimi_verildi(),
+                sayilar: depo.dilim_sayilari().clone(),
+                kayit_sayisi: depo.kayit_sayisi(),
+            }),
             seviyeler: depo.seviye_sayilari(),
             analiz,
             karsilastirma,
@@ -411,9 +479,9 @@ impl Ozet {
     /// Tabloda zamanların nasıl gösterileceği: bütün kayıtlar aynı gündeyse saat yeter, aynı
     /// yıldaysa ay ve gün de, birden çok yıla yayılıyorsa yıl da gösterilir.
     pub fn zaman_gosterimi(&self) -> ZamanGosterimi {
-        match &self.zaman_araligi {
-            Some((en_eski, en_yeni)) if en_eski[..10] == en_yeni[..10] => ZamanGosterimi::Saat,
-            Some((en_eski, en_yeni)) if en_eski[..4] != en_yeni[..4] => ZamanGosterimi::Tarih,
+        match self.zaman_araligi {
+            Some((en_eski, en_yeni)) if en_eski.ayni_gun(en_yeni) => ZamanGosterimi::Saat,
+            Some((en_eski, en_yeni)) if !en_eski.ayni_yil(en_yeni) => ZamanGosterimi::Tarih,
             _ => ZamanGosterimi::AyGun,
         }
     }
@@ -479,6 +547,9 @@ pub fn metin_yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     }
     if let Some((en_eski, en_yeni)) = &ozet.zaman_araligi {
         writeln!(cikti, "  Zaman aralığı : {en_eski} → {en_yeni}")?;
+    }
+    if let Some(dilim) = &ozet.saat_dilimi {
+        writeln!(cikti, "  Saat dilimi   : {}", dilim.aciklama())?;
     }
 
     writeln!(cikti)?;
@@ -547,8 +618,8 @@ fn karsilastirma_yaz(
         writeln!(
             cikti,
             "  {ad:<6}: {} → {}   {:<11}{:>5} kayıt, saatte {}",
-            zaman_goster(&pencere.baslangic.to_string(), gosterim),
-            zaman_goster(&pencere.bitis.to_string(), gosterim),
+            zaman_goster(pencere.baslangic, gosterim),
+            zaman_goster(pencere.bitis, gosterim),
             sure_yaz(pencere.saniye),
             pencere.kayit_sayisi,
             ondalik_kisa(pencere.saatlik(pencere.kayit_sayisi))
@@ -648,12 +719,11 @@ fn ani_artis_yaz(
     let (baslik, sayilar) = sayi_sutunlari(["zirve", "olağan", "puan"], &hucreler);
     baslik_yaz(cikti, &baslik, gosterim)?;
     for (artis, sayilar) in gosterilenler.iter().zip(&sayilar) {
-        let (ilk, son) = (artis.ilk.to_string(), artis.son.to_string());
         satir_yaz(
             cikti,
             sayilar,
             &ozet.analiz.satirlar[artis.satir],
-            &Hucreler::artistan(artis, &ilk, &son),
+            &Hucreler::artistan(artis),
             Some(&ani_artis_aciklamasi(artis, gosterim)),
             gosterim,
         )?;
@@ -783,8 +853,8 @@ fn baslik_yaz(cikti: &mut impl Write, sayilar: &str, gosterim: ZamanGosterimi) -
 /// Metin ve Markdown aynı hücreleri yazar.
 pub struct Hucreler<'s> {
     pub seviye: Seviye,
-    pub ilk: &'s str,
-    pub son: &'s str,
+    pub ilk: Zaman,
+    pub son: Zaman,
     /// Maskelenmemiş bir mesaj: "Kullanıcı 381 giriş yaptı"
     pub ornek: &'s str,
 }
@@ -794,18 +864,18 @@ impl<'s> Hucreler<'s> {
     pub fn satirdan(satir: &'s KalipSatiri) -> Hucreler<'s> {
         Hucreler {
             seviye: satir.seviye,
-            ilk: &satir.ilk,
-            son: &satir.son,
+            ilk: satir.ilk,
+            son: satir.son,
             ornek: &satir.ornek,
         }
     }
 
-    /// Ani artışın hücreleri. `ilk` ve `son`: artışın ilk ve son kaydının zamanı, metin olarak.
-    pub fn artistan(artis: &'s AniArtis, ilk: &'s str, son: &'s str) -> Hucreler<'s> {
+    /// Ani artışın hücreleri: zamanlar artışın ilk ve son kaydınınkiler.
+    pub fn artistan(artis: &'s AniArtis) -> Hucreler<'s> {
         Hucreler {
             seviye: artis.seviye,
-            ilk,
-            son,
+            ilk: artis.ilk,
+            son: artis.son,
             ornek: &artis.ornek,
         }
     }
@@ -916,15 +986,16 @@ impl ZamanGosterimi {
 }
 
 /// Zamanı tabloda gösterilecek hale getirir: "14:03:11", "10-24 14:03:11" ya da
-/// "2025-07-23 14:03:11". ISO 8601'deki `T`, kesir ve saat dilimi yazılmaz.
+/// "2025-07-23 14:03:11".
 ///
-/// Kayıt zamanlarının ilk 19 karakteri her zaman geçerli bir tarih-saat olduğu ve bu
-/// karakterler ASCII olduğu için bayt konumlarıyla dilimlemek güvenlidir.
-pub fn zaman_goster(zaman: &str, gosterim: ZamanGosterimi) -> String {
+/// `Zaman`'ın metni hep 19 ASCII karakterdir (`2025-07-23 14:03:11`); bayt konumlarıyla
+/// dilimlemek güvenlidir.
+pub fn zaman_goster(zaman: Zaman, gosterim: ZamanGosterimi) -> String {
+    let metin = zaman.to_string();
     match gosterim {
-        ZamanGosterimi::Saat => zaman[11..19].to_string(),
-        ZamanGosterimi::AyGun => format!("{} {}", &zaman[5..10], &zaman[11..19]),
-        ZamanGosterimi::Tarih => format!("{} {}", &zaman[..10], &zaman[11..19]),
+        ZamanGosterimi::Saat => metin[11..].to_string(),
+        ZamanGosterimi::AyGun => metin[5..].to_string(),
+        ZamanGosterimi::Tarih => metin,
     }
 }
 
@@ -1440,7 +1511,8 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
     #[test]
     fn karisik_zaman_bicimlerinde_ilk_son_ve_siralama_dogru() {
         // Aynı günde metin ve JSON kayıtları: metin olarak karşılaştırılsa " " < "T" olduğu
-        // için metin biçimindeki her kayıt JSON'dakilerden eski sayılırdı
+        // için metin biçimindeki her kayıt JSON'dakilerden eski sayılırdı. Raporun saat dilimi
+        // JSON'daki +00:00; dilimsiz kayıtlar bu dilimde sayılır.
         let metin = [
             "[2026-10-24 10:00:00] local.ERROR: Önbellek dolu",
             r#"{"message":"Önbellek dolu","context":{},"level_name":"ERROR","datetime":"2026-10-24T09:00:00+00:00"}"#,
@@ -1453,26 +1525,124 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             ..RaporAyarlari::default()
         };
         let analiz = kaliplari_cikar(&depo::metinden(&metin), &ayarlar);
-        let satirlar: Vec<(&str, &str, &str)> = analiz
+        let satirlar: Vec<(&str, String, String)> = analiz
             .satirlar
             .iter()
-            .map(|satir| (satir.kalip.as_str(), satir.ilk.as_str(), satir.son.as_str()))
+            .map(|satir| {
+                (
+                    satir.kalip.as_str(),
+                    satir.ilk.to_string(),
+                    satir.son.to_string(),
+                )
+            })
             .collect();
+        let satir = |kalip, ilk: &str, son: &str| (kalip, ilk.to_string(), son.to_string());
         assert_eq!(
             satirlar,
             [
-                (
-                    "Kuyruk durdu",
-                    "2026-10-24T11:00:00+00:00",
-                    "2026-10-24T11:00:00+00:00"
-                ),
-                ("Disk doldu", "2026-10-24 09:30:00", "2026-10-24 09:30:00"),
-                (
+                satir("Kuyruk durdu", "2026-10-24 11:00:00", "2026-10-24 11:00:00"),
+                satir("Disk doldu", "2026-10-24 09:30:00", "2026-10-24 09:30:00"),
+                satir(
                     "Önbellek dolu",
-                    "2026-10-24T09:00:00+00:00",
+                    "2026-10-24 09:00:00",
                     "2026-10-24 10:00:00"
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn saat_dilimi_aciklamasi() {
+        let ozet = |verildi, cevrilen, dilimler: &[&str], yazilmamis, kayit_sayisi| {
+            SaatDilimiOzeti {
+                dilim: SaatDilimi::ayristir("+03:00").unwrap(),
+                verildi,
+                sayilar: DilimSayilari {
+                    cevrilen,
+                    cevrilen_dilimler: dilimler
+                        .iter()
+                        .map(|dilim| SaatDilimi::ayristir(dilim).unwrap())
+                        .collect(),
+                    yazilmamis,
+                },
+                kayit_sayisi,
+            }
+            .aciklama()
+        };
+        assert_eq!(ozet(false, 0, &[], 0, 5), "+03:00");
+        assert_eq!(ozet(true, 0, &[], 0, 5), "+03:00 (--saat-dilimi)");
+        assert_eq!(
+            ozet(false, 420, &["+02:00"], 0, 500),
+            "+03:00; 420 kayıt +02:00 diliminden çevrildi"
+        );
+        // Dilimler küçükten büyüğe; üçten fazlası sayılır
+        assert_eq!(
+            ozet(false, 7, &["+02:00", "+01:00"], 0, 9),
+            "+03:00; 7 kayıt başka dilimlerden çevrildi (+01:00 ve +02:00)"
+        );
+        assert_eq!(
+            ozet(false, 7, &["+04:00", "-05:00", "+00:00", "+01:00"], 0, 9),
+            "+03:00; 7 kayıt başka dilimlerden çevrildi (-05:00, +00:00, +01:00 ve +04:00)"
+        );
+        assert_eq!(
+            ozet(
+                false,
+                7,
+                &["+04:00", "-05:00", "+00:00", "+02:00", "+01:00"],
+                0,
+                9
+            ),
+            "+03:00; 7 kayıt başka dilimlerden çevrildi (-05:00, +00:00, +01:00 ve 2 dilim daha)"
+        );
+        assert_eq!(
+            ozet(true, 0, &[], 5, 5),
+            "+03:00 (--saat-dilimi); kayıtlarda saat dilimi yazılı değil, zamanlar logdaki gibi"
+        );
+        assert_eq!(
+            ozet(false, 3, &["+02:00"], 2, 9),
+            "+03:00; 3 kayıt +02:00 diliminden çevrildi; 2 kaydın saat dilimi yazılmamış, bu dilimde sayıldı"
+        );
+    }
+
+    #[test]
+    fn son_suresi_raporun_dilimindeki_en_yeni_kayittan() {
+        // 12:00+03:00 en yeni gibi görünür ama 09:00+00:00'dır. En yeni kayıt 11:00; son bir
+        // saat 10:00'dan başlar.
+        let metin = "[2026-10-24T10:00:00+00:00] local.ERROR: Bir\n\
+                     [2026-10-24T12:00:00+03:00] local.ERROR: İki\n\
+                     [2026-10-24T11:00:00+00:00] local.ERROR: Üç";
+        let ayarlar = RaporAyarlari {
+            filtre: Filtre {
+                son: Some(3_600),
+                ..Filtre::default()
+            },
+            ..RaporAyarlari::default()
+        };
+        let ozet = Ozet::metinden("a.log", metin, &ayarlar).unwrap();
+        let filtre = ozet.filtre.as_ref().unwrap();
+        assert_eq!(
+            filtre.baslangic,
+            Some(Zaman::kayittan("2026-10-24 10:00:00"))
+        );
+        assert_eq!(filtre.kayit_sayisi, 2);
+        // Dilim verilirse sınır da o dilimdedir
+        let ayarlar = RaporAyarlari {
+            saat_dilimi: SaatDilimi::ayristir("+03:00"),
+            ..ayarlar
+        };
+        let ozet = Ozet::metinden("a.log", metin, &ayarlar).unwrap();
+        let filtre = ozet.filtre.as_ref().unwrap();
+        assert_eq!(
+            filtre.baslangic,
+            Some(Zaman::kayittan("2026-10-24 13:00:00"))
+        );
+        assert_eq!(filtre.kayit_sayisi, 2);
+        assert_eq!(
+            ozet.zaman_araligi,
+            Some((
+                Zaman::kayittan("2026-10-24 13:00:00"),
+                Zaman::kayittan("2026-10-24 14:00:00")
+            ))
         );
     }
 
@@ -1486,16 +1656,17 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
 
     #[test]
     fn zaman_tek_gunde_saat_cok_gunde_tarihle_gosterilir() {
+        let zaman = Zaman::kayittan;
         assert_eq!(
-            zaman_goster("2026-10-24 14:03:11", ZamanGosterimi::Saat),
+            zaman_goster(zaman("2026-10-24 14:03:11"), ZamanGosterimi::Saat),
             "14:03:11"
         );
         assert_eq!(
-            zaman_goster("2026-10-24T14:03:11.123456+03:00", ZamanGosterimi::AyGun),
+            zaman_goster(zaman("2026-10-24 14:03:11"), ZamanGosterimi::AyGun),
             "10-24 14:03:11"
         );
         assert_eq!(
-            zaman_goster("2025-07-23T14:03:11.123456+03:00", ZamanGosterimi::Tarih),
+            zaman_goster(zaman("2025-07-23 14:03:11"), ZamanGosterimi::Tarih),
             "2025-07-23 14:03:11"
         );
         assert_eq!(
@@ -1553,8 +1724,8 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         let satir = &analiz.satirlar[0];
         assert_eq!(satir.adet, 3);
         assert_eq!(satir.seviye, Seviye::Error);
-        assert_eq!(satir.ilk, "2026-10-24 10:00:01");
-        assert_eq!(satir.son, "2026-10-24 10:00:09");
+        assert_eq!(satir.ilk, Zaman::kayittan("2026-10-24 10:00:01"));
+        assert_eq!(satir.son, Zaman::kayittan("2026-10-24 10:00:09"));
     }
 
     /// Tekrarlanabilir sözde rastgele sayılar (xorshift64*).
@@ -1773,8 +1944,8 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
                     satir.kalip.clone(),
                     satir.adet,
                     satir.seviye,
-                    satir.ilk.clone(),
-                    satir.son.clone(),
+                    satir.ilk.to_string(),
+                    satir.son.to_string(),
                     satir.ornek.clone(),
                     satir.parmak_izi.as_ref().map(ToString::to_string),
                 )
@@ -1821,8 +1992,12 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             .map(|alt| (alt.ilk_kayit(), alt.ornek().to_owned()))
             .collect();
         assert_eq!(tahmini.len(), 5);
-        let mut kaynak =
-            YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), depo.dizin().to_vec(), None);
+        let mut kaynak = YenidenOkuyucu::new(
+            Cursor::new(metin.as_bytes()),
+            depo.dizin().to_vec(),
+            None,
+            None,
+        );
         depo.ornekleri_tamamla(&mut kaynak).unwrap();
         // Bölünen parçanın örneği artık ilk kaydının kendi mesajı; tahmini örnek (aynı maskeli
         // mesajlı ilk kaydınki) en az birinde farklıydı
@@ -1861,10 +2036,10 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
     }
 
     #[test]
-    fn ayni_zamanli_kayitlarda_ilk_ve_son_logdaki_siraya_gore() {
-        // Aynı kalıbın iki seviyesi iki alt gruptur. İlk görülme 10:00:00'da iki kez, son
-        // görülme 10:09:00'da iki kez; ikisinde de logda önce gelen kayıt (ikinci alt gruptan)
-        // seçilir. Zaman logda yazıldığı gibi gösterildiği için hangisinin seçildiği görünür.
+    fn farkli_dilimli_kayitlarda_ilk_ve_son_cevrilmis_zamana_gore() {
+        // Aynı kalıbın iki seviyesi iki alt gruptur. Raporun saat dilimi JSON kaydındaki
+        // +00:00: 10:09+03:00'daki WARNING kaydı 07:09'dur, kalıbın ilk kaydı odur. Metin
+        // olarak ya da saat dilimi yok sayılarak karşılaştırılsaydı en son o görünürdü.
         let metin = [
             "[2026-10-24 10:05:00] local.INFO: Kuyruk dolu",
             r#"{"message":"Kuyruk dolu","level_name":"WARNING","datetime":"2026-10-24T10:00:00.5+00:00"}"#,
@@ -1878,8 +2053,8 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         let satir = &analiz.satirlar[0];
         assert_eq!(satir.adet, 5);
         assert_eq!(satir.seviye, Seviye::Warning);
-        assert_eq!(satir.ilk, "2026-10-24T10:00:00.5+00:00");
-        assert_eq!(satir.son, "2026-10-24T10:09:00+03:00");
+        assert_eq!(satir.ilk, Zaman::kayittan("2026-10-24 07:09:00"));
+        assert_eq!(satir.son, Zaman::kayittan("2026-10-24 10:09:00"));
         assert_eq!(analiz.alt_grup_satiri, [0, 0]);
     }
 
@@ -2010,8 +2185,11 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         assert_eq!(ilk.seviye, Seviye::Critical);
         assert!(ilk.kalip.starts_with("Redis bağlantısı kurulamadı"));
         assert_eq!(
-            (ilk.ilk.as_str(), ilk.son.as_str()),
-            ("2026-10-24 17:05:13", "2026-10-24 17:06:45")
+            (ilk.ilk.to_string(), ilk.son.to_string()),
+            (
+                "2026-10-24 17:05:13".to_string(),
+                "2026-10-24 17:06:45".to_string()
+            )
         );
         assert!(ilk.ornek.contains("10.0.3.12:6379"));
         assert_eq!(
@@ -2041,7 +2219,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             .find(|satir| satir.kalip.contains("kargo_ucreti"))
             .unwrap();
         assert_eq!(kargo.adet, 4);
-        assert_eq!(kargo.ilk, "2026-10-24 15:02:11");
+        assert_eq!(kargo.ilk, Zaman::kayittan("2026-10-24 15:02:11"));
 
         // 16:10–16:16 arasındaki ödeme zaman aşımı patlaması
         let curl = analiz
@@ -2051,8 +2229,11 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             .unwrap();
         assert_eq!(curl.adet, 6);
         assert_eq!(
-            (curl.ilk.as_str(), curl.son.as_str()),
-            ("2026-10-24 16:10:02", "2026-10-24 16:16:02")
+            (curl.ilk, curl.son),
+            (
+                Zaman::kayittan("2026-10-24 16:10:02"),
+                Zaman::kayittan("2026-10-24 16:16:02")
+            )
         );
     }
 
@@ -2185,19 +2366,21 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         ) -> Result<Ozet, OzetHatasi> {
             let filtre = &ayarlar.filtre;
             let en_yeni = if filtre.sonu_gerekir() {
-                crate::okuyucu::en_yeni_zaman(log_metni.as_bytes()).unwrap()
+                crate::okuyucu::en_yeni_zaman(log_metni.as_bytes(), ayarlar.saat_dilimi).unwrap()
             } else {
                 None
             };
             let depo_ayarlari = DepoAyarlari {
                 drain: ayarlar.drain.clone(),
                 filtre: (!filtre.bos_mu()).then(|| filtre.coz(en_yeni).expect("geçerli filtre")),
+                saat_dilimi: ayarlar.saat_dilimi,
             };
             let mut depo = Depo::doldur(depo_ayarlari, log_metni.as_bytes()).unwrap();
             let mut kaynak = YenidenOkuyucu::new(
                 Cursor::new(log_metni.as_bytes()),
                 depo.dizin().to_vec(),
                 depo.filtre().copied(),
+                depo.saat_dilimi(),
             );
             Ozet::hesapla(dosya.to_owned(), &mut depo, ayarlar, &mut kaynak)
         }

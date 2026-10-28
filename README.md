@@ -180,6 +180,7 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `--baslangic <zaman>` | Yalnızca bu andan (dahil) sonraki kayıtlar. Zaman `--karsilastir` gibi yazılır. | |
 | `--bitis <zaman>` | Yalnızca bu andan (hariç) önceki kayıtlar. | |
 | `--son <süre>` | Yalnızca logun son kısmı: en yeni kayıttan bu kadar öncesinden bu yana. Süre: `30dk`, `2sa`, `1g`, `1sa30dk`. | |
+| `--saat-dilimi <dilim>` | Zamanları bu saat diliminde göster: `+03:00`, `-05:30`, `Z` (UTC). Saat dilimi yazılı kayıtlar bu dilime çevrilir. | logda yazılı ilk dilim |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
 
@@ -199,6 +200,9 @@ veylog --ani-artis 5 storage/logs/laravel.log
 # Logun son iki saatindeki hatalar; ya da yalnızca dünkü 14:00–16:00
 veylog --seviye error --son 2sa storage/logs/laravel.log
 veylog --baslangic "2026-10-23 14:00" --bitis "2026-10-23 16:00" storage/logs/laravel.log
+
+# UTC'de yazılmış bir log, Türkiye saatiyle
+veylog --saat-dilimi +03:00 storage/logs/laravel.log
 
 # Sıkıştırılmış bir günlük log ya da sunucudaki bir log: dosya yerine - standart girdidir
 zcat laravel-2026-10-24.log.gz | veylog -
@@ -228,6 +232,13 @@ gününe uygulanır. `--son` ve yalnızca saat verilmiş sınırlar logun sonunu
 log önce bir kez taranır (standart girdi o sırada geçici bir dosyaya kopyalanır). Filtreye
 uymayan kayıtlar maskelenmediği ve kümelenmediği için filtreli bir rapor daha hızlı çıkar:
 500 MB'lık bir logun son iki saati 2,5 saniyede özetlenir.
+
+Kayıtlarda saat dilimi yazılıysa (Monolog'un ISO 8601 biçimi ve JSON satırları:
+`2026-10-24T14:03:11+03:00`) bütün zamanlar tek bir dilime, raporun saat dilimine çevrilir:
+yaz saatine geçişi kapsayan ya da saat dilimi değiştirilmiş bir uygulamanın logu doğru sıralanır.
+Raporun dilimi `--saat-dilimi` ile verilir; verilmezse logda yazılı ilk dilimdir. Raporda
+`Saat dilimi` satırı kaç kaydın çevrildiğini söyler. Filtrelerin ve `--karsilastir`'ın zamanları
+da bu dilimdedir ([ayrıntılar](docs/nasil-calisir.md#saat-dilimleri)).
 
 Çıkış kodları betiklerin hatanın türünü ayırt edebilmesi içindir: `0` başarılı, `1` dosya
 okunamadı ya da çıktı yazılamadı, `2` kullanım hatası (bilinmeyen seçenek, geçersiz değer,
@@ -380,7 +391,7 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
 
 ## Kalite
 
-- **Testler:** 244 birim testi her modülü ayrı ayrı, 31 uçtan uca test derlenmiş programı
+- **Testler:** 255 birim testi her modülü ayrı ayrı, 34 uçtan uca test derlenmiş programı
   çalıştırıp kullanıcının gördüğünü sınar: çıktı metinleri karakter karakter, JSON
   serde_json ile ayrıştırılarak, Markdown tablosu satır satır.
 - **Referans karşılaştırmaları:** yukarıdaki tabloda. Kümeleme gerçek ve sentetik loglarda
@@ -389,7 +400,7 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
   ([ayrıntılar](docs/nasil-calisir.md#değişken-konumlar)).
 - **Mutasyon testleri:** koda bilerek küçük hatalar yerleştirilip (bir karşılaştırmayı
   çevirmek, bir sınırı kaydırmak, bir kuralı silmek) testlerin yakaladığı denetlendi;
-  geliştirme adımlarında denenen 170 mutasyonun 169'u yakalandı. Kalan biri sonucu hiç
+  geliştirme adımlarında denenen 193 mutasyonun 192'si yakalandı. Kalan biri sonucu hiç
   değiştirmeyen (eşdeğer) bir mutasyondu.
 - **CI/CD:** `main` dalına her gönderimde ve her PR'da Linux, macOS ve Windows'ta testler;
   `rustfmt`, `clippy -D warnings` ve en düşük Rust sürümü (1.88). Her sürüm etiketinde dört
@@ -407,8 +418,8 @@ cargo test
 
 - Drain sözdizimine bakar, anlama bakmaz: `Kullanıcı <SAYI> giriş yaptı` ile
   `Kullanıcı <SAYI> çıkış yaptı` aynı kalıpta birleşir.
-- Saat dilimi yok sayılır; farklı saat dilimleriyle yazılmış kayıtlar aynı dosyada
-  karışırsa sıralama ve süreler kayabilir.
+- Saat dilimi yazılmamış kayıtlar (Laravel'in varsayılan biçimi) raporun diliminde yazılmış
+  sayılır; `--saat-dilimi` onların zamanını değiştiremez.
 - Ani artışlarda günlük döngü hesaba katılmaz; bu yüzden yalnızca WARNING ve üstüne bakılır.
 - Tek seferde bir dosya okunur; birden çok dosya için `cat laravel-*.log | veylog -`.
 
@@ -433,7 +444,7 @@ src/
 ├── karsilastirma.rs iki zaman aralığının karşılaştırılması
 ├── ani_artis.rs     dilimler, medyan ve MAD, değiştirilmiş z puanı, çift eşik
 ├── istatistik.rs    binom dağılımının kuyruğu; seyrek dizilerde medyan ve MAD
-├── zaman.rs         tarih ve saat hesapları
+├── zaman.rs         tarih ve saat hesapları, saat dilimleri
 ├── json.rs          JSON çıktısı
 └── markdown.rs      Markdown çıktısı
 tests/cli.rs         derlenmiş programı çalıştıran uçtan uca testler
@@ -445,7 +456,7 @@ ornekler/            kurgusal örnek loglar
 
 - [x] Dosyayı satır satır okumak: bellek kullanımı dosyanın boyutundan bağımsız
 - [ ] Birden çok dosyayı ve `.gz` arşivlerini doğrudan okumak
-- [ ] Saat dilimlerini hesaba katmak
+- [x] Saat dilimlerini hesaba katmak
 
 Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md).
 
@@ -473,9 +484,10 @@ Drain algorithm, fingerprints exceptions by class and first application frame (s
 vendor code, entry points and middleware pass-through frames, and pointing Blade errors at
 the template), compares two time ranges with an exact conditional binomial test, and detects
 sudden spikes with median/MAD-based modified z-scores. It reads Laravel's text format and
-Monolog's JSON lines, handles Windows paths, and writes text, JSON or Markdown. The file is
-streamed line by line into a compact store, so a 2 GB log is summarized with 30 MB of
-memory. Its only dependency is `regex`; the JSON reader and writer, statistics and argument
+Monolog's JSON lines, handles Windows paths, and writes text, JSON or Markdown. Timestamps
+with UTC offsets are converted to a single report time zone, so logs that span a daylight
+saving change sort correctly. The file is streamed line by line into a compact store, so a
+2 GB log is summarized with 30 MB of memory. Its only dependency is `regex`; the JSON reader and writer, statistics and argument
 parser are hand-written and tested against serde_json, scipy and Drain3. Prebuilt binaries
 for Linux (static), macOS and Windows are on the
 [Releases](https://github.com/Veysel440/veylog/releases/latest) page. The interface is in

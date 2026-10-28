@@ -26,6 +26,7 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
     "en_eski": "2026-10-24 08:59:58",
     "en_yeni": "2026-10-24 18:31:07"
   },
+  "saat_dilimi": null,
   "seviyeler": {
     "CRITICAL": 2,
     "ERROR": 16,
@@ -62,9 +63,11 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
 }
 ```
 
-- Hiçbir şey kısaltılmaz: kalıplar, örnekler ve zamanlar tam haliyle yazılır. Terminalde 80
+- Hiçbir şey kısaltılmaz: kalıplar ve örnekler tam haliyle yazılır. Terminalde 80
   karakterde kesilen SQL kalıbı JSON'da 257 karakterin tamamıdır. Sınıf adı da tam
   haliyledir: `Illuminate\Database\UniqueConstraintViolationException`.
+- Bütün zamanlar raporun saat diliminde ve tek biçimdedir: `2026-10-24 17:05:13` (yıl, ay,
+  gün, saat, dakika, saniye; kesir ve dilim yazılmaz). Dilim `saat_dilimi` alanındadır.
 - `dosya` logun yoludur; standart girdiden okunduysa `<standart girdi>`.
 - `istisna`, kayıtlar bir istisnadan gelmiyorsa `null`'dır. İstisnanın uygulama kodunda yeri
   bulunamadıysa `dosya` ve `satir` `null`'dır. View hatalarında `dosya` şablondur ve `satir`
@@ -75,6 +78,30 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
   [ayrıntılar](nasil-calisir.md#akışlı-okuma-ve-bellek)); öteki bütün sayılar tamdır.
 - `satirlar` en fazla `--ilk` kadar satırdır; `gosterilmeyen` dışarıda kalanların sayısıdır.
   Bütün satırlar için `--hepsi`.
+
+### Saat dilimi
+
+`saat_dilimi` raporun saat dilimidir
+([saat dilimleri](nasil-calisir.md#saat-dilimleri)). Logda hiç saat dilimi yazılmamışsa ve
+`--saat-dilimi` verilmediyse `null`'dır: zamanlar logda yazıldığı gibidir. Laravel'in metin
+kayıtlarıyla Monolog'un JSON satırlarının karıştığı örnek logda:
+
+<!-- denetim: veylog --bicim json ornekler/karisik.log | jq '.saat_dilimi' -->
+```json
+{
+  "dilim": "+00:00",
+  "kaynak": "log",
+  "cevrilen_kayit": 0,
+  "cevrilen_dilimler": [],
+  "dilimsiz_kayit": 12
+}
+```
+
+- `kaynak`: `secenek` (`--saat-dilimi` ile verildi) ya da `log` (logda yazılı ilk dilim).
+- `cevrilen_kayit`: başka bir dilimde yazılmış, raporun dilimine çevrilmiş kayıtlar;
+  `cevrilen_dilimler` onların dilimleri, küçükten büyüğe.
+- `dilimsiz_kayit`: saat dilimi yazılmamış, raporun diliminde sayılan kayıtlar. Sayılar
+  filtreye uyan kayıtlarındır.
 
 ### Filtre
 

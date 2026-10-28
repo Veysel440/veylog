@@ -1,10 +1,18 @@
 //! Zaman: kayıt zamanlarını ve `--karsilastir` değerini karşılaştırılabilir hale getirir,
 //! iki an arasındaki süreyi hesaplar.
 //!
-//! Kayıt zamanları metin olarak tutulur (`2026-10-24 14:03:11`). İki an arasında kaç saniye
-//! olduğunu bulmak için tarih bir sayıya çevrilir: 1970-01-01'den bu yana geçen gün. Saat
-//! dilimi ve saniyenin kesri dikkate alınmaz; zamanın ilk 19 karakteri kullanılır. Ters yön de
-//! vardır: saniyeden ana (ani artış dilimlerinin başı ve sonu böyle bulunur).
+//! Kayıt zamanları logda metin olarak yazılır (`2026-10-24 14:03:11`). İki an arasında kaç
+//! saniye olduğunu bulmak için tarih bir sayıya çevrilir: 1970-01-01'den bu yana geçen gün.
+//! Saniyenin kesri dikkate alınmaz. Ters yön de vardır: saniyeden ana (ani artış dilimlerinin
+//! başı ve sonu böyle bulunur).
+//!
+//! **Saat dilimi.** Monolog'un ISO 8601 biçiminde zamanın sonunda saat dilimi yazar
+//! (`2026-10-24T14:03:11+03:00`); Laravel'in varsayılan biçiminde yazmaz. Bütün zamanlar tek
+//! bir dilimde, raporun saat diliminde karşılaştırılır (`DilimCevirici`): `--saat-dilimi` ile
+//! verilir, verilmezse logda saat dilimi yazılı ilk kaydınkidir. Saat dilimi başka olan bir
+//! kayıt bu dilime çevrilir; saat dilimi yazılmamış bir kayıt bu dilimde yazılmış sayılır.
+//! Böylece yaz saatine geçişi kapsayan bir log (`+02:00` ve `+01:00`) ya da saat dilimi
+//! değiştirilmiş bir uygulamanın logu doğru sıralanır.
 
 use std::fmt;
 use std::ops::RangeInclusive;
@@ -69,6 +77,16 @@ impl Zaman {
             + i64::from(self.saniye)
     }
 
+    /// İki an aynı günde mi?
+    pub fn ayni_gun(self, diger: Zaman) -> bool {
+        (self.yil, self.ay, self.gun) == (diger.yil, diger.ay, diger.gun)
+    }
+
+    /// İki an aynı yılda mı?
+    pub fn ayni_yil(self, diger: Zaman) -> bool {
+        self.yil == diger.yil
+    }
+
     /// `saniye`nin tersi: 1970-01-01 00:00:00'dan bu yana geçen saniyeden an.
     ///
     /// Yıl dört basamaklı kalır: 0000-01-01 00:00:00'dan önceki bir saniye o ana, 9999-12-31
@@ -124,6 +142,171 @@ impl fmt::Display for Zaman {
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
             self.yil, self.ay, self.gun, self.saat, self.dakika, self.saniye
         )
+    }
+}
+
+/// Bir saat dilimi: UTC'den fark, saniye. `+03:00` → 10 800, `-05:30` → −19 800.
+///
+/// Fark RFC 3339'daki gibi en fazla 23 saat 59 dakikadır. Gerçek saat dilimleri −12:00 ile
+/// +14:00 arasındadır; daha geniş aralık, logda yazılabilecek her farkın okunabilmesi içindir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SaatDilimi(i32);
+
+impl SaatDilimi {
+    pub const UTC: SaatDilimi = SaatDilimi(0);
+
+    /// UTC'den fark, saniye.
+    pub fn saniye(self) -> i64 {
+        i64::from(self.0)
+    }
+
+    /// Saat ve dakikadan; saat 0–23, dakika 0–59 değilse None.
+    fn saat_dakika(eksi: bool, saat: u16, dakika: u16) -> Option<SaatDilimi> {
+        let fark = i32::from(saat) * 3_600 + i32::from(dakika) * 60;
+        (saat <= 23 && dakika <= 59).then_some(SaatDilimi(if eksi { -fark } else { fark }))
+    }
+
+    /// Komut satırındaki yazılışından: `+03:00`, `+0300`, `+03`, `+3`, `+3:30`, `-05:30`, `Z`,
+    /// `UTC`.
+    pub fn ayristir(metin: &str) -> Option<SaatDilimi> {
+        if metin.eq_ignore_ascii_case("z") || metin.eq_ignore_ascii_case("utc") {
+            return Some(SaatDilimi::UTC);
+        }
+        let (eksi, geri) = match metin.as_bytes().first()? {
+            b'+' => (false, &metin[1..]),
+            b'-' => (true, &metin[1..]),
+            _ => return None,
+        };
+        let (saat, dakika) = match geri.split_once(':') {
+            Some(parcalar) => parcalar,
+            // "0300": ilk ikisi saat, son ikisi dakika
+            None if geri.len() == 4 => geri.split_at(2),
+            None => (geri, "00"),
+        };
+        SaatDilimi::saat_dakika(eksi, sayi(saat, 1..=2)?, sayi(dakika, 2..=2)?)
+    }
+
+    /// Bir kayıt zamanının sonundaki saat dilimi: `...+03:00`, `...+0300`, `...Z`. Yazılmamışsa
+    /// None. Zamanın biçimi kayıt ayrıştırılırken `zaman_eki` ile denetlenmiştir.
+    pub fn kayittan(zaman: &str) -> Option<SaatDilimi> {
+        zaman_eki(zaman.as_bytes().get(19..)?).flatten()
+    }
+}
+
+/// `+03:00`, `-05:30`, `+00:00`
+impl fmt::Display for SaatDilimi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let isaret = if self.0 < 0 { '-' } else { '+' };
+        let mutlak = self.0.unsigned_abs();
+        write!(
+            f,
+            "{isaret}{:02}:{:02}",
+            mutlak / 3_600,
+            mutlak % 3_600 / 60
+        )
+    }
+}
+
+/// Kayıt zamanının saniyeden sonraki kısmı: isteğe bağlı kesir (`.123456`), ardından isteğe
+/// bağlı saat dilimi (`Z`, `+03:00`, `+0300`). Geçersizse None; geçerliyse yazılmışsa saat
+/// dilimi: `""` → `Some(None)`, `".5+03:00"` → `Some(Some(+03:00))`, `"+25:00"` → None.
+///
+/// Kayıt ayrıştırıcı (`kayit` modülü) bir zamanın geçerliliğini bununla denetler; saat dilimini
+/// okuyan da (`SaatDilimi::kayittan`) bunu kullanır. Böylece kabul edilen her saat dilimi
+/// okunabilir.
+pub fn zaman_eki(ek: &[u8]) -> Option<Option<SaatDilimi>> {
+    let ek = match ek.strip_prefix(b".") {
+        Some(kesir) => {
+            let rakam_sayisi = kesir
+                .iter()
+                .take_while(|bayt| bayt.is_ascii_digit())
+                .count();
+            if rakam_sayisi == 0 {
+                return None;
+            }
+            &kesir[rakam_sayisi..]
+        }
+        None => ek,
+    };
+    let (isaret, saat, dakika) = match ek {
+        [] => return Some(None),
+        [b'Z'] => return Some(Some(SaatDilimi::UTC)),
+        [isaret, s1, s2, b':', d1, d2] | [isaret, s1, s2, d1, d2] => {
+            (*isaret, rakamlar(&[*s1, *s2])?, rakamlar(&[*d1, *d2])?)
+        }
+        _ => return None,
+    };
+    let eksi = match isaret {
+        b'+' => false,
+        b'-' => true,
+        _ => return None,
+    };
+    SaatDilimi::saat_dakika(eksi, saat, dakika).map(Some)
+}
+
+/// Bir kaydın saat dilimi, raporun saat dilimine göre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KayitDilimi {
+    /// Kayıtta saat dilimi yazılmamış: raporun diliminde yazılmış sayıldı.
+    Yazilmamis,
+    /// Raporun diliminde yazılmış.
+    Ayni,
+    /// Başka bir dilimde yazılmış: zamanı raporun dilimine çevrildi.
+    Baska(SaatDilimi),
+}
+
+/// Kayıt zamanlarını raporun saat dilimine çevirir.
+///
+/// Raporun saat dilimi verilmediyse (`--saat-dilimi`), saat dilimi yazılı ilk kayıtta belirlenir
+/// ve bir daha değişmez. O kayıttan önce gelen, saat dilimi yazılmamış kayıtlar da bu dilimde
+/// sayılır: çevrilmeleri gerekmez. Böylece her kayıt geldiği anda çevrilebilir; logun tamamını
+/// önce okumak gerekmez.
+///
+/// Logu aynı sırayla okuyan iki çevirici aynı dilimi bulur, her kayda aynı zamanı verir: ön
+/// tarama ile asıl okuma bu yüzden tutarlıdır. Logu ortasından okuyan biri (`YenidenOkuyucu`)
+/// asıl okumanın bulduğu dilimle başlatılır; dilim belli olunca her kaydın zamanı yalnızca
+/// kendisine bağlıdır.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DilimCevirici {
+    dilim: Option<SaatDilimi>,
+    verildi: bool,
+}
+
+impl DilimCevirici {
+    /// `dilim`: raporun saat dilimi; None ise logdan belirlenir.
+    pub fn new(dilim: Option<SaatDilimi>) -> DilimCevirici {
+        DilimCevirici {
+            dilim,
+            verildi: dilim.is_some(),
+        }
+    }
+
+    /// Kaydın zamanı raporun saat diliminde ve kaydın dilimi. `metin`: kaydın logda yazıldığı
+    /// haliyle zamanı.
+    pub fn cevir(&mut self, metin: &str) -> (Zaman, KayitDilimi) {
+        let yerel = Zaman::kayittan(metin);
+        let Some(kendi) = SaatDilimi::kayittan(metin) else {
+            return (yerel, KayitDilimi::Yazilmamis);
+        };
+        let dilim = *self.dilim.get_or_insert(kendi);
+        if kendi == dilim {
+            (yerel, KayitDilimi::Ayni)
+        } else {
+            // Önce UTC'ye, sonra raporun dilimine
+            let cevrilmis = yerel.saniye() - kendi.saniye() + dilim.saniye();
+            (Zaman::saniyeden(cevrilmis), KayitDilimi::Baska(kendi))
+        }
+    }
+
+    /// Raporun saat dilimi; verilmediyse ve logda henüz saat dilimi yazılı bir kayıt
+    /// görülmediyse None.
+    pub fn dilim(&self) -> Option<SaatDilimi> {
+        self.dilim
+    }
+
+    /// Dilim komut satırında mı verildi?
+    pub fn verildi(&self) -> bool {
+        self.verildi
     }
 }
 
@@ -526,6 +709,160 @@ mod testler {
         // Tam zaman verildiyse son kayıt değiştirmez
         let tam_nokta = ZamanNoktasi::ayristir("2026-10-24 15:00").unwrap();
         assert_eq!(tam_nokta.coz(son_kayit).to_string(), "2026-10-24 15:00:00");
+    }
+
+    #[test]
+    fn saat_dilimi_komut_satirindan_okunur() {
+        for (metin, saniye, yazilis) in [
+            ("+03:00", 10_800, "+03:00"),
+            ("+0300", 10_800, "+03:00"),
+            ("+3", 10_800, "+03:00"),
+            ("+03", 10_800, "+03:00"),
+            ("+3:30", 12_600, "+03:30"),
+            ("-05:30", -19_800, "-05:30"),
+            ("+14:00", 50_400, "+14:00"),
+            ("-12:00", -43_200, "-12:00"),
+            ("+23:59", 86_340, "+23:59"),
+            ("-23:59", -86_340, "-23:59"),
+            ("Z", 0, "+00:00"),
+            ("z", 0, "+00:00"),
+            ("utc", 0, "+00:00"),
+            ("UTC", 0, "+00:00"),
+            ("+00:00", 0, "+00:00"),
+            ("-00:00", 0, "+00:00"),
+        ] {
+            let dilim = SaatDilimi::ayristir(metin).unwrap();
+            assert_eq!(dilim.saniye(), saniye, "{metin}");
+            assert_eq!(dilim.to_string(), yazilis, "{metin}");
+        }
+        for metin in [
+            "",
+            "3",
+            "03:00",
+            "+",
+            "-",
+            "+24",
+            "+24:00",
+            "+03:60",
+            "+3:0",
+            "+003:00",
+            "+030",
+            "++03",
+            "+03:00:00",
+            "+aa",
+            "+0a:00",
+            "+03:0a",
+            " +03:00",
+            "+03:00 ",
+            "GMT",
+            "Europe/Istanbul",
+        ] {
+            assert_eq!(SaatDilimi::ayristir(metin), None, "{metin:?}");
+        }
+    }
+
+    #[test]
+    fn kayit_zamanindaki_saat_dilimi_okunur() {
+        let dilim = |metin| SaatDilimi::kayittan(metin).map(SaatDilimi::saniye);
+        assert_eq!(dilim("2026-10-24 14:03:11"), None);
+        assert_eq!(dilim("2026-10-24T14:03:11"), None);
+        assert_eq!(dilim("2026-10-24T14:03:11.123456"), None);
+        assert_eq!(dilim("2026-10-24T14:03:11+03:00"), Some(10_800));
+        assert_eq!(dilim("2026-10-24T14:03:11.5+0300"), Some(10_800));
+        assert_eq!(dilim("2026-10-24T14:03:11.123456-04:30"), Some(-16_200));
+        assert_eq!(dilim("2026-10-24T14:03:11Z"), Some(0));
+        assert_eq!(dilim("2026-10-24T14:03:11.123Z"), Some(0));
+        assert_eq!(dilim("2026-10-24T14:03:11+23:59"), Some(86_340));
+        assert_eq!(dilim("2026-10-24T14:03"), None);
+    }
+
+    #[test]
+    fn zaman_eki_denetlenir() {
+        let ek =
+            |metin: &str| zaman_eki(metin.as_bytes()).map(|dilim| dilim.map(SaatDilimi::saniye));
+        assert_eq!(ek(""), Some(None));
+        assert_eq!(ek(".123456"), Some(None));
+        assert_eq!(ek("Z"), Some(Some(0)));
+        assert_eq!(ek(".5Z"), Some(Some(0)));
+        assert_eq!(ek("+03:00"), Some(Some(10_800)));
+        assert_eq!(ek("-0330"), Some(Some(-12_600)));
+        assert_eq!(ek(".000001+03:00"), Some(Some(10_800)));
+        for gecersiz in [
+            ".", ".Z", "z", "+3:00", "+03:0", "+03:000", "+0300Z", "+24:00", "-24:00", "+03:60",
+            "+0360", "*03:00", "+0a:00", "+03:0b", " +03:00", "+03:00 ", "Z ", "UTC",
+        ] {
+            assert_eq!(ek(gecersiz), None, "{gecersiz:?}");
+        }
+    }
+
+    #[test]
+    fn kayitlar_raporun_dilimine_cevrilir() {
+        let yerel = Zaman::kayittan;
+        // Dilim verilmedi: ilk dilimli kayıttan belirlenir; önceki dilimsiz kayıt çevrilmez
+        let mut cevirici = DilimCevirici::new(None);
+        assert!(!cevirici.verildi());
+        assert_eq!(
+            cevirici.cevir("2026-10-24 09:00:00"),
+            (yerel("2026-10-24 09:00:00"), KayitDilimi::Yazilmamis)
+        );
+        assert_eq!(cevirici.dilim(), None);
+        assert_eq!(
+            cevirici.cevir("2026-10-24T10:00:00+02:00"),
+            (yerel("2026-10-24 10:00:00"), KayitDilimi::Ayni)
+        );
+        let iki = SaatDilimi::ayristir("+02:00").unwrap();
+        assert_eq!(cevirici.dilim(), Some(iki));
+        // Yaz saatinden kış saatine: 02:30+01:00, 03:30+02:00'dır
+        let bir = SaatDilimi::ayristir("+01:00").unwrap();
+        assert_eq!(
+            cevirici.cevir("2026-10-25T02:30:00+01:00"),
+            (yerel("2026-10-25 03:30:00"), KayitDilimi::Baska(bir))
+        );
+        // Dilim bir kez belirlenince değişmez
+        assert_eq!(cevirici.dilim(), Some(iki));
+        // Dilimsiz kayıt raporun diliminde sayılır
+        assert_eq!(
+            cevirici.cevir("2026-10-25 04:00:00"),
+            (yerel("2026-10-25 04:00:00"), KayitDilimi::Yazilmamis)
+        );
+
+        // Verilen dilime çevrilir; gece yarısını, ayı ve yılı aşar
+        let mut cevirici = DilimCevirici::new(SaatDilimi::ayristir("+03:00"));
+        assert!(cevirici.verildi());
+        assert_eq!(
+            cevirici.cevir("2026-12-31T22:30:00Z"),
+            (
+                yerel("2027-01-01 01:30:00"),
+                KayitDilimi::Baska(SaatDilimi::UTC)
+            )
+        );
+        assert_eq!(
+            cevirici.cevir("2026-10-31T22:30:00.123+03:00"),
+            (yerel("2026-10-31 22:30:00"), KayitDilimi::Ayni)
+        );
+        // Geri yönde de: 2027-01-01 02:00-05:00 = 2027-01-01 10:00+03:00; 2026-03-01 00:30+05:00 =
+        // 2026-02-28 22:30+03:00 (artık olmayan yıl)
+        assert_eq!(
+            cevirici.cevir("2027-01-01T02:00:00-05:00").0,
+            yerel("2027-01-01 10:00:00")
+        );
+        assert_eq!(
+            cevirici.cevir("2026-03-01T00:30:00+05:00").0,
+            yerel("2026-02-28 22:30:00")
+        );
+        // Kendisi verilen dilimde olan kayıt
+        assert_eq!(cevirici.dilim(), SaatDilimi::ayristir("+03:00"));
+    }
+
+    #[test]
+    fn ayni_gun_ve_yil() {
+        let zaman = Zaman::kayittan;
+        assert!(zaman("2026-10-24 00:00:00").ayni_gun(zaman("2026-10-24 23:59:59")));
+        assert!(!zaman("2026-10-24 23:59:59").ayni_gun(zaman("2026-10-25 00:00:00")));
+        assert!(!zaman("2026-10-24 10:00:00").ayni_gun(zaman("2026-11-24 10:00:00")));
+        assert!(!zaman("2026-10-24 10:00:00").ayni_gun(zaman("2025-10-24 10:00:00")));
+        assert!(zaman("2026-01-01 00:00:00").ayni_yil(zaman("2026-12-31 23:59:59")));
+        assert!(!zaman("2026-12-31 23:59:59").ayni_yil(zaman("2027-01-01 00:00:00")));
     }
 
     #[test]

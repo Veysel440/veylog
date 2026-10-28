@@ -164,7 +164,8 @@ fn ozet_cikar(
         Some(dosya) if dosya.metadata().is_ok_and(|bilgi| bilgi.is_file()) => {
             let mut girdi = BufReader::with_capacity(TAMPON, dosya);
             let en_yeni = if on_tarama {
-                let en_yeni = okuyucu::en_yeni_zaman(&mut girdi).map_err(Hata::Okuma)?;
+                let en_yeni = okuyucu::en_yeni_zaman(&mut girdi, secenekler.rapor.saat_dilimi)
+                    .map_err(Hata::Okuma)?;
                 girdi.seek(SeekFrom::Start(0)).map_err(Hata::Okuma)?;
                 en_yeni
             } else {
@@ -198,7 +199,8 @@ fn ozet_cikar(
                     if on_tarama {
                         // Ön tarama girdiyi kopyalar; asıl okuma kopyadan yapılır
                         let en_yeni =
-                            okuyucu::en_yeni_zaman(&mut kopyalayan).map_err(Hata::Okuma)?;
+                            okuyucu::en_yeni_zaman(&mut kopyalayan, secenekler.rapor.saat_dilimi)
+                                .map_err(Hata::Okuma)?;
                         kopyayi_bitir(kopyalayan)?;
                         let mut kopyasi = gecici.dosya();
                         kopyasi.seek(SeekFrom::Start(0)).map_err(Hata::Kopya)?;
@@ -225,9 +227,9 @@ fn ozet_cikar(
     }
 
     let dizin = depo.dizin().to_vec();
-    let filtre = depo.filtre().copied();
+    let (filtre, dilim) = (depo.filtre().copied(), depo.saat_dilimi());
     let mut kaynak: Box<dyn OrnekKaynagi + '_> = match (girdi, &kopya) {
-        (Some(girdi), _) => Box::new(YenidenOkuyucu::new(girdi, dizin, filtre)),
+        (Some(girdi), _) => Box::new(YenidenOkuyucu::new(girdi, dizin, filtre, dilim)),
         (None, Some(gecici)) => {
             let mut dosya = gecici.dosya();
             dosya.seek(SeekFrom::Start(0)).map_err(Hata::Kopya)?;
@@ -235,6 +237,7 @@ fn ozet_cikar(
                 BufReader::with_capacity(TAMPON, dosya),
                 dizin,
                 filtre,
+                dilim,
             ))
         }
         (None, None) => Box::new(OkunamazKaynak),
@@ -270,6 +273,7 @@ fn depoyu_doldur(
     let ayarlar = DepoAyarlari {
         drain: rapor.drain.clone(),
         filtre,
+        saat_dilimi: rapor.saat_dilimi,
     };
     Depo::doldur(ayarlar, girdi).map_err(Hata::Okuma)
 }

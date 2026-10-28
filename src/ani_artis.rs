@@ -428,6 +428,7 @@ mod testler {
             Cursor::new(metin.as_bytes()),
             depo.dizin().to_vec(),
             depo.filtre().copied(),
+            depo.saat_dilimi(),
         );
         AniArtislar::hesapla(depo, analiz, dakika, &mut kaynak).unwrap()
     }

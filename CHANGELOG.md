@@ -39,6 +39,22 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
   `filtre` nesnesi yalnızca filtre verilince yazılır. Filtreye uymayan kayıtlar maskelenmez ve
   kümelenmez: 500 MB'lık bir logun son iki saati 2,5 saniyede özetlenir.
 
+### Saat dilimleri
+
+- Kayıt zamanlarındaki saat dilimi (`+03:00`, `Z`) hesaba katılır: bütün zamanlar tek bir
+  dilimde, raporun saat diliminde karşılaştırılır ve gösterilir. Yaz saatine geçişi kapsayan ya
+  da saat dilimi değiştirilmiş bir uygulamanın logu doğru sıralanır; süreler, karşılaştırma ve
+  ani artışlar kaymaz.
+- `--saat-dilimi +03:00`: raporun saat dilimi. Verilmezse logda saat dilimi yazılı ilk
+  kaydınkidir; saat dilimi yazılmamış kayıtlar bu dilimde sayılır. Filtrelerin ve
+  `--karsilastir`'ın zamanları da bu dilimdedir.
+- Metin ve Markdown çıktısında `Saat dilimi` satırı: raporun dilimi, kaç kaydın başka bir
+  dilimden çevrildiği, kaçında dilim yazılmadığı. JSON'da `saat_dilimi` nesnesi; logda dilim
+  yazılmamışsa ve verilmediyse `null`.
+- Zamanlar her yerde tek biçimde yazılır: `2026-10-24 14:03:11`. 0.1.0 zaman aralığını ve
+  JSON'daki kalıp zamanlarını logdaki yazılışıyla veriyordu (`2026-10-24T14:03:11.123456+03:00`).
+- Takvimde olmayan bir saat dilimi (`+25:00`) taşıyan satır kayıt başlığı sayılmaz.
+
 ## [0.1.0] - 2026-10-26
 
 İlk sürüm.

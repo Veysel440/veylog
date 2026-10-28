@@ -487,9 +487,136 @@ fn iso_8601_zamanli_log_okunur() {
     let stdout = metin(&cikti.stdout);
     assert!(cikti.status.success());
     assert!(stdout.contains("Kayıt         : 2"), "{stdout}");
+    // Zamanlar tek biçimde; saat dilimi ayrı bir satırda
     assert!(
         stdout.contains(
-            "Zaman aralığı : 2026-10-24T14:03:11.123456+03:00 → 2026-10-24T14:03:12+03:00"
+            "  Zaman aralığı : 2026-10-24 14:03:11 → 2026-10-24 14:03:12\n  Saat dilimi   : +03:00\n"
+        ),
+        "{stdout}"
+    );
+}
+
+/// UTC'de yazılmış bir log: üç kayıt, biri yaz saatinden önce (+03:00) yazılmış.
+const UTC_LOG: &str = "\
+[2026-10-24T09:00:00.000000+00:00] production.ERROR: Kuyruk 1 dolu
+[2026-10-24T11:30:00.000000+00:00] production.ERROR: Kuyruk 2 dolu
+[2026-10-24T14:45:00+03:00] production.WARNING: Disk doluyor
+";
+
+#[test]
+fn saat_dilimi_verilirse_zamanlar_ona_cevrilir() {
+    let yol = gecici_dosya("utc.log", UTC_LOG.as_bytes());
+    let yol = yol.to_str().unwrap();
+
+    // Raporun dilimi logdaki ilk dilim (+00:00); +03:00'daki kayıt ona çevrilir
+    let cikti = veylog(&[yol]);
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains(
+            "  Zaman aralığı : 2026-10-24 09:00:00 → 2026-10-24 11:45:00\n  Saat dilimi   : +00:00; 1 kayıt +03:00 diliminden çevrildi\n"
+        ),
+        "{stdout}"
+    );
+
+    // --saat-dilimi +03:00: bütün zamanlar bu dilimde; filtre de
+    let cikti = veylog(&["--saat-dilimi", "+03:00", "--baslangic", "14:00", yol]);
+    let stdout = metin(&cikti.stdout);
+    assert!(cikti.status.success(), "{}", metin(&cikti.stderr));
+    assert!(
+        stdout.contains(
+            "  Zaman aralığı : 2026-10-24 14:30:00 → 2026-10-24 14:45:00\n  Saat dilimi   : +03:00 (--saat-dilimi); 1 kayıt +00:00 diliminden çevrildi\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Filtre        : 2026-10-24 14:00:00 ve sonrası: 2 kayıt"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("14:30:00  14:30:00  Kuyruk <SAYI> dolu"),
+        "{stdout}"
+    );
+
+    // JSON'da zamanlar raporun diliminde, dilim ayrı bir nesnede
+    let cikti = veylog(&["--bicim", "json", "--saat-dilimi", "+03:00", yol]);
+    let json = metin(&cikti.stdout);
+    assert!(
+        json.contains(
+            "\"zaman_araligi\": {\n    \"en_eski\": \"2026-10-24 12:00:00\",\n    \"en_yeni\": \"2026-10-24 14:45:00\"\n  },\n  \"saat_dilimi\": {\n    \"dilim\": \"+03:00\",\n    \"kaynak\": \"secenek\",\n    \"cevrilen_kayit\": 2,\n    \"cevrilen_dilimler\": [\n      \"+00:00\"\n    ],\n    \"dilimsiz_kayit\": 0\n  },"
+        ),
+        "{json}"
+    );
+
+    // Geçersiz dilim bir kullanım hatasıdır
+    let cikti = veylog(&["--saat-dilimi", "+3:0", yol]);
+    fs::remove_file(yol).ok();
+    assert_eq!(cikti.status.code(), Some(2));
+    assert!(
+        metin(&cikti.stderr).contains("veylog: --saat-dilimi için geçersiz değer \"+3:0\""),
+        "{}",
+        metin(&cikti.stderr)
+    );
+}
+
+#[test]
+fn son_ve_ani_artis_raporun_saat_diliminde() {
+    // UTC'de yazılmış bir log, Türkiye saatiyle (+03:00): en yeni kayıt 22:30Z = 01:30
+    let mut satirlar = vec![
+        "[2026-10-24T07:00:00+00:00] local.ERROR: Kuyruk 999 dolu".to_string(),
+        "[2026-10-24T08:30:00+00:00] local.INFO: Başladı".to_string(),
+        "[2026-10-24T08:35:00+00:00] local.ERROR: Kuyruk 1 dolu".to_string(),
+    ];
+    for numara in 50..56 {
+        satirlar.push(format!(
+            "[2026-10-24T09:00:{:02}+00:00] local.ERROR: Kuyruk {numara} dolu",
+            numara - 50
+        ));
+    }
+    satirlar.push("[2026-10-24T22:30:00+00:00] local.INFO: Bitti".to_string());
+    let yol = gecici_dosya("utc-son.log", satirlar.join("\n").as_bytes());
+    let yol = yol.to_str().unwrap();
+
+    // Son bir saat: 00:30'dan (+03:00) bu yana; 22:30Z'den değil
+    let cikti = veylog(&["--saat-dilimi", "+03:00", "--son", "1sa", yol]);
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains("Filtre        : 2026-10-25 00:30:00 ve sonrası (son 1 sa): 1 kayıt"),
+        "{stdout}"
+    );
+
+    // Ani artışın ilk kaydı (Kuyruk 50) alt grubunun ilk kaydı değil: yeniden okunur. Yeniden
+    // okuma da 11:00'dan (+03:00) sonrasını, yani 08:00Z'den sonrasını sayar.
+    let cikti = veylog(&[
+        "--saat-dilimi",
+        "+03:00",
+        "--baslangic",
+        "2026-10-24 11:00",
+        "--bitis",
+        "2026-10-24 13:00",
+        "-a",
+        "1",
+        yol,
+    ]);
+    fs::remove_file(yol).ok();
+    let (stdout, stderr) = (metin(&cikti.stdout), metin(&cikti.stderr));
+    assert!(stderr.is_empty(), "{stderr}");
+    let (_, artislar) = stdout.split_once("\nAni artışlar").unwrap();
+    assert!(artislar.contains("örnek: Kuyruk 50 dolu\n"), "{stdout}");
+}
+
+#[test]
+fn saat_dilimi_yazilmamis_logda_dilim_satiri_yok() {
+    // Laravel'in varsayılan biçimi: saat dilimi yazılmaz, satır da çıkmaz
+    let cikti = veylog(&["ornekler/laravel.log"]);
+    assert!(!metin(&cikti.stdout).contains("Saat dilimi"));
+    let cikti = veylog(&["--bicim", "json", "ornekler/laravel.log"]);
+    assert!(metin(&cikti.stdout).contains("\n  \"saat_dilimi\": null,\n"));
+    // Verilirse zamanlar olduğu gibi kalır; rapor bunu söyler
+    let cikti = veylog(&["--saat-dilimi", "+03:00", "ornekler/laravel.log"]);
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains(
+            "  Zaman aralığı : 2026-10-24 08:59:58 → 2026-10-24 18:31:07\n  Saat dilimi   : +03:00 (--saat-dilimi); kayıtlarda saat dilimi yazılı değil, zamanlar logdaki gibi\n"
         ),
         "{stdout}"
     );
