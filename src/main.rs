@@ -37,7 +37,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use depo::{Depo, DepoAyarlari};
 use dil::Dil;
 use filtre::FiltreHatasi;
-use komut_satiri::{Bicim, DIL_DEGISKENI, Komut, Secenekler};
+use komut_satiri::{Bicim, DIL_DEGISKENLERI, Komut, Secenekler};
 use okuyucu::{Kopyalayan, OrnekIstegi, OrnekKaynagi, YenidenOkuyucu};
 use rapor::{Ozet, OzetHatasi, gorunur};
 
@@ -83,8 +83,8 @@ fn main() {
             eprintln!(
                 "{}",
                 dil::sec(
-                    "Ayrıntılar için: veylog --yardim",
-                    "For details: veylog --lang en --help"
+                    "Ayrıntılar için: veylog --dil tr --yardim",
+                    "For details: veylog --help"
                 )
             );
             process::exit(2);
@@ -135,22 +135,26 @@ fn main() {
     yazma_sonucunu_denetle(yazildi.and_then(|()| cikti.flush()));
 }
 
-/// Arayüzün dilini seçer: `--dil` (`--lang`), yoksa `VEYLOG_DIL`, yoksa Türkçe. Ortam
-/// değişkeninin değeri tanınmıyorsa ve `--dil` verilmediyse iki dilde bir uyarı yazılır:
-/// değişkeni yazan büyük olasılıkla İngilizce bekliyordu.
+/// Arayüzün dilini seçer: `--lang` (`--dil`), yoksa `VEYLOG_LANG`, yoksa `VEYLOG_DIL`, yoksa
+/// İngilizce. Dolu olan ilk ortam değişkeni geçerlidir; değeri tanınmıyorsa ve `--lang`
+/// verilmediyse iki dilde bir uyarı yazılır: değişkeni yazan büyük olasılıkla bir dil seçmek
+/// istiyordu.
 fn dil_sec(argumanlar: &[OsString]) {
     let arguman_dili = komut_satiri::dil_bul(argumanlar);
-    let ortam = env::var(DIL_DEGISKENI)
-        .ok()
-        .filter(|deger| !deger.trim().is_empty());
-    let ortam_dili = ortam.as_deref().and_then(Dil::ayristir);
+    let ortam = DIL_DEGISKENLERI.into_iter().find_map(|ad| {
+        env::var(ad)
+            .ok()
+            .filter(|deger| !deger.trim().is_empty())
+            .map(|deger| (ad, deger))
+    });
+    let ortam_dili = ortam.as_ref().and_then(|(_, deger)| Dil::ayristir(deger));
     dil::ayarla(arguman_dili.or(ortam_dili).unwrap_or_default());
     if arguman_dili.is_none()
         && ortam_dili.is_none()
-        && let Some(deger) = ortam
+        && let Some((ad, deger)) = ortam
     {
         eprintln!(
-            "Uyarı / Warning: {DIL_DEGISKENI}=\"{}\" tanınmadı / not recognized; tr, en",
+            "Warning / Uyarı: {ad}=\"{}\" not recognized / tanınmadı; en, tr",
             gorunur(&deger)
         );
     }

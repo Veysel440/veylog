@@ -43,8 +43,9 @@ use crate::satir_bicimi::SatirBicimi;
 use crate::zaman::{SaatDilimi, ZamanNoktasi};
 use crate::zaman_bicimi::ZamanBicimi;
 
-/// Dili seçen ortam değişkeni: `VEYLOG_DIL=en`. `--dil` verilirse o geçerlidir.
-pub const DIL_DEGISKENI: &str = "VEYLOG_DIL";
+/// Dili seçen ortam değişkenleri, önce okunandan başlayarak: `VEYLOG_LANG=tr` ve Türkçe adıyla
+/// `VEYLOG_DIL=tr`. `--lang` (`--dil`) verilirse o geçerlidir.
+pub const DIL_DEGISKENLERI: [&str; 2] = ["VEYLOG_LANG", "VEYLOG_DIL"];
 
 /// Kısa kullanım satırı; hata mesajlarının altında da gösterilir.
 pub fn kullanim() -> &'static str {
@@ -276,7 +277,7 @@ impl fmt::Display for SecenekHatasi {
 impl std::error::Error for SecenekHatasi {}
 
 /// Argümanlarda seçilen dil: `--dil en` (`--lang en`, `--dil=en`); yoksa ya da tanınmıyorsa
-/// None (`main` o zaman `VEYLOG_DIL`'e bakar).
+/// None (`main` o zaman ortam değişkenlerine bakar).
 ///
 /// Argümanlar ayrıştırılmadan önce bakılır: ayrıştırma hataları da seçilen dilde yazılsın.
 /// Tanınmayan bir `--dil` değerini ayrıştırıcı ayrıca hata olarak bildirir. Seçenek birden
@@ -618,10 +619,12 @@ pub fn yardim_metni() -> String {
     let bicim = Bicim::Metin.gosterilen_ad();
     let seviye = EN_DUSUK_SEVIYE.ad();
     let seviyeler = seviye_adlari().join(", ");
+    let [lang_degiskeni, dil_degiskeni] = DIL_DEGISKENLERI;
     if dil::simdiki() == Dil::En {
         return format!(
             "\
 veylog {surum}: summarizes Laravel log files.
+Turkish: veylog --lang tr --help (or {lang_degiskeni}=tr)
 
 {kullanim}
 
@@ -676,8 +679,8 @@ Live watching (text format only; cannot be used with --compare):
                           {en_uzun_aralik}.
                           [default: {aralik}]
 
-      --lang <language>   Language of the interface: tr, en. The {DIL_DEGISKENI} environment
-                          variable also sets it. [default: tr]
+      --lang <language>   Language of the interface: en, tr. The {lang_degiskeni} (or {dil_degiskeni})
+                          environment variable also sets it. [default: en]
   -h, --help              Show this help.
   -V, --version           Show the version.
 
@@ -693,7 +696,7 @@ Exit codes: 0 success, 1 the file could not be read or the output could not be w
 2 usage error (including a comparison point outside the log and an empty filter range).
 
 Examples:
-  veylog --lang en storage/logs/laravel.log
+  veylog storage/logs/laravel.log
   veylog --threshold 0.8 --top 20 storage/logs/laravel.log
   veylog --sort newest --all storage/logs/laravel.log
   veylog --format json --all storage/logs/laravel.log | jq '.kaliplar.satirlar[0]'
@@ -713,7 +716,7 @@ Examples:
     format!(
         "\
 veylog {surum}: Laravel log dosyalarını özetler.
-English: veylog --lang en --help (or {DIL_DEGISKENI}=en)
+English: veylog --lang en --help (or {lang_degiskeni}=en)
 
 {kullanim}
 
@@ -771,8 +774,8 @@ Canlı izleme (yalnızca metin biçiminde; --karsilastir ile kullanılamaz):
                           arası.
                           [varsayılan: {aralik}]
 
-      --dil <dil>         Arayüzün dili: tr, en. {DIL_DEGISKENI} ortam değişkeniyle de
-                          seçilir. [varsayılan: tr]
+      --dil <dil>         Arayüzün dili: en, tr. {lang_degiskeni} (ya da {dil_degiskeni}) ortam
+                          değişkeniyle de seçilir. [varsayılan: en]
   -h, --yardim            Bu yardımı göster.
   -V, --surum             Sürümü göster.
 
@@ -790,7 +793,7 @@ ve --bitis zamanları raporun saat dilimindedir. JSON çıktısı her dilde ayn�
 (karşılaştırma noktasının logun dışında kalması ve boş bir filtre aralığı da).
 
 Örnekler:
-  veylog storage/logs/laravel.log
+  veylog --dil tr storage/logs/laravel.log
   veylog --esik 0,8 --ilk 20 storage/logs/laravel.log
   veylog --siralama yeni --hepsi storage/logs/laravel.log
   veylog --bicim json --hepsi storage/logs/laravel.log | jq '.kaliplar.satirlar[0]'
@@ -2069,7 +2072,9 @@ mod testler {
             "between 100 ms and\n                          1 h.",
             "WARNING and above",
             "1 to 1440 minutes",
-            "VEYLOG_DIL",
+            "VEYLOG_LANG (or VEYLOG_DIL)",
+            "[default: en]",
+            "\nTurkish: veylog --lang tr --help (or VEYLOG_LANG=tr)\n",
         ] {
             assert!(metin.contains(parca), "{parca}");
         }
@@ -2086,7 +2091,8 @@ mod testler {
         for &(turkce, _) in &SECENEK_ADLARI {
             assert!(metin.contains(&format!("{turkce} ")), "{turkce}");
         }
-        assert!(metin.contains("English: veylog --lang en --help (or VEYLOG_DIL=en)\n"));
+        assert!(metin.contains("English: veylog --lang en --help (or VEYLOG_LANG=en)\n"));
+        assert!(metin.contains("[varsayılan: en]"));
     }
 
     #[cfg(unix)]

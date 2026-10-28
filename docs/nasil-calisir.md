@@ -3,7 +3,8 @@
 Bu belge veylog'un bir log dosyasını adım adım nasıl özetlediğini, her adımın gerekçesini
 ve gerçek loglarda nasıl sınandığını anlatır. Örnekler depodaki kurgusal loglardandır
 (`ornekler/`). Karşılaştırma ve ani artışların istatistiği ayrı bir belgede:
-[karşılaştırma ve ani artışlar](karsilastirma-ve-ani-artis.md).
+[karşılaştırma ve ani artışlar](karsilastirma-ve-ani-artis.md). Örneklerdeki çıktılar Türkçe arayüzledir; varsayılan arayüz İngilizce olduğu için Türkçe
+çıktı `--dil tr` ya da `VEYLOG_LANG=tr` ile alınır.
 
 ```text
 laravel.log
@@ -1145,15 +1146,19 @@ gibi virgüllü ondalık sayıları (`0,8`) tanımıyor. Kendi ayrıştırıcım
 
 ### Arayüz dili
 
-`--dil en` (`--lang en`) ya da `VEYLOG_DIL=en` ortam değişkeni arayüzü İngilizceye çevirir:
-yardım, rapor, Markdown, uyarılar ve hata mesajları. İkisi birden verilirse `--dil` geçerlidir.
+Arayüz varsayılan olarak İngilizcedir. `--dil tr` (`--lang tr`) ya da `VEYLOG_LANG=tr` ortam
+değişkeni (Türkçe adıyla `VEYLOG_DIL=tr`) arayüzü Türkçeye çevirir: yardım, rapor, Markdown,
+uyarılar ve hata mesajları. Seçenek ortam değişkeninden önce gelir; iki değişken birden
+verilirse `VEYLOG_LANG` geçerlidir. Değeri tanınmayan bir değişken iki dilde uyarılır,
+varsayılan dil sürer.
 
-Dil, argümanlar ayrıştırılmadan önce seçilir: `veylog --esk 1 --lang en x.log` gibi
-`--lang`'dan önce gelen bir yanlışlığın mesajı da İngilizcedir. Seçilen dil iş parçacığına
+Dil, argümanlar ayrıştırılmadan önce seçilir: `veylog --esk 1 --dil tr x.log` gibi
+`--dil`'den önce gelen bir yanlışlığın mesajı da Türkçedir. Seçilen dil iş parçacığına
 yazılır ve metin üreten her yer onu oradan okur; böylece hata türlerinin `Display`'i ve
 sayıları yazan küçük işlevler bir dil parametresi taşımaz. Çıktı yalnızca ana iş
 parçacığında üretilir; testler kendi iş parçacıklarında çalıştığı için bir testin seçtiği dil
-ötekileri etkilemez.
+ötekileri etkilemez. Seçilmeden önceki dil Türkçedir: birim testlerinin çoğu Türkçe çıktıyı
+denetler.
 
 İki dil arasındaki farklar yalnızca metinde değildir:
 

@@ -74,10 +74,8 @@ fee) key that starts two minutes after the 15:00 deploy, payment timeouts betwee
 rows: the message is the same, but one error comes from the category page and the other from
 the product page.
 
-> **Note:** the interface is Turkish by default. Pass `--lang en`, or set `VEYLOG_DIL=en`
-> once (see [Interface language](#interface-language)), for English help, reports and
-> messages; the examples in this README show English output. The sample logs come from a
-> fictional Turkish online shop, so the log messages themselves are in Turkish.
+The sample logs come from a fictional Turkish online shop, so the log messages themselves are
+in Turkish; the report around them is in English.
 
 ## Features
 
@@ -116,8 +114,9 @@ the product page.
   watched too. The input is never re-read: each redraw processes only the new bytes.
 - **Three output formats.** A table for the terminal, JSON for scripts and CI steps, Markdown
   for GitHub issues and pull requests.
-- **Two languages.** The help, the report and every message are available in Turkish and
-  English. Every option has an English and a Turkish name, both accepted in either language.
+- **Two languages.** The help, the report and every message are available in English (the
+  default) and Turkish (`--lang tr`). Every option has an English and a Turkish name, both
+  accepted in either language.
   JSON output is identical in both, so scripts do not break when the language changes.
 - **Built for real-world logs.** Laravel's text format and Monolog's JSON lines (even mixed in
   one file), ISO 8601 timestamps, Windows paths (Herd, Laragon), standard input, UTF-8 BOMs
@@ -225,7 +224,7 @@ veylog [OPTIONS] <log-file>
 | `--time-format <format>` | Format of the timestamp, as a PHP `date()` string: `"d.m.Y H:i:s"`, `"d/M/Y:H:i:s O"`, `"U"`. | `2026-10-24 14:03:11` or ISO 8601 |
 | `--watch` | Watch the log live: read it to the end, print the report, redraw as new records arrive. Text format only; cannot be combined with `--compare`. | |
 | `--interval <duration>` | In watch mode, check the input this often and redraw at most this often. Durations as for `--last`, plus `ms` (`500ms`); between 100 ms and 1 h. | `2s` |
-| `--lang <language>` | Interface language: `tr` or `en`. Also set by the `VEYLOG_DIL` environment variable. | `tr` |
+| `--lang <language>` | Interface language: `en` or `tr`. Also set by the `VEYLOG_LANG` environment variable (or its Turkish name, `VEYLOG_DIL`). | `en` |
 | `-h`, `--help` | Show the help. | |
 | `-V`, `--version` | Show the version. | |
 
@@ -276,28 +275,29 @@ For a typo, the closest option is suggested:
 $ veylog --treshold 0.8 laravel.log
 veylog: unknown option: --treshold (did you mean --threshold?)
 Usage: veylog [OPTIONS] <log-file>
-For details: veylog --lang en --help
+For details: veylog --help
 ```
 
 ### Interface language
 
-The interface is Turkish by default. `--lang en` switches the help, the report and every
-message to English for one run; the `VEYLOG_DIL` environment variable makes it permanent:
+The interface is in English. `--lang tr` switches the help, the report and every message to
+Turkish for one run; the `VEYLOG_LANG` environment variable makes the choice permanent
+(`VEYLOG_DIL`, its Turkish name, works too; if both are set, `VEYLOG_LANG` wins):
 
 ```bash
 # Linux and macOS: add the line to ~/.bashrc or ~/.zshrc to keep it
-export VEYLOG_DIL=en
+export VEYLOG_LANG=tr
 ```
 
 ```powershell
 # Windows: applies to terminals opened afterwards
-setx VEYLOG_DIL en
+setx VEYLOG_LANG tr
 ```
 
-Placeholders follow the interface language (`<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>` in
-English); JSON output is the same in both languages. Every option and every value also has a
-Turkish name, accepted in either language. The detailed documentation is in Turkish and uses
-these names:
+Placeholders follow the interface language (`<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>` in English;
+`<SAYI>`, `<YOL>`, `<EPOSTA>`, `<ZAMAN>` in Turkish); JSON output is the same in both
+languages. Every option and every value also has a Turkish name, accepted in either language.
+The detailed documentation is in Turkish and uses these names:
 
 | English | Turkish | English | Turkish |
 |---|---|---|---|
@@ -561,7 +561,7 @@ in [How it works](docs/nasil-calisir.md) and
 | An exact binomial test | Valid with few records too; the false alarm rate stays below 1%. Approximate tests (such as a z-test) are unreliable at small counts. |
 | Fingerprints tied to functions, not lines | `Attempt to read property "ad" on null` in two controllers is two different errors, yet a deploy that shifts lines keeps an error's identity; Sentry does not use line numbers either. The cost: two errors with the same class and pattern in the same function merge; `--location line` separates them. |
 | Control characters become symbols | A log is untrusted text: ESC sequences can clear the screen or hide lines ([CWE-150](https://cwe.mitre.org/data/definitions/150.html)). JSON loses nothing: the raw message is written with escapes. |
-| A Turkish interface, with English too | veylog started as a tool for Turkish-speaking Laravel developers: messages, options (`--esik`, `--eşik`) and decimal commas follow Turkish conventions. The English interface (`--lang en`) is a hand-written counterpart of every text, without a translation library. JSON output is language-independent. |
+| Two hand-written interfaces | veylog started as a tool for Turkish-speaking Laravel developers, and its Turkish interface (`--lang tr`) follows Turkish conventions: decimal commas and options such as `--esik` (`--eşik`). Every text exists in both languages, written by hand rather than through a translation library; English is the default. JSON output is language-independent. |
 
 ## Performance
 

@@ -7,11 +7,20 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{self, Command, Output, Stdio};
 
-/// Derlenmiş program. Arayüzün dilini seçen ortam değişkeni silinir: testleri çalıştıranın
-/// ortamında `VEYLOG_DIL=en` olsa da Türkçe çıktı beklenen testler bozulmasın.
+/// Derlenmiş program, Türkçe arayüzle: testlerin çoğu Türkçe çıktıyı denetler, varsayılan dil
+/// ise İngilizcedir. Dil Türkçe adlı ortam değişkeniyle seçilir; önce okunan `VEYLOG_LANG`
+/// silinir: testleri çalıştıranın ortamındaki dil seçimi testleri bozmasın. Varsayılan dili
+/// `varsayilan_komut` denetler.
 fn komut() -> Command {
+    let mut komut = varsayilan_komut();
+    komut.env("VEYLOG_DIL", "tr");
+    komut
+}
+
+/// Derlenmiş program, dil seçilmeden: dili seçen ortam değişkenleri silinir.
+fn varsayilan_komut() -> Command {
     let mut komut = Command::new(env!("CARGO_BIN_EXE_veylog"));
-    komut.env_remove("VEYLOG_DIL");
+    komut.env_remove("VEYLOG_LANG").env_remove("VEYLOG_DIL");
     komut
 }
 
@@ -73,7 +82,7 @@ fn gecersiz_secenek_kullanim_hatasi_verir() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("Ayrıntılar için: veylog --yardim"),
+        stderr.contains("Ayrıntılar için: veylog --dil tr --yardim"),
         "{stderr}"
     );
 }
@@ -778,7 +787,8 @@ fn gecici_kopya_yazilamazsa_rapor_yine_cikar() {
             "ulimit -f 0 && trap '' XFSZ && exec \"$0\" -a 1 -",
             env!("CARGO_BIN_EXE_veylog"),
         ])
-        .env_remove("VEYLOG_DIL")
+        .env_remove("VEYLOG_LANG")
+        .env("VEYLOG_DIL", "tr")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2116,6 +2126,61 @@ fn ingilizce_arayuzde_turkce_kalmaz() {
     assert!(turkce_kalintilar(&metin(&cikti.stdout)).is_empty());
 }
 
+/// Varsayılan dil İngilizcedir. `VEYLOG_LANG` ve Türkçe adıyla `VEYLOG_DIL` dili seçer; ikisi
+/// birden verilirse `VEYLOG_LANG` geçerlidir, `--lang` ikisinden de önce gelir.
+#[test]
+fn varsayilan_dil_ingilizcedir() {
+    let ingilizce = "ornekler/laravel.log: 205 lines\n";
+    let turkce = "ornekler/laravel.log: 205 satır\n";
+    let calistir = |argumanlar: &[&str], ortam: &[(&str, &str)]| {
+        let cikti = varsayilan_komut()
+            .args(argumanlar)
+            .envs(ortam.iter().copied())
+            .output()
+            .expect("veylog çalıştırılamadı");
+        assert!(cikti.status.success(), "{}", metin(&cikti.stderr));
+        (metin(&cikti.stdout), metin(&cikti.stderr))
+    };
+    let (stdout, stderr) = calistir(&["ornekler/laravel.log"], &[]);
+    assert!(stdout.starts_with(ingilizce), "{stdout}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let (yardim, _) = calistir(&["--help"], &[]);
+    assert!(
+        yardim.contains("\nTurkish: veylog --lang tr --help (or VEYLOG_LANG=tr)\n"),
+        "{yardim}"
+    );
+    for (ortam, beklenen) in [
+        (&[("VEYLOG_LANG", "tr")][..], turkce),
+        (&[("VEYLOG_DIL", "tr")][..], turkce),
+        (
+            &[("VEYLOG_LANG", "en"), ("VEYLOG_DIL", "tr")][..],
+            ingilizce,
+        ),
+        (&[("VEYLOG_LANG", "TR"), ("VEYLOG_DIL", "en")][..], turkce),
+        // Boş değişken verilmemiş sayılır
+        (&[("VEYLOG_LANG", " "), ("VEYLOG_DIL", "tr")][..], turkce),
+    ] {
+        let (stdout, stderr) = calistir(&["ornekler/laravel.log"], ortam);
+        assert!(stdout.starts_with(beklenen), "{ortam:?}\n{stdout}");
+        assert!(stderr.is_empty(), "{ortam:?}\n{stderr}");
+    }
+    let (stdout, _) = calistir(
+        &["--lang", "en", "ornekler/laravel.log"],
+        &[("VEYLOG_LANG", "tr")],
+    );
+    assert!(stdout.starts_with(ingilizce), "{stdout}");
+    // Tanınmayan VEYLOG_LANG uyarılır; VEYLOG_DIL'e bakılmaz, varsayılan dil sürer
+    let (stdout, stderr) = calistir(
+        &["ornekler/laravel.log"],
+        &[("VEYLOG_LANG", "turkish"), ("VEYLOG_DIL", "tr")],
+    );
+    assert_eq!(
+        stderr,
+        "Warning / Uyarı: VEYLOG_LANG=\"turkish\" not recognized / tanınmadı; en, tr\n"
+    );
+    assert!(stdout.starts_with(ingilizce), "{stdout}");
+}
+
 #[test]
 fn ingilizce_arayuz() {
     let log = ingilizce_log();
@@ -2149,13 +2214,13 @@ fn ingilizce_arayuz() {
     assert_eq!(metin(&ortamla.stdout), stdout);
     let turkce = girdiyle(&["--dil", "tr", "-"], &log, &[("VEYLOG_DIL", "en")]);
     assert!(metin(&turkce.stdout).starts_with("<standart girdi>: 45 satır\n"));
-    // Tanınmayan değer iki dilde uyarılır, Türkçe sürer
+    // Tanınmayan değer iki dilde uyarılır, varsayılan dil (İngilizce) sürer
     let tanimsiz = girdiyle(&["-"], &log, &[("VEYLOG_DIL", "english")]);
     assert_eq!(
         metin(&tanimsiz.stderr),
-        "Uyarı / Warning: VEYLOG_DIL=\"english\" tanınmadı / not recognized; tr, en\n"
+        "Warning / Uyarı: VEYLOG_DIL=\"english\" not recognized / tanınmadı; en, tr\n"
     );
-    assert!(metin(&tanimsiz.stdout).starts_with("<standart girdi>: 45 satır\n"));
+    assert!(metin(&tanimsiz.stdout).starts_with("<standard input>: 45 lines\n"));
     // --dil verildiyse ortam değişkenine bakılmaz; boş değişken verilmemiş sayılır
     for (argumanlar, deger) in [(&["--dil", "en", "-"][..], "english"), (&["-"][..], " ")] {
         let cikti = girdiyle(argumanlar, &log, &[("VEYLOG_DIL", deger)]);
@@ -2166,7 +2231,7 @@ fn ingilizce_arayuz() {
     assert_eq!(cikti.status.code(), Some(2));
     assert_eq!(
         metin(&cikti.stderr),
-        "veylog: invalid value \"2\" for --esik: must be a number between 0 and 1 (e.g. 0.7)\nUsage: veylog [OPTIONS] <log-file>\nFor details: veylog --lang en --help\n"
+        "veylog: invalid value \"2\" for --esik: must be a number between 0 and 1 (e.g. 0.7)\nUsage: veylog [OPTIONS] <log-file>\nFor details: veylog --help\n"
     );
     let cikti = veylog(&["--lang", "en", "missing.log"]);
     assert_eq!(cikti.status.code(), Some(1));

@@ -1,7 +1,8 @@
 # Çıktı biçimleri
 
 Özet bir kez hesaplanır, sonra istenen biçimde yazılır; bu yüzden üç biçimdeki sayılar hep
-aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
+aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir. Örneklerdeki çıktılar Türkçe arayüzledir; varsayılan arayüz İngilizce olduğu için Türkçe
+çıktı `--dil tr` ya da `VEYLOG_LANG=tr` ile alınır.
 
 | Biçim | Seçenek | Ne için |
 |---|---|---|
@@ -9,9 +10,10 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
 | JSON | `--bicim json` | Betikler, `jq`, CI adımları |
 | Markdown | `--bicim markdown` | GitHub issue ve PR açıklamaları |
 
-Metin ve Markdown seçili dilde yazılır (`--dil en`: başlıklar, etiketler, ondalık ayracı,
-süre birimleri, `<SAYI>` yerine `<NUM>`). JSON her dilde aynıdır; alan adları ve yer
-tutucuları Türkçedir ([arayüz dili](nasil-calisir.md#arayüz-dili)).
+Metin ve Markdown seçili dilde yazılır (varsayılan İngilizce; `--dil tr` ile başlıklar,
+etiketler, ondalık ayracı, süre birimleri ve yer tutucular Türkçe: `<NUM>` yerine `<SAYI>`).
+JSON her dilde aynıdır; alan adları ve yer tutucuları Türkçedir
+([arayüz dili](nasil-calisir.md#arayüz-dili)).
 
 | Yer tutucu | İngilizcesi | Ne yerine |
 |---|---|---|

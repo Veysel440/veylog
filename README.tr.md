@@ -73,6 +73,10 @@ başlayan `kargo_ucreti` hatası, 16:10–16:16 arasındaki ödeme zaman aşıml
 Redis çöküşü. `Attempt to read property "ad" on null` iki ayrı satırda: mesajları aynı, ama
 biri kategori sayfasında, öteki ürün sayfasında oluşan iki ayrı hata.
 
+> **Not:** Arayüz varsayılan olarak İngilizcedir. Türkçe için `--dil tr` verin ya da bir kez
+> `VEYLOG_LANG=tr` ortam değişkenini ayarlayın ([İki dil](#öne-çıkanlar)); bu sayfadaki
+> örnekler Türkçe arayüzledir.
+
 ## Öne çıkanlar
 
 - **Satırlar değil, kalıplar.** Mesajlardaki değişken kısımlar maskelenir (`<SAYI>`, `<IP>`,
@@ -106,9 +110,11 @@ biri kategori sayfasında, öteki ürün sayfasında oluşan iki ayrı hata.
   Girdi yeniden okunmaz: her çizim yalnızca yeni baytları işler.
 - **Üç çıktı biçimi.** Terminal için tablo, betikler ve CI adımları için JSON, GitHub
   issue'larına yapıştırmak için Markdown.
-- **İki dil.** Arayüz Türkçe; `--dil en` (ya da `VEYLOG_DIL=en`) yardımı, raporu ve bütün
-  mesajları İngilizce yazar. Her seçeneğin İngilizce adı da geçerlidir (`--last 2h`,
-  `--format json`). JSON çıktısı her dilde aynıdır: betikler dil değişince bozulmaz.
+- **İki dil.** Arayüz varsayılan olarak İngilizce; `--dil tr` (ya da `VEYLOG_LANG=tr`, Türkçe
+  adıyla `VEYLOG_DIL=tr`) yardımı, raporu ve bütün mesajları Türkçe yazar. Her seçeneğin
+  İngilizce adı da geçerlidir (`--last 2h`, `--format json`). JSON çıktısı her dilde aynıdır:
+  betikler dil değişince bozulmaz. Linux ve macOS'ta `export VEYLOG_LANG=tr` satırı
+  `~/.bashrc` ya da `~/.zshrc` dosyasına, Windows'ta bir kez `setx VEYLOG_LANG tr`.
 - **Gerçek loglara dayanıklı.** Laravel'in metin biçimi ve Monolog'un JSON satırları (aynı
   dosyada karışık olsalar bile), ISO 8601 zamanlar, Windows yolları (Herd, Laragon),
   standart girdi, UTF-8 BOM ve geçersiz UTF-8. Uygulama Monolog'a başka bir satır ya da
@@ -215,7 +221,7 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `--zaman-bicimi <biçim>` | Zamanın biçimi, PHP'nin `date()` dizgesiyle: `"d.m.Y H:i:s"`, `"d/M/Y:H:i:s O"`, `"U"`. | `2026-10-24 14:03:11` ya da ISO 8601 |
 | `--izle` | Logu canlı izle: sonuna kadar oku, raporu yaz, eklenen kayıtlar geldikçe yeniden çiz. Yalnızca metin biçiminde; `--karsilastir` ile kullanılamaz. | |
 | `--aralik <süre>` | İzlemede girdiye bu sıklıkla bak; raporu en sık bu kadarda bir çiz. Süre `--son` gibi, `ms` de olur (`500ms`); 100 ms ile 1 sa arası. | `2sn` |
-| `--dil <dil>` | Arayüzün dili: `tr` ya da `en`. `VEYLOG_DIL` ortam değişkeniyle de seçilir. | `tr` |
+| `--dil <dil>` | Arayüzün dili: `en` ya da `tr`. `VEYLOG_LANG` (ya da `VEYLOG_DIL`) ortam değişkeniyle de seçilir. | `en` |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
 
@@ -282,7 +288,7 @@ Yazım hatalarında en yakın seçenek önerilir:
 $ veylog --esk 0,8 laravel.log
 veylog: bilinmeyen seçenek: --esk (bunu mu demek istediniz: --esik)
 Kullanım: veylog [SEÇENEKLER] <log-dosyası>
-Ayrıntılar için: veylog --yardim
+Ayrıntılar için: veylog --dil tr --yardim
 ```
 
 Filtreler (`--seviye`, `--baslangic`, `--bitis`, `--son`) raporu yalnızca uyan kayıtlarla
@@ -506,7 +512,7 @@ Her adımın ayrıntısı, gerekçesi ve gerçek loglarda nasıl sınandığı
 | Kesin binom testi | Az kayıtta da geçerlidir; yanlış alarm oranı %1'i geçmez. Yaklaşık testler (z testi) küçük sayılarda yanılır. |
 | Parmak izi fonksiyona bağlı, satıra değil | `Attempt to read property "ad" on null` iki denetleyicide iki ayrı hatadır, ama bir dağıtım satırları kaydırsa da aynı hata aynı kalır; Sentry de satır numarası kullanmaz. Bedeli: aynı fonksiyonda aynı sınıf ve kalıpla oluşan iki hata birleşir; `--konum satir` ayırır. |
 | Kontrol karakterleri sembole çevrilir | Log güvenilmez metindir; ESC dizileri ekranı silebilir, satırları gizleyebilir ([CWE-150](https://cwe.mitre.org/data/definitions/150.html)). JSON'da veri kaybı yoktur: ham mesaj kaçışlarıyla yazılır. |
-| Türkçe arayüz, İngilizcesi de | Hedef kitle Türkçe konuşan Laravel geliştiricileri: mesajlar, seçenekler (`--esik`, `--eşik`) ve virgüllü ondalık sayılar Türkçeye göre. İngilizce arayüz (`--dil en`) her metnin elle yazılmış karşılığıdır; çeviri kütüphanesi yok. JSON dilden bağımsızdır. |
+| Elle yazılmış iki arayüz | veylog Türkçe konuşan Laravel geliştiricileri için başladı; Türkçe arayüz (`--dil tr`) Türkçenin kurallarına uyar: virgüllü ondalık sayılar, `--esik` (`--eşik`) gibi seçenekler. Her metin iki dilde de elle yazıldı; çeviri kütüphanesi yok. Varsayılan dil İngilizce. JSON dilden bağımsızdır. |
 
 ## Performans
 

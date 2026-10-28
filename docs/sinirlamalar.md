@@ -214,8 +214,8 @@ bir iştir.
 - Logun içeriği çevrilmez: Türkçe bir logun mesajları İngilizce raporda da Türkçedir.
 - JSON'un alan adları ve yer tutucuları her dilde Türkçedir (`kaliplar`, `<SAYI>`); bilerek:
   JSON'u okuyan betikler dile bağlı olmasın.
-- Yalnızca Türkçe ve İngilizce vardır; dil ortamın yerel ayarından (`LANG`) seçilmez, Türkçe
-  bir terminalde de İngilizce ayarlı bir sistemde de varsayılan Türkçedir. `VEYLOG_DIL=en`
+- Yalnızca İngilizce ve Türkçe vardır; dil ortamın yerel ayarından (`LANG`) seçilmez, Türkçe
+  ayarlı bir sistemde de varsayılan İngilizcedir. `VEYLOG_LANG=tr` (ya da `VEYLOG_DIL=tr`)
   kalıcı bir seçimdir.
 
 ## Terminal

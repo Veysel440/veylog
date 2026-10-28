@@ -1,4 +1,4 @@
-//! Arayüzün dili: Türkçe (varsayılan) ya da İngilizce (`--dil en`, `VEYLOG_DIL=en`).
+//! Arayüzün dili: İngilizce (varsayılan) ya da Türkçe (`--lang tr`, `VEYLOG_LANG=tr`).
 //!
 //! Dil programın başında bir kez seçilir ve iş parçacığına yazılır (`ayarla`); metin üreten her
 //! yer onu buradan okur (`simdiki`, `sec`). Böylece hata türlerinin `Display`'i de, sayıları
@@ -17,9 +17,9 @@ use std::cell::Cell;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Dil {
     /// Türkçe: virgüllü ondalık (`0,7`), yüzde işareti önde (`%1`).
-    #[default]
     Tr,
-    /// İngilizce: noktalı ondalık (`0.7`), yüzde işareti sonda (`1%`).
+    /// İngilizce, varsayılan dil: noktalı ondalık (`0.7`), yüzde işareti sonda (`1%`).
+    #[default]
     En,
 }
 
@@ -44,6 +44,9 @@ impl Dil {
 }
 
 thread_local! {
+    /// Bu iş parçacığının dili. Program onu başında seçer (`ayarla`); seçilmeden önce
+    /// Türkçedir, çünkü birim testlerinin çoğu Türkçe çıktıyı denetler. İngilizceyi denetleyen
+    /// testler onu `gecici` ile seçer.
     static DIL: Cell<Dil> = const { Cell::new(Dil::Tr) };
 }
 

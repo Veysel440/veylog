@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the interface is now in English by default. Turkish is selected with
+  `--lang tr` (`--dil tr`) or the new `VEYLOG_LANG=tr` environment variable; `VEYLOG_DIL=tr`
+  keeps working, and `VEYLOG_LANG` is read first when both are set. The English help says
+  how to get the Turkish one. JSON output does not change.
+
 ### Fixes
 
 - On Windows, standard input from a pipe (`type laravel.log | veylog --last 1h -`) was taken
