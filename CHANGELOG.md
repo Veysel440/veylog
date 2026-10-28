@@ -98,6 +98,26 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 - Örnek logdaki Redis hatasının yığın izine middleware'i çağıran satır eklendi.
 - Yardım metninde 92 karakteri aşan satırlar bölündü.
 
+### Kategorik konumlar
+
+- Koddan gelen değerler biçimlerinden tanınır: ad alanlı sınıf adları
+  (`App\Jobs\FaturaGonder`), büyük harfli sabitler (`ORDER_CREATED`), deveAdı ve yilan_adi
+  tanımlayıcılar, PHP değişkenleri (`$urun`), noktalı ya da iki noktalı adlar
+  (`odeme.basarisiz`, `kurlar:guncelle`), tek ya da çift tırnaklı tek kelimeler (`'fiyat'`).
+  İki mesaj yalnızca aynı biçimdeki iki kodsal değerde ayrılıyorsa fark, rakamlı farklar gibi
+  eşiği gevşetir: `İş tamamlandı: App\Jobs\FaturaGonder` ile `İş tamamlandı:
+  App\Jobs\EpostaGonder` 100 farklı iş beklenmeden tek kalıpta birleşir. Sıradan kelimeler
+  (`Ödeme alındı`, `Ödeme reddedildi`; kuyruk adları, durum kelimeleri) eskisi gibi ayrı
+  kalır, 100 farklı değer sınırı onlar için sürer. Kodsal biçimli baş belirteçler, rakamlılar
+  gibi ağacın ortak `<*>` dalına gider.
+- Raporda her `<*>` konumunun en sık beş değeri adetleriyle yazılır, kalanı `+N başka`:
+  metinde kalıbın altındaki `değerler:` satırı (sığmayan değerler alt satırlara taşar),
+  Markdown'da `Değerler` sütunu, JSON'da her satırın `degiskenler` dizisi (`konum`,
+  `degerler`, `baska`). Değerler rapor zamanında depodaki maskeli mesajlardan sayılır; ek
+  bellek gerekmez. `Kullanıcı <SAYI> <*> yaptı` gibi sözdiziminden birleşen kalıpların
+  değerleri de böylece görünür.
+- Yeni örnek log `ornekler/kuyruk.log`: iş sınıfları, olay adları ve durum sabitleri.
+
 ## [0.1.0] - 2026-10-26
 
 İlk sürüm.

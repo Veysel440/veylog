@@ -51,6 +51,7 @@ Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp (eşik 0
                                        konum: app/Services/SepetHesaplayici.php:88, toplam() (ErrorException)
      3  ERROR      09:14:20  17:55:03  SQLSTATE[<SAYI>]: Integrity constraint violation: <SAYI> Duplicate entry '<EPOS…
                                        örnek: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'a…
+                                       değerler: Ayşe ×1, Mehmet ×1, Zeynep ×1
                                        konum: app/Http/Controllers/KayitController.php:38, store() (UniqueConstraintViolationException)
      1  ERROR      09:47:12  09:47:12  Attempt to read property "ad" on null
                                        konum: app/Http/Controllers/KategoriController.php:54, goster() (ErrorException)
@@ -77,6 +78,11 @@ biri kategori sayfasında, öteki ürün sayfasında oluşan iki ayrı hata.
 - **Satırlar değil, kalıplar.** Mesajlardaki değişken kısımlar maskelenir (`<SAYI>`, `<IP>`,
   `<YOL>`...) ve mesajlar [Drain](https://jiemingzhu.github.io/pub/pjhe_icws2017.pdf)
   algoritmasıyla kalıplara ayrılır: 59 kayıt 24 satıra iner.
+- **Kategorik konumlar.** Koddan gelen değerler (sınıf adları, sabitler, olay adları,
+  tırnaklı anahtarlar) sıradan kelimelerden biçimleriyle ayrılır: `İş tamamlandı:
+  App\Jobs\FaturaGonder` ile `İş tamamlandı: App\Jobs\EpostaGonder` yüz farklı iş beklenmeden
+  tek kalıpta birleşir, `Ödeme alındı` ile `Ödeme reddedildi` birleşmez. Her `<*>` konumunun
+  en sık değerleri adetleriyle raporda yazılır: hangi işler, hangi olaylar, kaçar kez.
 - **Hatanın yeri.** Stack trace'ten istisna sınıfı, uygulama kodundaki ilk satır ve o satırın
   içinde bulunduğu fonksiyon çıkarılır. Vendor, giriş noktaları ve middleware'in
   `$next($request)` satırı atlanır; Blade hatalarında şablonun kendisi gösterilir. Aynı mesaj
@@ -342,6 +348,39 @@ Ani artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1
 Ödeme zaman aşımı günün geri kalanında hiç görülmüyor; 16:10–16:20 diliminde 6 kez. Puan,
 Iglewicz ve Hoaglin'in değiştirilmiş z puanıdır: `0,6745 × (sayı − medyan) / MAD`.
 
+### Kategorik konumlar
+
+Bir kuyruk işçisinin logu ([ornekler/kuyruk.log](ornekler/kuyruk.log)): iş sınıfları, olay
+adları ve durum sabitleri birer değişkendir, kuyruk adları (`emails`, `default`) sıradan
+kelimelerdir.
+
+```text
+$ veylog ornekler/kuyruk.log
+...
+Kalıplar: 11 farklı mesaj → maskeleyince 11 → Drain ile 6 kalıp (eşik 0,7) → parmak iziyle 6 grup
+  adet  seviye     ilk       son       kalıp
+     2  WARNING    09:02:40  09:05:40  Sipariş <SAYI> durumu <*> olarak kaldı
+                                       örnek: Sipariş 1051 durumu ORDER_PENDING olarak kaldı
+                                       değerler: ORDER_PENDING ×1, ORDER_FAILED ×1
+     2  WARNING    09:06:18  09:06:19  Undefined array key <*>
+                                       örnek: Undefined array key "kargo_ucreti"
+                                       değerler: "kargo_ucreti" ×1, "indirim" ×1
+     4  INFO       09:00:03  09:01:12  İş tamamlandı: <*>
+                                       örnek: İş tamamlandı: App\Jobs\FaturaGonder
+                                       değerler: App\Jobs\FaturaGonder ×2, App\Jobs\EpostaGonder ×1,
+                                                 App\Jobs\StokGuncelle ×1
+     3  INFO       09:01:30  09:02:02  Olay işlendi: <*>
+                                       örnek: Olay işlendi: siparis.olusturuldu
+                                       değerler: siparis.olusturuldu ×2, odeme.alindi ×1
+     1  INFO       09:07:11  09:07:11  Kuyruk durdu: emails
+     1  INFO       09:07:11  09:07:11  Kuyruk durdu: default
+```
+
+Bir konumun en sık beş değeri yazılır, kalanı `+N başka` olur. JSON'da her satırın
+`degiskenler` dizisi aynı bilgiyi taşır ([çıktı biçimleri](docs/cikti-bicimleri.md)).
+Hangi belirteçlerin kodsal sayıldığı ve neden kuyruk adlarının birleşmediği
+[kategorik konumlar](docs/nasil-calisir.md#kategorik-konumlar) bölümünde.
+
 ### Betikler ve CI için JSON
 
 ```bash
@@ -380,8 +419,10 @@ laravel.log
 2. **Maskeleme.** URL, dosya yolu, e-posta, UUID, zaman, IP ve sayılar yer tutucu olur:
    `Kullanıcı 381 giriş yaptı` → `Kullanıcı <SAYI> giriş yaptı`.
 3. **Drain.** Maskelenmiş mesajlar sabit derinlikli bir ağaçta kümelenir; değişen konumlar
-   `<*>` olur. Eşik iki durumda gevşer: iki tarafında da rakam olan farklılıklarda (`120ms`,
-   `95ms`) ve bir konumun 100'den fazla farklı değer aldığı yaprakta (kullanıcı adları gibi).
+   `<*>` olur. Eşik üç durumda gevşer: iki tarafında da rakam olan farklılıklarda (`120ms`,
+   `95ms`), aynı biçimdeki iki kodsal değerde (`ORDER_CREATED`, `ORDER_FAILED`) ve bir
+   konumun 100'den fazla farklı sıradan kelime aldığı yaprakta (kullanıcı adları gibi). Her
+   `<*>` konumunun en sık değerleri raporda sayılır.
 4. **Parmak izi.** Stack trace'ten istisna sınıfı, uygulama kodundaki ilk satır ve o satırın
    içinde bulunduğu fonksiyon çıkarılır
    ([Sentry](https://docs.sentry.io/concepts/data-management/event-grouping/) gibi hata
@@ -464,7 +505,10 @@ cargo test
 ## Sınırlamalar
 
 - Drain sözdizimine bakar, anlama bakmaz: `Kullanıcı <SAYI> giriş yaptı` ile
-  `Kullanıcı <SAYI> çıkış yaptı` aynı kalıpta birleşir.
+  `Kullanıcı <SAYI> çıkış yaptı` aynı kalıpta birleşir; raporun `değerler` satırı birleşenleri
+  gösterir.
+- Kısa mesajlarda sıradan bir kelime olan değişkenler (`Kuyruk durdu: emails`) ancak 100'den
+  fazla farklı değer görülünce birleşir; kodsal biçimli değerler hemen birleşir.
 - Aynı fonksiyonda aynı istisna sınıfı ve aynı kalıpla oluşan iki hata tek satırdır;
   `--konum satir` ayırır.
 - Saat dilimi yazılmamış kayıtlar (Laravel'in varsayılan biçimi) raporun diliminde yazılmış
@@ -489,7 +533,7 @@ src/
 ├── farkli_sayac.rs  farklı mesaj sayacı: tam, çok sayıda farklı değerde HyperLogLog
 ├── json_okuyucu.rs  Monolog'un JSON satırları için kütüphanesiz JSON okuyucu
 ├── maske.rs         değişkenleri yer tutucularla değiştirir: <SAYI>, <IP>, <YOL>...
-├── drain.rs         Drain: maskelenmiş mesajlardan kalıp çıkarır; esnek eşik, değişken konumlar
+├── drain.rs         Drain: maskelenmiş mesajlardan kalıp çıkarır; esnek eşik, kodsal biçimler, değişken konumlar
 ├── parmak_izi.rs    istisna sınıfı, uygulama kodundaki ilk satır ve fonksiyonu
 ├── istisna_metni.rs PHP'nin istisna metni (Log::error($e)): sınıf, yer, yığın izi, Next
 ├── rapor.rs         özet ve kalıp tablosu; metin çıktısı, kontrol karakterlerinin temizlenmesi
@@ -511,6 +555,7 @@ ornekler/            kurgusal örnek loglar
 - [x] Saat dilimlerini hesaba katmak
 - [x] `Log::error($e)` ile metne çevrilmiş istisnalar; kendi satır ve tarih biçimleri
 - [x] Satır numarasından bağımsız parmak izi: hata, satırın içinde bulunduğu fonksiyonla tanınır
+- [x] Kategorik konumlar: koddan gelen değerler biçimleriyle tanınır, en sık değerleri raporda
 
 Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md).
 
@@ -538,7 +583,10 @@ Drain algorithm, fingerprints exceptions by class, first application frame and t
 enclosing it (skipping vendor code, entry points and middleware pass-through frames, and
 pointing Blade errors at the template), so an error keeps its identity when a deploy shifts
 line numbers; closures are told apart by the function that defines them, and JSON records,
-whose traces carry no calls, learn their functions from the other traces in the log. It
+whose traces carry no calls, learn their functions from the other traces in the log.
+Code-like values (class names, constants, event names, quoted keys) are told apart from
+ordinary words by their shape, so categorical positions merge without waiting for a hundred
+distinct values, and the report lists the most frequent values of every `<*>` position. It
 compares two time ranges with an exact conditional binomial test, and detects sudden spikes
 with median/MAD-based modified z-scores. It reads Laravel's text format and Monolog's JSON
 lines, handles Windows paths, and writes text, JSON or Markdown. Timestamps with UTC offsets

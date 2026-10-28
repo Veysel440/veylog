@@ -1,0 +1,13 @@
+[2026-10-25 09:00:03] production.INFO: İş tamamlandı: App\Jobs\FaturaGonder {"sure_ms":412,"kuyruk":"default"} 
+[2026-10-25 09:00:05] production.INFO: İş tamamlandı: App\Jobs\EpostaGonder {"sure_ms":88,"kuyruk":"emails"} 
+[2026-10-25 09:00:09] production.INFO: İş tamamlandı: App\Jobs\FaturaGonder {"sure_ms":390,"kuyruk":"default"} 
+[2026-10-25 09:01:12] production.INFO: İş tamamlandı: App\Jobs\StokGuncelle {"sure_ms":1210,"kuyruk":"default"} 
+[2026-10-25 09:01:30] production.INFO: Olay işlendi: siparis.olusturuldu {"siparis_id":1051} 
+[2026-10-25 09:01:31] production.INFO: Olay işlendi: odeme.alindi {"siparis_id":1051} 
+[2026-10-25 09:02:02] production.INFO: Olay işlendi: siparis.olusturuldu {"siparis_id":1052} 
+[2026-10-25 09:02:40] production.WARNING: Sipariş 1051 durumu ORDER_PENDING olarak kaldı {"dakika":15} 
+[2026-10-25 09:05:40] production.WARNING: Sipariş 1052 durumu ORDER_FAILED olarak kaldı {"dakika":18} 
+[2026-10-25 09:06:18] production.WARNING: Undefined array key "kargo_ucreti" {"siparis_id":1052} 
+[2026-10-25 09:06:19] production.WARNING: Undefined array key "indirim" {"siparis_id":1052} 
+[2026-10-25 09:07:11] production.INFO: Kuyruk durdu: emails  
+[2026-10-25 09:07:11] production.INFO: Kuyruk durdu: default  

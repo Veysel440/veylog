@@ -41,8 +41,17 @@
 //!   (He ve ark., "A Directed Acyclic Graph Approach to Online Log Parsing", 2018). Böylece
 //!   `Yanıt süresi 120ms` ile `Yanıt süresi 95ms` gibi kısa mesajlar da birleşebilir. Rakam
 //!   yalnızca bir taraftaysa fark değişken sayılmaz: `Yanıt süresi uzun` başka bir olaydır.
-//! - *Değişken konumlar.* Rakamsız bir değer (kullanıcı adı, ürün adresi) kısa mesajları
-//!   birleştirmez: `Bilinmeyen kullanıcı: ahmet` ile `Bilinmeyen kullanıcı: mehmet` üç
+//! - *Aynı biçimdeki kodsal değerler.* Koddan gelen bir değer sıradan bir kelimeye benzemez:
+//!   `App\Jobs\FaturaGonder` bir sınıf adıdır, `ORDER_CREATED` bir sabit, `odeme.basarisiz`
+//!   bir olay adı, `'fiyat'` tırnaklı bir anahtar. İki belirteç farklı ama ikisi de aynı kodsal
+//!   biçimdeyse (`Bicim`) fark değişken sayılır: `İşlendi: App\Jobs\FaturaGonder` ile
+//!   `İşlendi: App\Jobs\EpostaGonder` birleşir, `Ödeme alındı` ile `Ödeme reddedildi` (iki
+//!   sıradan kelime) birleşmez. Böyle bir konum *kategorik* bir konumdur: değerleri bir kümeden
+//!   gelir ve rapor o değerleri sayar. Kodsal biçimli bir baş belirteç, rakamlı belirteçler
+//!   gibi ortak `<*>` dalına gider; yoksa `ORDER_CREATED olayı işlendi` ile
+//!   `ORDER_FAILED olayı işlendi` hiç karşılaştırılmazdı.
+//! - *Değişken konumlar.* Rakamsız bir sıradan kelime (kullanıcı adı, ürün adresi) kısa
+//!   mesajları birleştirmez: `Bilinmeyen kullanıcı: ahmet` ile `Bilinmeyen kullanıcı: mehmet` üç
 //!   belirtecin ikisinde aynıdır (0,67 < 0,7). Her değer ayrı bir küme olur ve yaprak büyüdükçe
 //!   her yeni mesaj bütün kümelerle karşılaştırılır: süre mesaj sayısının karesiyle artar.
 //!   3. adımdaki dolu düğüm kuralı yaprakta da uygulanır: kümelerin kalıplarında bir konum
@@ -122,6 +131,15 @@ pub struct Kume {
 }
 
 impl Kume {
+    /// Kalıptaki joker konumların sıraları (0'dan). Mesajda yazılı bir `<*>` joker değildir.
+    pub fn joker_konumlari(&self) -> impl Iterator<Item = usize> + '_ {
+        self.kalip
+            .iter()
+            .enumerate()
+            .filter(|(_, belirtec)| *belirtec == JOKER)
+            .map(|(sira, _)| sira)
+    }
+
     /// Kalıbın okunabilir hali: "Zamanlanmış görev başladı: <*>"
     pub fn metin(&self) -> String {
         let belirtecler: Vec<&str> = self
@@ -415,8 +433,14 @@ impl Drain {
         konumlar: &[Konum],
     ) -> Option<usize> {
         let mut en_iyi: Option<(usize, (usize, usize))> = None;
+        let mut bicimler = Bicimler::new(belirtecler);
         for &numara in adaylar {
-            let sonuc = karsilastir(&self.kumeler[numara].kalip, belirtecler, konumlar);
+            let sonuc = karsilastir(
+                &self.kumeler[numara].kalip,
+                belirtecler,
+                konumlar,
+                &mut bicimler,
+            );
             if !self.esigi_gecer(&sonuc, belirtecler.len()) {
                 continue;
             }
@@ -553,8 +577,9 @@ fn dal_anahtari(
     if cocuklar.contains_key(belirtec) {
         return belirtec.to_string();
     }
-    // İçinde rakam olan belirteç büyük ihtimalle değişkendir (ör. "a1b2c3"): ayrı dal açma
-    if rakam_iceriyor(belirtec) {
+    // İçinde rakam olan (ör. "a1b2c3") ya da kodsal biçimli (ör. "ORDER_CREATED") belirteç
+    // büyük ihtimalle değişkendir: ayrı dal açma
+    if rakam_iceriyor(belirtec) || bicim(belirtec).kodsal() {
         return JOKER.to_string();
     }
     // Düğüm doluysa yeni belirteç joker dalına gider. Joker dalına her zaman yer ayrılır.
@@ -579,7 +604,8 @@ struct Karsilastirma {
     /// Kalıptaki joker konumlar.
     joker: usize,
     /// Farklı olan (ya da kalıpta joker olan) ve büyük ihtimalle değişken olan konumlar: iki
-    /// tarafında da rakam var (jokerde mesajın tarafında) ya da konum yaprakta değişken.
+    /// tarafında da rakam var (jokerde mesajın tarafında), iki taraf da aynı kodsal biçimde
+    /// (jokerde mesajın tarafı kodsal) ya da konum yaprakta değişken.
     degisken_fark: usize,
     /// Değişken farkların, rakamdan dolayı değişken olanları.
     rakamli_fark: usize,
@@ -588,9 +614,16 @@ struct Karsilastirma {
 /// Kalıp ile mesajı konum konum karşılaştırır. `konumlar`: yaprağın konumları; esnek eşik
 /// kapalıyken boştur.
 ///
-/// Joker, kalıbın o konumda farklı değerler gördüğünü söyler; o değerlerin rakamlı olup
-/// olmadığı bilinmez. Jokerin karşısındaki belirteçte rakam varsa fark rakamlı sayılır.
-fn karsilastir(kalip: &[String], belirtecler: &[&str], konumlar: &[Konum]) -> Karsilastirma {
+/// Joker, kalıbın o konumda farklı değerler gördüğünü söyler; o değerlerin rakamlı ya da kodsal
+/// olup olmadığı bilinmez. Jokerin karşısındaki belirteçte rakam varsa fark rakamlı, belirteç
+/// kodsal biçimdeyse fark kodsal sayılır. `bicimler`: mesajın belirteçlerinin biçimleri,
+/// gerektikçe bulunur.
+fn karsilastir(
+    kalip: &[String],
+    belirtecler: &[&str],
+    konumlar: &[Konum],
+    bicimler: &mut Bicimler<'_>,
+) -> Karsilastirma {
     let mut sonuc = Karsilastirma {
         esit: 0,
         joker: 0,
@@ -598,23 +631,213 @@ fn karsilastir(kalip: &[String], belirtecler: &[&str], konumlar: &[Konum]) -> Ka
         rakamli_fark: 0,
     };
     for (sira, (k, b)) in kalip.iter().zip(belirtecler).enumerate() {
-        let rakamli = if k == JOKER {
+        let (rakamli, kodsal) = if k == JOKER {
             sonuc.joker += 1;
-            rakam_iceriyor(b)
+            (rakam_iceriyor(b), bicimler.bicim(sira).kodsal())
         } else if k == b {
             sonuc.esit += 1;
             continue;
         } else {
-            rakam_iceriyor(k) && rakam_iceriyor(b)
+            // İki farklı belirteç aynı kodsal biçimde mi? `ORDER_CREATED` ile `ORDER_FAILED`
+            // evet; `alındı` ile `reddedildi` (sıradan kelimeler) ve `ORDER_FAILED` ile `hazır`
+            // hayır. Mesajın belirteci kodsal değilse (çoğu zaman) kalıbınkine bakılmaz.
+            let bicim_b = bicimler.bicim(sira);
+            (
+                rakam_iceriyor(k) && rakam_iceriyor(b),
+                bicim_b.kodsal() && bicim(k) == bicim_b,
+            )
         };
         if rakamli {
             sonuc.rakamli_fark += 1;
         }
-        if rakamli || konumlar.get(sira).is_some_and(Konum::degisken_mi) {
+        if rakamli || kodsal || konumlar.get(sira).is_some_and(Konum::degisken_mi) {
             sonuc.degisken_fark += 1;
         }
     }
     sonuc
+}
+
+/// Bir mesajın belirteçlerinin biçimleri, gerektikçe bulunur. Mesaj yapraktaki her kümeyle
+/// karşılaştırılırken bir belirtecin biçimi bir kez hesaplanır; hiç farklı olmayan bir
+/// belirtecinki hiç hesaplanmaz.
+struct Bicimler<'a> {
+    belirtecler: &'a [&'a str],
+    bicimler: Vec<Option<Bicim>>,
+}
+
+impl<'a> Bicimler<'a> {
+    fn new(belirtecler: &'a [&'a str]) -> Self {
+        Bicimler {
+            belirtecler,
+            bicimler: vec![None; belirtecler.len()],
+        }
+    }
+
+    /// `sira`. belirtecin biçimi.
+    fn bicim(&mut self, sira: usize) -> Bicim {
+        *self.bicimler[sira].get_or_insert_with(|| bicim(self.belirtecler[sira]))
+    }
+}
+
+/// Bir belirtecin biçimi: koddan gelen bir değer mi, sıradan bir kelime mi?
+///
+/// Sıradan kelimeler (`Ödeme`, `alındı`) yalnızca harflerden oluşur. Koddan gelen değerlerin
+/// (sınıf adı, sabit, tanımlayıcı, olay adı, tırnaklı anahtar) biçimi bellidir ve bir mesajın
+/// sabit kısmında böyle bir belirteç olmaz: iki mesaj yalnızca aynı biçimdeki iki kodsal değerde
+/// ayrılıyorsa o konum kategoriktir. Kısa büyük harfli kelimeler (`GET`, `OK`, `WARNING`)
+/// temkinle sıradan kelime sayılır: `GET /api` ile `POST /api` farklı olaylardır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bicim {
+    /// Ad alanlı PHP sınıf adı: `App\Jobs\FaturaGonder`, `\App\Models\Urun`, JSON kaçışlı
+    /// `App\\Jobs\\X`
+    Sinif,
+    /// Büyük harfli sabit, en az bir alt çizgiyle: `ORDER_CREATED`
+    Sabit,
+    /// deveAdı ya da PascalAdı (`FaturaGonder`), yilan_adi (`fatura_gonder`), PHP değişkeni
+    /// (`$urun`)
+    Tanimlayici,
+    /// Noktayla ya da iki noktayla parçalanmış ad: `odeme.basarisiz`, `kurlar:guncelle`,
+    /// `ornek.test`
+    Noktali,
+    /// Tek ya da çift tırnakla sarılı tek kelime: `'fiyat'`, `"dsn"`. SQL'in ters tırnaklı
+    /// tablo ve sütun adları (`` `urunler` ``) sayılmaz: iki sorgu tablosuyla ayrılıyorsa ayrı
+    /// sorgulardır.
+    Tirnakli,
+    /// Yalnızca harflerden oluşan sıradan kelime: `Ödeme`, `alındı`, `GET`
+    Sozcuk,
+    /// Geri kalan her şey: yer tutucular (`<SAYI>`), noktalama, harfle rakamın karıştığı
+    /// belirteçler (`oauth2`), üye çağrıları (`X::handle()`)
+    Diger,
+}
+
+impl Bicim {
+    /// Koddan gelen bir değer mi? Sıradan kelimeler ve belirsiz belirteçler değildir.
+    fn kodsal(self) -> bool {
+        !matches!(self, Bicim::Sozcuk | Bicim::Diger)
+    }
+}
+
+/// Belirtecin cümleden gelen kısmı soyulmuş hali: baştaki açan ayraçlar (`([{`) ve sondaki
+/// kapatan ayraçlarla noktalama (`)]},;:.`) belirtecin kendisinden değildir. `[App\Jobs\X]`
+/// → `App\Jobs\X`, `(Ayşe,` → `Ayşe`. Soyulunca bir şey kalmıyorsa (`,`) belirtecin kendisi.
+pub fn cekirdek(belirtec: &str) -> &str {
+    let cekirdek = belirtec
+        .trim_start_matches(['(', '[', '{'])
+        .trim_end_matches([')', ']', '}', ',', ';', ':', '.']);
+    if cekirdek.is_empty() {
+        belirtec
+    } else {
+        cekirdek
+    }
+}
+
+/// Belirtecin biçimi; cümleden gelen ayraç ve noktalama soyularak bakılır (`cekirdek`):
+/// `[App\Jobs\X]` bir sınıf adı, `ORDER_CREATED:` bir sabittir.
+fn bicim(belirtec: &str) -> Bicim {
+    let cekirdek = cekirdek(belirtec);
+    if let Some(ic) = tirnakli_ic(cekirdek) {
+        // Tırnağın içinde tırnak yoksa tek bir tırnaklı kelimedir
+        return if !ic.is_empty() && !ic.contains(['\'', '"']) {
+            Bicim::Tirnakli
+        } else {
+            Bicim::Diger
+        };
+    }
+    // Bitişik tırnak cümleden gelebilir: `'Ali` ile `Veli'` iki kelimelik tırnaklı bir değer
+    let cekirdek = cekirdek
+        .trim_start_matches(['\'', '"'])
+        .trim_end_matches(['\'', '"']);
+    if cekirdek.is_empty() {
+        return Bicim::Diger;
+    }
+    if cekirdek.contains('\\') {
+        return if sinif_adi_mi(cekirdek) {
+            Bicim::Sinif
+        } else {
+            Bicim::Diger
+        };
+    }
+    if let Some(ad) = cekirdek.strip_prefix('$') {
+        return if tanimlayici_mi(ad) {
+            Bicim::Tanimlayici
+        } else {
+            Bicim::Diger
+        };
+    }
+    if cekirdek.chars().all(char::is_alphabetic) {
+        return if deve_adi_mi(cekirdek) {
+            Bicim::Tanimlayici
+        } else {
+            Bicim::Sozcuk
+        };
+    }
+    if tanimlayici_mi(cekirdek) {
+        // Harfler ve rakamlar, en az bir alt çizgiyle (alt çizgisiz olsaydı yukarıda sıradan
+        // kelime sayılır ya da rakamlı olurdu)
+        return if cekirdek.contains('_') {
+            if cekirdek
+                .chars()
+                .filter(|c| c.is_alphabetic())
+                .all(char::is_uppercase)
+            {
+                Bicim::Sabit
+            } else {
+                Bicim::Tanimlayici
+            }
+        } else if deve_adi_mi(cekirdek) {
+            Bicim::Tanimlayici
+        } else {
+            Bicim::Diger
+        };
+    }
+    if cekirdek.contains(['.', ':']) {
+        let mut parcalar = cekirdek.split(['.', ':']);
+        if parcalar.all(tanimlayici_mi) {
+            return Bicim::Noktali;
+        }
+    }
+    Bicim::Diger
+}
+
+/// Belirteç aynı tırnakla (`'` ya da `"`) başlayıp bitiyorsa tırnağın içi.
+fn tirnakli_ic(belirtec: &str) -> Option<&str> {
+    let ilk = belirtec.chars().next()?;
+    if !matches!(ilk, '\'' | '"') || belirtec.len() < 2 || !belirtec.ends_with(ilk) {
+        return None;
+    }
+    Some(&belirtec[1..belirtec.len() - 1])
+}
+
+/// Harf, rakam ve alt çizgiden oluşan, en az bir harfi olan bir ad mı?
+fn tanimlayici_mi(ad: &str) -> bool {
+    !ad.is_empty()
+        && ad.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && ad.chars().any(char::is_alphabetic)
+}
+
+/// Küçük bir harften hemen sonra büyük bir harf geliyor mu? `FaturaGonder`, `hizSiniri` evet;
+/// `Ödeme`, `SQLSTATE` hayır.
+fn deve_adi_mi(ad: &str) -> bool {
+    ad.chars()
+        .zip(ad.chars().skip(1))
+        .any(|(onceki, sonraki)| onceki.is_lowercase() && sonraki.is_uppercase())
+}
+
+/// Ters bölüyle (JSON'da iki ters bölüyle) ayrılmış en az iki ASCII tanımlayıcı mı? Başta bir
+/// ters bölü olabilir. `App\Jobs\X` evet; `resources\views\x.blade.php` (uzantılı, bir yol)
+/// ve `App\Jobs\X::handle()` hayır.
+fn sinif_adi_mi(ad: &str) -> bool {
+    let parcalar: Vec<&str> = ad
+        .strip_prefix('\\')
+        .unwrap_or(ad)
+        .split('\\')
+        .filter(|parca| !parca.is_empty())
+        .collect();
+    parcalar.len() >= 2
+        && parcalar.iter().all(|parca| {
+            parca.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && parca.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 /// Kalıpta mesajdan farklı olan konumları jokere çevirir. Kalıp değiştiyse true.
@@ -752,12 +975,24 @@ mod testler {
             ["2 × View <*> not found."]
         );
 
-        // Derinlik 2: ikinci belirteç de dal seçer; farklı yapraklara düşüp hiç karşılaşmazlar
+        // Derinlik 2: ikinci belirteç de dal seçer. Sıradan kelimelerle ayrılan mesajlar farklı
+        // yapraklara düşüp hiç karşılaşmaz
         let derin = Ayarlar {
             onek_derinligi: 2,
             ..Ayarlar::default()
         };
-        assert_eq!(kumele_tek_tur(derin, &mesajlar).len(), 2);
+        let sayfalar = ["Sayfa sepet için bulunamadı", "Sayfa iade için bulunamadı"];
+        assert_eq!(
+            kumele_tek_tur(Ayarlar::default(), &sayfalar),
+            ["2 × Sayfa <*> için bulunamadı"]
+        );
+        assert_eq!(kumele_tek_tur(derin.clone(), &sayfalar).len(), 2);
+        // Kodsal biçimli ikinci belirteç (`[emails.siparis]`) rakamlılar gibi joker dalına
+        // gider: şablon adları derinlik 2'de de buluşur
+        assert_eq!(
+            kumele_tek_tur(derin, &mesajlar),
+            ["2 × View <*> not found."]
+        );
     }
 
     #[test]
@@ -852,6 +1087,221 @@ mod testler {
         // "alındı" ile "reddedildi" farklı olaylar; rakam yok, eşik gevşememeli
         let sonuc = kumele_tek_tur(Ayarlar::default(), &["Ödeme alındı", "Ödeme reddedildi"]);
         assert_eq!(sonuc.len(), 2);
+    }
+
+    #[test]
+    fn belirtec_bicimleri() {
+        use Bicim::*;
+        let ornekler = [
+            (r"App\Jobs\FaturaGonder", Sinif),
+            (r"\App\Models\Urun", Sinif),
+            (r"App\\Jobs\\FaturaGonder", Sinif),
+            (r"[App\Jobs\FaturaGonder]", Sinif),
+            (r"App\Jobs\FaturaGonder:", Sinif),
+            (r"resources\views\urun.blade.php", Diger),
+            (r"App\Jobs\X::handle()", Diger),
+            (r"\", Diger),
+            ("ORDER_CREATED", Sabit),
+            ("ORDER_CREATED,", Sabit),
+            ("HTTP_2", Sabit),
+            ("FaturaGonder", Tanimlayici),
+            ("hizSiniri", Tanimlayici),
+            ("fatura_gonder", Tanimlayici),
+            ("Order_Created", Tanimlayici),
+            ("$urun", Tanimlayici),
+            ("$urun2", Tanimlayici),
+            ("odeme.basarisiz", Noktali),
+            ("kurlar:guncelle", Noktali),
+            ("ornek.test", Noktali),
+            ("mail.from.address", Noktali),
+            ("(siparis.olustur)", Noktali),
+            ("'fiyat'", Tirnakli),
+            ("\"dsn\"", Tirnakli),
+            ("'App\\Jobs\\X'", Tirnakli),
+            ("`urunler`", Diger),
+            ("''", Diger),
+            ("\"a'b\"", Diger),
+            ("\"'\"", Diger),
+            ("siparisV2Olustur", Tanimlayici),
+            ("ApiV2Client", Tanimlayici),
+            ("Fatura2Gonder", Diger),
+            (r"\App", Diger),
+            (r"App\", Diger),
+            (r"App\\", Diger),
+            ("'Ali", Sozcuk),
+            ("Veli'", Sozcuk),
+            ("Ödeme", Sozcuk),
+            ("alındı", Sozcuk),
+            ("GET", Sozcuk),
+            ("SQLSTATE", Sozcuk),
+            ("İşlendi:", Sozcuk),
+            ("<SAYI>", Diger),
+            ("<*>", Diger),
+            (",", Diger),
+            ("(,)", Diger),
+            ("oauth2", Diger),
+            ("a1b2", Diger),
+            ("=", Diger),
+            ("", Diger),
+            ("$", Diger),
+            ("e-posta", Diger),
+            ("..", Diger),
+            (".a", Diger),
+        ];
+        for (belirtec, beklenen) in ornekler {
+            assert_eq!(bicim(belirtec), beklenen, "{belirtec:?}");
+        }
+        assert!(Sinif.kodsal() && Sabit.kodsal() && Tanimlayici.kodsal());
+        assert!(Noktali.kodsal() && Tirnakli.kodsal());
+        assert!(!Sozcuk.kodsal() && !Diger.kodsal());
+    }
+
+    #[test]
+    fn ayni_bicimdeki_kodsal_degerler_birlesir() {
+        // Kategorik konum: iki mesaj yalnızca aynı biçimdeki iki kodsal değerde ayrılıyor.
+        // Hepsi 2–3 belirteçli: rakamsız bir fark olsa ayrı kalırlardı (0,5 ya da 0,67 < 0,7)
+        let ciftler: [(&str, &str, &str); 7] = [
+            (
+                r"İşlendi: App\Jobs\FaturaGonder",
+                r"İşlendi: App\Jobs\EpostaGonder",
+                "İşlendi: <*>",
+            ),
+            ("Durum: ORDER_CREATED", "Durum: ORDER_FAILED", "Durum: <*>"),
+            ("Olay: odeme.basarisiz", "Olay: odeme.basarili", "Olay: <*>"),
+            (
+                "Undefined variable $urun",
+                "Undefined variable $siparis",
+                "Undefined variable <*>",
+            ),
+            (
+                "Undefined array key \"fiyat\"",
+                "Undefined array key \"stok\"",
+                "Undefined array key <*>",
+            ),
+            (
+                "Kuyruk: fatura_gonder",
+                "Kuyruk: eposta_gonder",
+                "Kuyruk: <*>",
+            ),
+            (
+                "Dinleyici: SiparisOlusturuldu",
+                "Dinleyici: OdemeAlindi",
+                "Dinleyici: <*>",
+            ),
+        ];
+        for (birinci, ikinci, kalip) in ciftler {
+            assert_eq!(
+                kumele_tek_tur(Ayarlar::default(), &[birinci, ikinci]),
+                [format!("2 × {kalip}")],
+                "{birinci:?} / {ikinci:?}"
+            );
+        }
+        // Klasik Drain'de birleşmezler
+        let klasik = Ayarlar {
+            esnek_esik: false,
+            ..Ayarlar::default()
+        };
+        assert_eq!(
+            kumele_tek_tur(klasik, &["Durum: ORDER_CREATED", "Durum: ORDER_FAILED"]).len(),
+            2
+        );
+    }
+
+    #[test]
+    fn siradan_kelimeler_ve_farkli_bicimler_birlesmez() {
+        let ciftler = [
+            // Sıradan kelimeler farklı olaylardır
+            ("Kuyruk emails dolu", "Kuyruk default dolu"),
+            ("GET /api/urunler yavaş", "POST /api/urunler yavaş"),
+            // Kodsal değerle sıradan kelime
+            ("Durum: ORDER_FAILED", "Durum: hazır"),
+            // Farklı kodsal biçimler
+            ("Durum: ORDER_FAILED", "Durum: odeme.bekliyor"),
+            // Ters tırnaklı SQL adları: farklı tablolar farklı sorgulardır
+            ("Tablo `urunler` kilitli", "Tablo `siparisler` kilitli"),
+            // Harfle rakamın karıştığı belirteçlerin yalnızca birinde rakam var
+            ("oauth2 jetonu yenilendi", "oauth jetonu yenilendi"),
+        ];
+        for (birinci, ikinci) in ciftler {
+            assert_eq!(
+                kumele_tek_tur(Ayarlar::default(), &[birinci, ikinci]).len(),
+                2,
+                "{birinci:?} / {ikinci:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn kodsal_bas_belirtec_joker_dalina_gider() {
+        // Baş belirteç dal seçer; kodsal bir baş belirteç ayrı dal açsaydı iki olay hiç
+        // karşılaştırılmazdı
+        let sonuc = kumele_tek_tur(
+            Ayarlar::default(),
+            &[
+                "ORDER_CREATED olayı işlendi",
+                "ORDER_FAILED olayı işlendi",
+                r"App\Jobs\FaturaGonder işlendi",
+                r"App\Jobs\EpostaGonder işlendi",
+            ],
+        );
+        assert_eq!(sonuc, ["2 × <*> olayı işlendi", "2 × <*> işlendi"]);
+        // Sıradan kelimeler kendi dallarını açar; aynı yaprakta değiller
+        let sonuc = kumele_tek_tur(
+            Ayarlar::default(),
+            &["Ödeme olayı işlendi", "Kargo olayı işlendi"],
+        );
+        assert_eq!(sonuc.len(), 2);
+    }
+
+    #[test]
+    fn jokerin_karsisindaki_kodsal_deger_degisken_sayilir() {
+        // Kalıp "Durum: <*>" olduktan sonra kodsal bir değer katılır, sıradan bir kelime ayrı
+        // küme açar
+        let sonuc = kumele_tek_tur(
+            Ayarlar::default(),
+            &[
+                "Durum: ORDER_CREATED",
+                "Durum: ORDER_FAILED",
+                "Durum: odeme.bekliyor",
+                "Durum: hazır",
+            ],
+        );
+        assert_eq!(sonuc, ["3 × Durum: <*>", "1 × Durum: hazır"]);
+    }
+
+    #[test]
+    fn kodsal_fark_tek_basina_tutunacak_yer_olmaz() {
+        // Hiçbir belirteci tutmayan bir birleşme yalnızca rakamlı farklarla olur
+        let sonuc = kumele_tek_tur(Ayarlar::default(), &["A_B C_D", "E_F G_H"]);
+        assert_eq!(sonuc.len(), 2);
+        // Tek kelimelik kodsal mesajlar da birleşmez: her olay adı ayrı bir olaydır
+        let sonuc = kumele_tek_tur(
+            Ayarlar::default(),
+            &["odeme.basarisiz", "odeme.basarili", "ORDER_FAILED"],
+        );
+        assert_eq!(sonuc.len(), 3);
+    }
+
+    #[test]
+    fn belirtecin_cekirdegi() {
+        assert_eq!(cekirdek("(Ayşe,"), "Ayşe");
+        assert_eq!(cekirdek(r"[App\Jobs\X]"), r"App\Jobs\X");
+        assert_eq!(cekirdek("\"fiyat\":"), "\"fiyat\"");
+        assert_eq!(cekirdek("giriş"), "giriş");
+        assert_eq!(cekirdek(","), ",");
+        assert_eq!(cekirdek("([{}])"), "([{}])");
+        assert_eq!(cekirdek(""), "");
+    }
+
+    #[test]
+    fn joker_konumlari_kaliptan_okunur() {
+        let mut drain = Drain::new(Ayarlar::default());
+        drain.ekle("Şablon <*> eksik: a1 x");
+        drain.ekle("Şablon <*> eksik: b2 y");
+        let kume = &drain.kumeler[0];
+        assert_eq!(kume.metin(), "Şablon <*> eksik: <*> <*>");
+        // Mesajda yazılı "<*>" (1. konum) joker değildir
+        assert_eq!(kume.joker_konumlari().collect::<Vec<_>>(), [3, 4]);
     }
 
     #[test]

@@ -288,7 +288,7 @@ Eşiğin örnek logdaki etkisi:
 |---|---|---|
 | 0,4 | 22 | İki farklı yavaş SQL sorgusu anlamsız tek bir kalıpta birleşir. |
 | **0,7** | 23 | Sorgular ayrı kalır; zamanlanmış görevler birleşir. |
-| 0,8 | 25 | `giriş` ve `çıkış` ayrılır, ama zamanlanmış görevler de ayrılır. |
+| 0,8 | 24 | `giriş` ve `çıkış` ayrılır; zamanlanmış görevler, adları [kodsal biçimde](#kategorik-konumlar) olduğu için birleşmeye devam eder. |
 
 Yanlışlıkla birleştirilen yeni bir hata eski bir kalıbın içinde kaybolacağı için varsayılan
 eşik temkinli seçildi.
@@ -389,6 +389,69 @@ fazla değer alan bir konumda) ayrılır; 40 bin farklı kullanıcı adlı logda
 Esnek eşik kapalıyken bilinen farklar, gerçek loglarda görülmeyen girdilerdedir: Drain3
 rakamı Unicode'a göre tanır (`²`, `٣`), belirteçleri Python'un `split()`'iyle böler (`\x1c`
 gibi ayırıcılar da boşluk sayılır) ve mesajda yazılı bir `<*>`'ı joker sayar.
+
+### Kategorik konumlar
+
+Yüz farklı değer sınırı sıradan kelimeler içindir. Oysa kısa mesajlardaki değişkenlerin
+çoğu koddan gelir ve kelimeye benzemez:
+
+```text
+[2026-10-25 09:00:03] production.INFO: İş tamamlandı: App\Jobs\FaturaGonder
+[2026-10-25 09:00:05] production.INFO: İş tamamlandı: App\Jobs\EpostaGonder
+[2026-10-25 09:02:40] production.WARNING: Sipariş 1051 durumu ORDER_PENDING olarak kaldı
+[2026-10-25 09:05:40] production.WARNING: Sipariş 1052 durumu ORDER_FAILED olarak kaldı
+```
+
+Bir uygulamada yüz farklı iş sınıfı olmaz; her sınıf ayrı bir kalıp olurdu. Bir belirtecin
+**biçimi** ise ne olduğunu söyler. Belirtecin cümleden gelen kısmı (baştaki açan ayraç,
+sondaki kapatan ayraç ve noktalama: `[App\Jobs\X]`, `ORDER_CREATED:`) soyulduktan sonra
+biçimi şunlardan biridir:
+
+| Biçim | Örnek | Ne? |
+|---|---|---|
+| sınıf | `App\Jobs\FaturaGonder`, `\App\Models\Urun`, JSON'daki `App\\Jobs\\X` | Ters bölüyle ayrılmış ad alanlı PHP sınıf adı |
+| sabit | `ORDER_CREATED`, `HTTP_2` | Büyük harfli, en az bir alt çizgili |
+| tanımlayıcı | `FaturaGonder`, `hizSiniri`, `fatura_gonder`, `$urun` | deveAdı, PascalAdı, yilan_adi, PHP değişkeni |
+| noktalı | `odeme.basarisiz`, `kurlar:guncelle`, `ornek.test` | Noktayla ya da iki noktayla parçalanmış ad: olay, komut, yapılandırma anahtarı, sunucu adı |
+| tırnaklı | `'fiyat'`, `"dsn"` | Tek ya da çift tırnakla sarılı tek kelime |
+| sözcük | `Ödeme`, `alındı`, `GET`, `SQLSTATE` | Yalnızca harfler; kısa büyük harfli kelimeler de |
+| diğer | `<SAYI>`, `oauth2`, `->`, `` `urunler` `` | Geri kalan her şey |
+
+İlk beşi **kodsal** biçimlerdir. İki belirteç farklı ama ikisi de aynı kodsal biçimdeyse fark,
+iki tarafında da rakam olan bir fark gibi [eşiği gevşetir](#esnek-eşik):
+`İş tamamlandı: App\Jobs\FaturaGonder` ile `İş tamamlandı: App\Jobs\EpostaGonder` 2 belirtecin
+1'inde aynıdır (0,5), eşik 0,7 × 1/2 = 0,35'e iner ve ikisi `İş tamamlandı: <*>` olur. Konum
+**kategoriktir**: değerleri bir kümeden gelir. `Ödeme alındı` ile `Ödeme reddedildi` iki
+sıradan kelimede ayrılır, eşik gevşemez ve iki olay ayrı kalır. Kodsal bir değerle sıradan bir
+kelime (`Durum: ORDER_FAILED`, `Durum: hazır`) ya da iki ayrı kodsal biçim (`ORDER_FAILED`,
+`odeme.bekliyor`) de birleşmez. Karar anlıktır, [ikinci tur](#değişken-konumlar) gerekmez.
+
+Ağacın [ilk belirteç dalı](#drain) da bunu bilir: kodsal biçimli bir baş belirteç, rakamlı
+belirteçler gibi ortak `<*>` dalına gider. Yoksa `ORDER_CREATED olayı işlendi` ile
+`ORDER_FAILED olayı işlendi` hiç karşılaştırılmazdı.
+
+Temkinli kalan yerler:
+
+- Kısa büyük harfli kelimeler sözcüktür: `GET /api/urunler` ile `POST /api/urunler` farklı
+  olaylardır; `ORDER_CREATED` ancak alt çizgisiyle sabit olur.
+- SQL'in ters tırnaklı tablo ve sütun adları (`` `urunler` ``) kodsal sayılmaz: tablosu farklı
+  iki yavaş sorgu, iki ayrı sorgudur ve [eşik tablosundaki](#drain) gibi ayrı kalır.
+- Tek kelimelik mesajlar değişmez: `odeme.basarisiz` tek başına bir olay adıdır,
+  `odeme.basarili` ile birleşmez.
+- Kuyruk adları, durum kelimeleri (`emails`, `default`, `pending`) sıradan kelimelerdir; yüz
+  farklı değer sınırı onlar için geçerlidir.
+
+Örnek logdaki `Zamanlanmış görev başladı: kurlar:guncelle` ve `yedek:al` kayıtları zaten
+0,7'de birleşiyordu; eşik 0,8'e çıkarılınca da birleşmeye devam eder, çünkü komut adları
+noktalı biçimdedir.
+
+Rapor her kalıbın her `<*>` konumunun değerlerini sayar ([kalıp raporu](#kalıp-raporu)):
+`değerler: App\Jobs\FaturaGonder ×2, App\Jobs\EpostaGonder ×1`. Bu sayım rapor zamanında,
+depodaki maskeli mesajlardan yapılır; her farklı maskeli mesaj zaten bir
+[alt gruptur](#akışlı-okuma-ve-bellek), ek bellek gerekmez. Rakamlı farklılıklarla ya da
+yüz değer sınırıyla açılan konumlar da sayılır: `Kullanıcı <SAYI> <*> yaptı` kalıbının
+`giriş ×8, çıkış ×1` değerleri, Drain'in sözdizimine bakıp birleştirdiği iki olayı görünür
+kılar.
 
 ## Hata parmak izi
 
@@ -763,6 +826,13 @@ Her satıra şu bilgiler eklenir:
   `2026-10-24T09:00:00+00:00`) doğru sıralanır.
 - **örnek:** satırdaki ilk kaydın maskelenmemiş mesajı; `<SAYI>` ve `<*>`'ın arkasındaki
   gerçek değerleri gösterir. Kalıp ham mesajla aynıysa gösterilmez.
+- **değerler:** kalıptaki her `<*>` konumunun satırdaki kayıtlarda aldığı en sık beş değer,
+  adetleriyle; kalanı `+N başka` (N: listelenmeyen farklı değer sayısı). Adetler alt
+  grupların adetlerinin toplamıdır; eşit adette logda önce görülen önce. Birden çok `<*>`
+  varsa her konum kalıptaki sırasıyla, 1'den sayılarak (`2: ahmet ×4; 4: giriş ×5`).
+  Belirtecin cümleden gelen ayraç ve noktalaması değere katılmaz: `(Ayşe,` değeri `Ayşe`dir.
+  Liste kalıp genişliğine sığmıyorsa değerler bölünmeden alt satırlara taşar. Kalıpta `<*>`
+  yoksa gösterilmez.
 - **konum:** kayıtlar bir istisnadan geliyorsa uygulama kodundaki ilk satır, içinde
   bulunduğu fonksiyon ve istisna sınıfı. Satır, satırdaki kayıtların en yenisininkidir. Dosya
   yolu kısaltılmaz; birçok editörün terminalinde `dosya:satır` tıklanarak açılabilir.

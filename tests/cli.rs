@@ -85,7 +85,7 @@ fn secenekler_raporu_degistirir() {
     let stdout = metin(&cikti.stdout);
     assert!(cikti.status.success(), "{stdout}");
     assert!(
-        stdout.contains("Drain ile 25 kalıp (eşik 0,8) → parmak iziyle 26 grup"),
+        stdout.contains("Drain ile 24 kalıp (eşik 0,8) → parmak iziyle 25 grup"),
         "{stdout}"
     );
     // En sık tekrar eden kalıp en üstte; üç satırdan sonrası söylenir
@@ -96,7 +96,7 @@ fn secenekler_raporu_degistirir() {
         "{stdout}"
     );
     assert!(
-        stdout.ends_with("  … 23 satır daha; tümünü görmek için --hepsi\n"),
+        stdout.ends_with("  … 22 satır daha; tümünü görmek için --hepsi\n"),
         "{stdout}"
     );
 }
@@ -315,7 +315,7 @@ fn markdown_bicimi_tablo_yazar() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("| Adet | Seviye | İlk | Son | Kalıp | Örnek | Konum |\n"),
+        stdout.contains("| Adet | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |\n"),
         "{stdout}"
     );
     // Başlık, ayraç ve --ilk kadar satır
@@ -1339,4 +1339,79 @@ fn kayit_bulunamazsa_uyarilir() {
     let cikti = veylog(&[bos.to_str().unwrap()]);
     fs::remove_file(&bos).ok();
     assert!(cikti.stderr.is_empty(), "{}", metin(&cikti.stderr));
+}
+
+#[test]
+fn kategorik_konumlar_raporda_degerleriyle_gorunur() {
+    // Aynı biçimdeki kodsal değerler (sınıf adları, sabitler, olay adları, tırnaklı anahtarlar)
+    // 100 farklı değer beklenmeden birleşir; raporda değerleri adetleriyle yazılır
+    let cikti = veylog(&["ornekler/kuyruk.log"]);
+    let stdout = metin(&cikti.stdout);
+    assert!(cikti.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("Drain ile 6 kalıp (eşik 0,7) → parmak iziyle 6 grup\n"),
+        "{stdout}"
+    );
+    let beklenen = "\
+     4  INFO       09:00:03  09:01:12  İş tamamlandı: <*>
+                                       örnek: İş tamamlandı: App\\Jobs\\FaturaGonder
+                                       değerler: App\\Jobs\\FaturaGonder ×2, App\\Jobs\\EpostaGonder ×1,
+                                                 App\\Jobs\\StokGuncelle ×1
+     3  INFO       09:01:30  09:02:02  Olay işlendi: <*>
+                                       örnek: Olay işlendi: siparis.olusturuldu
+                                       değerler: siparis.olusturuldu ×2, odeme.alindi ×1
+";
+    assert!(stdout.contains(beklenen), "{stdout}");
+    assert!(
+        stdout.contains("Sipariş <SAYI> durumu <*> olarak kaldı\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("değerler: ORDER_PENDING ×1, ORDER_FAILED ×1\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("değerler: \"kargo_ucreti\" ×1, \"indirim\" ×1\n"),
+        "{stdout}"
+    );
+    // Sıradan kelimeler (kuyruk adları) birleşmez
+    assert!(stdout.contains("  Kuyruk durdu: emails\n"), "{stdout}");
+    assert!(stdout.contains("  Kuyruk durdu: default\n"), "{stdout}");
+
+    // JSON: her <*> konumu için değerler; joker olmayan kalıpta boş dizi
+    let cikti = veylog(&["-b", "json", "ornekler/kuyruk.log"]);
+    assert!(cikti.status.success());
+    let rapor: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
+    let satirlar = rapor["kaliplar"]["satirlar"].as_array().unwrap();
+    let isler = satirlar
+        .iter()
+        .find(|satir| satir["kalip"] == "İş tamamlandı: <*>")
+        .unwrap();
+    assert_eq!(
+        isler["degiskenler"],
+        serde_json::json!([{
+            "konum": 3,
+            "degerler": [
+                {"deger": "App\\Jobs\\FaturaGonder", "adet": 2},
+                {"deger": "App\\Jobs\\EpostaGonder", "adet": 1},
+                {"deger": "App\\Jobs\\StokGuncelle", "adet": 1}
+            ],
+            "baska": 0
+        }])
+    );
+    let kuyruk = satirlar
+        .iter()
+        .find(|satir| satir["kalip"] == "Kuyruk durdu: emails")
+        .unwrap();
+    assert_eq!(kuyruk["degiskenler"], serde_json::json!([]));
+
+    // Markdown: değerler sütunu, her değer kod olarak
+    let cikti = veylog(&["-b", "markdown", "ornekler/kuyruk.log"]);
+    let stdout = metin(&cikti.stdout);
+    assert!(
+        stdout.contains(
+            "| `Olay işlendi: <*>` | `Olay işlendi: siparis.olusturuldu` | `siparis.olusturuldu` ×2, `odeme.alindi` ×1 |  |\n"
+        ),
+        "{stdout}"
+    );
 }

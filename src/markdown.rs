@@ -11,8 +11,9 @@ use std::io::{self, Write};
 use crate::ani_artis::AniArtislar;
 use crate::karsilastirma::Karsilastirma;
 use crate::rapor::{
-    Hucreler, KALIP_GENISLIGI, KalipSatiri, Ozet, ZamanGosterimi, ani_artis_basligi, dilim_araligi,
-    gorunur, karsilastirma_bolumleri, kisalt, ondalik, ondalik_kisa, zaman_goster,
+    Hucreler, KALIP_GENISLIGI, KalipSatiri, Ozet, ZamanGosterimi, ani_artis_basligi,
+    degerler_metni, dilim_araligi, gorunur, karsilastirma_bolumleri, kisalt, ondalik, ondalik_kisa,
+    zaman_goster,
 };
 use crate::zaman::sure_yaz;
 
@@ -48,10 +49,10 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
         writeln!(cikti)?;
         writeln!(
             cikti,
-            "| Adet | Seviye | İlk | Son | Kalıp | Örnek | Konum |"
+            "| Adet | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |"
         )?;
         // ---: sütunu sağa yaslar
-        writeln!(cikti, "|---:|---|---|---|---|---|---|")?;
+        writeln!(cikti, "|---:|---|---|---|---|---|---|---|")?;
         for satir in satirlar {
             satir_yaz(
                 cikti,
@@ -112,9 +113,9 @@ fn karsilastirma_yaz(
         writeln!(cikti)?;
         writeln!(
             cikti,
-            "| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |"
+            "| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |"
         )?;
-        writeln!(cikti, "|---:|---:|---|---|---|---|---|---|")?;
+        writeln!(cikti, "|---:|---:|---|---|---|---|---|---|---|")?;
         for degisim in ozet.sinirla(degisimler) {
             // Artanlarda sonraki sayının yanına kaç kat sık görüldüğü yazılır
             let sonra = if degisim.once > 0 && degisim.sonra > 0 {
@@ -153,9 +154,9 @@ fn ani_artis_yaz(
     writeln!(cikti)?;
     writeln!(
         cikti,
-        "| Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Konum |"
+        "| Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |"
     )?;
-    writeln!(cikti, "|---:|---:|---:|---|---|---|---|---|---|")?;
+    writeln!(cikti, "|---:|---:|---:|---|---|---|---|---|---|---|")?;
     for artis in ozet.sinirla(&ani_artislar.artislar) {
         let zirve = format!(
             "{} ({})",
@@ -188,6 +189,7 @@ fn satir_yaz(
         zaman_goster(hucreler.son, gosterim),
         kod(&kisalt(&gorunur(&satir.kalip), KALIP_GENISLIGI)),
         ornek(hucreler.ornek, &satir.kalip),
+        degerler(satir),
         konum(satir),
     ];
     // Her hücre aynı kuraldan geçer; sonradan eklenen bir sütun da unutulmaz
@@ -218,6 +220,15 @@ fn ornek(ornek: &str, kalip: &str) -> String {
     } else {
         kod(&kisalt(&gorunur(ornek), KALIP_GENISLIGI))
     }
+}
+
+/// Değerler hücresi: `<*>` konumlarının en sık değerleri, her değer kod olarak:
+/// `` `giriş` ×6, `çıkış` ×3, +2 başka ``. Birden çok `<*>` varsa konum sırasıyla:
+/// `` 2: `ahmet` ×4; 4: `giriş` ×5 ``. Kalıpta `<*>` yoksa boş.
+fn degerler(satir: &KalipSatiri) -> String {
+    degerler_metni(&satir.degiskenler, |deger| {
+        kod(&kisalt(&gorunur(deger), KALIP_GENISLIGI))
+    })
 }
 
 /// Konum hücresi: `app/Services/X.php:88, toplam()` ErrorException. View hatalarında satırsız
@@ -309,27 +320,27 @@ mod testler {
 
 #### Yeni çıkanlar (yalnızca sonra): 3
 
-| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |
-|---:|---:|---|---|---|---|---|---|
-| 0 | 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22, handle()` RedisException |
-| 0 | 1 | INFO | 16:24:10 | 16:24:10 | `Ödeme sağlayıcısı yeniden yanıt veriyor` |  |  |
+| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |
+|---:|---:|---|---|---|---|---|---|---|
+| 0 | 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` |  | `app/Http/Middleware/HizSiniri.php:22, handle()` RedisException |
+| 0 | 1 | INFO | 16:24:10 | 16:24:10 | `Ödeme sağlayıcısı yeniden yanıt veriyor` |  |  |  |
 
 … 1 satır daha; tümünü görmek için `--hepsi`
 
 #### Kaybolanlar (yalnızca önce): 11
 
-| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |
-|---:|---:|---|---|---|---|---|---|
-| 1 | 0 | ERROR | 09:47:12 | 09:47:12 | `Attempt to read property "ad" on null` |  | `app/Http/Controllers/KategoriController.php:54, goster()` ErrorException |
-| 1 | 0 | ERROR | 11:30:44 | 11:30:44 | `App\Jobs\FaturaGonder has been attempted too many times.` |  | uygulama kodunda bulunamadı (MaxAttemptsExceededException) |
+| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |
+|---:|---:|---|---|---|---|---|---|---|
+| 1 | 0 | ERROR | 09:47:12 | 09:47:12 | `Attempt to read property "ad" on null` |  |  | `app/Http/Controllers/KategoriController.php:54, goster()` ErrorException |
+| 1 | 0 | ERROR | 11:30:44 | 11:30:44 | `App\Jobs\FaturaGonder has been attempted too many times.` |  |  | uygulama kodunda bulunamadı (MaxAttemptsExceededException) |
 
 … 9 satır daha; tümünü görmek için `--hepsi`
 
 #### Artanlar (sonra ≥ 2 kat sık, tesadüf ihtimali < %1): 1
 
-| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |
-|---:|---:|---|---|---|---|---|---|
-| 1 | 5 (15,4 kat) | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64, tahsilEt()` ConnectionException |
+| Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |
+|---:|---:|---|---|---|---|---|---|---|
+| 1 | 5 (15,4 kat) | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` |  | `app/Services/OdemeServisi.php:64, tahsilEt()` ConnectionException |
 "#;
         let metin = karsilastirmali("16:11");
         assert!(metin.ends_with(beklenen), "{metin}");
@@ -347,9 +358,9 @@ mod testler {
         let beklenen = r#"
 ### Ani artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1
 
-| Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Konum |
-|---:|---:|---:|---|---|---|---|---|---|
-| 6 (16:10–16:20) | 0 | 4,0 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64, tahsilEt()` ConnectionException |
+| Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |
+|---:|---:|---:|---|---|---|---|---|---|---|
+| 6 (16:10–16:20) | 0 | 4,0 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` |  | `app/Services/OdemeServisi.php:64, tahsilEt()` ConnectionException |
 "#;
         let ani_artisli = |dakika| {
             let ayarlar = RaporAyarlari {
@@ -376,10 +387,10 @@ mod testler {
         };
         let metin = markdown_ayarlarla(&deneme_logu(), "a.log", &ayarlar);
         let beklenen = r#"
-| Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Konum |
-|---:|---:|---:|---|---|---|---|---|---|
-| 9 (10:31–10:32) | 0 | 6,1 | ERROR | 10:30:30 | 10:32:36 | `Kuyruk dolu` |  |  |
-| 9 (10:45–10:46) | 2 | 4,7 | WARNING | 10:45:10 | 10:45:18 | `Yavaş istek` |  |  |
+| Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |
+|---:|---:|---:|---|---|---|---|---|---|---|
+| 9 (10:31–10:32) | 0 | 6,1 | ERROR | 10:30:30 | 10:32:36 | `Kuyruk dolu` |  |  |  |
+| 9 (10:45–10:46) | 2 | 4,7 | WARNING | 10:45:10 | 10:45:18 | `Yavaş istek` |  |  |  |
 
 … 1 satır daha; tümünü görmek için `--hepsi`
 "#;
@@ -394,13 +405,13 @@ mod testler {
         let metin = markdown_ayarlarla(&karisik_seviyeli_log(), "a.log", &ayarlar);
         assert!(
             metin.contains(
-                "| CRITICAL | 10:00:30 | 11:50:30 | `Kuyruk <SAYI> dolu` | `Kuyruk 2 dolu` |  |\n"
+                "| CRITICAL | 10:00:30 | 11:50:30 | `Kuyruk <SAYI> dolu` | `Kuyruk 2 dolu` |  |  |\n"
             ),
             "{metin}"
         );
         assert!(
             metin.ends_with(
-                "| ERROR | 11:00:00 | 11:01:15 | `Kuyruk <SAYI> dolu` | `Kuyruk 3 dolu` |  |\n"
+                "| ERROR | 11:00:00 | 11:01:15 | `Kuyruk <SAYI> dolu` | `Kuyruk 3 dolu` |  |  |\n"
             ),
             "{metin}"
         );
@@ -437,19 +448,36 @@ mod testler {
             "- **Seviyeler:** CRITICAL 2 · ERROR 16 · WARNING 6 · NOTICE 1 · INFO 31 · DEBUG 3\n"
         ));
         assert!(metin.contains(
-            "\n| Adet | Seviye | İlk | Son | Kalıp | Örnek | Konum |\n|---:|---|---|---|---|---|---|\n"
+            "\n| Adet | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |\n|---:|---|---|---|---|---|---|---|\n"
         ));
         // Yer tutucular kod içinde; konum dosya:satır ve kısa sınıf adıyla
         assert!(metin.contains(
-            "| 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22, handle()` RedisException |\n"
+            "| 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` |  | `app/Http/Middleware/HizSiniri.php:22, handle()` RedisException |\n"
         ));
         // Kalıp ham mesajla aynıysa örnek hücresi boş
         assert!(metin.contains(
-            "| 4 | ERROR | 15:02:11 | 16:58:12 | `Undefined array key \"kargo_ucreti\"` |  | `app/Services/SepetHesaplayici.php:88, toplam()` ErrorException |\n"
+            "| 4 | ERROR | 15:02:11 | 16:58:12 | `Undefined array key \"kargo_ucreti\"` |  |  | `app/Services/SepetHesaplayici.php:88, toplam()` ErrorException |\n"
         ));
         // SQL'deki ters tırnaklar yüzünden çift çerçeve
         assert!(metin.contains("| `` Yavaş sorgu (<SAYI> ms): select * from `siparisler`"));
         assert!(metin.ends_with("\n… 14 satır daha; tümünü görmek için `--hepsi`\n"));
+    }
+
+    #[test]
+    fn degerler_hucresi_kod_olarak_yazilir() {
+        let log = "\
+[2026-10-24 10:00:00] local.INFO: Durum: ORDER_A için a|b işlendi
+[2026-10-24 10:00:01] local.INFO: Durum: ORDER_B için a|b işlendi
+[2026-10-24 10:00:02] local.INFO: Durum: ORDER_A için c`d işlendi
+";
+        let metin = markdown(log, "a.log");
+        // İki joker: konum sırasıyla, her değer kod içinde, | kaçılmış, ters tırnak çift çerçeveli
+        assert!(
+            metin.contains(
+                "| `Durum: <*> için <*> işlendi` | `Durum: ORDER_A için a\\|b işlendi` | 2: `ORDER_A` ×2, `ORDER_B` ×1; 4: `a\\|b` ×2, `` c`d `` ×1 |  |\n"
+            ),
+            "{metin}"
+        );
     }
 
     #[test]
@@ -472,12 +500,12 @@ mod testler {
         // CR satırı bölmez: kayıt tek tablo satırında, | kaçılmış
         assert!(
             metin.contains(
-                "| 1 | ERROR | 10:00:00 | 10:00:00 | `Odeme tamam HATA: kart\\|reddedildi` | `Odeme tamam␍HATA: kart\\|reddedildi` |  |\n"
+                "| 1 | ERROR | 10:00:00 | 10:00:00 | `Odeme tamam HATA: kart\\|reddedildi` | `Odeme tamam␍HATA: kart\\|reddedildi` |  |  |\n"
             ),
             "{metin}"
         );
         assert!(
-            metin.contains("| `␛[31mKırmızı␛[0m yazı` |  |  |\n"),
+            metin.contains("| `␛[31mKırmızı␛[0m yazı` |  |  |  |\n"),
             "{metin}"
         );
         // Yığın izinden gelen yol da temizlenir

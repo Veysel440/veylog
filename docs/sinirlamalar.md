@@ -7,11 +7,22 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
 
 - Drain sözdizimine bakar, anlama bakmaz: `Kullanıcı <SAYI> giriş yaptı` ile
   `Kullanıcı <SAYI> çıkış yaptı` aynı yapıda olduğu için `Kullanıcı <SAYI> <*> yaptı`
-  kalıbında birleşir.
-- Kısa mesajlarda rakam içermeyen bir değişken, aynı konumda 100'den fazla farklı değer
-  görülene kadar her değer için ayrı kalıp oluşturur (ör. `İşlendi: App\Jobs\FaturaGonder`
-  ile `İşlendi: App\Jobs\EpostaGonder`). Bu sınırı aşan konumlar
-  [değişken](nasil-calisir.md#değişken-konumlar) sayılır.
+  kalıbında birleşir. Raporun `değerler` satırı birleşenleri gösterir (`giriş ×8, çıkış ×1`).
+- Kısa mesajlarda sıradan bir kelime olan değişkenler (kuyruk adı `emails`, durum kelimesi
+  `pending`, alt çizgisiz büyük harfli `FAILED`) aynı konumda 100'den fazla farklı değer
+  görülene kadar her değer için ayrı kalıp oluşturur (`Kuyruk durdu: emails` ile
+  `Kuyruk durdu: default`). Bu sınırı aşan konumlar
+  [değişken](nasil-calisir.md#değişken-konumlar) sayılır. Koddan geldiği biçiminden belli olan
+  değerler (sınıf adları, sabitler, olay adları, tırnaklı anahtarlar) bu sınırı beklemez
+  ([kategorik konumlar](nasil-calisir.md#kategorik-konumlar)).
+- Aynı kodsal biçimdeki iki değer başka bir fark olsa da birleştirebilir: `syntax error,
+  unexpected identifier "x", expecting "function"` ile `syntax error, unexpected token "}",
+  expecting ";"` iki tırnaklı değerde ayrıldığı için eşik gevşer ve `identifier` ile `token`
+  farkına rağmen `syntax error, unexpected <*> <*> expecting <*>` olur. Kayıtlar bir istisnadan
+  geliyorsa parmak izi onları yine ayırır.
+- SQL'in ters tırnaklı adları (`` `urunler` ``) kodsal sayılmaz; `'...'` ile tırnaklı değerler
+  sayılır. Bir mesajda tırnak içinde yazılan sabit bir kelime (`durum 'hazır' oldu`) başka bir
+  tırnaklı kelimeyle birleşebilir.
 - Tek kelimelik mesajlarda değişken konum aranmaz: rakamsız olanlar yalnızca birebir aynıysa
   birleşir. Tek başına loglanan binlerce farklı kullanıcı adı (`Log::info($ad)`) binlerce
   satır olur.

@@ -53,6 +53,7 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
         "son": "2026-10-24 17:06:45",
         "kalip": "Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]",
         "ornek": "Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]",
+        "degiskenler": [],
         "istisna": {
           "sinif": "RedisException",
           "dosya": "app/Http/Middleware/HizSiniri.php",
@@ -86,6 +87,27 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
   [ayrıntılar](nasil-calisir.md#akışlı-okuma-ve-bellek)); öteki bütün sayılar tamdır.
 - `satirlar` en fazla `--ilk` kadar satırdır; `gosterilmeyen` dışarıda kalanların sayısıdır.
   Bütün satırlar için `--hepsi`.
+- `degiskenler`: kalıptaki her `<*>` konumu için bir nesne, kalıptaki sırayla; `<*>` yoksa boş
+  dizi. `konum` konumun kalıptaki belirteç sırasıdır (1'den), `degerler` en sık beş değer
+  adetleriyle (adede göre azalan, eşitlikte logda önce görülen önce), `baska` listelenmeyen
+  farklı değer sayısı. Değerler belirtecin cümleden gelen ayraç ve noktalaması olmadan
+  yazılır ([kategorik konumlar](nasil-calisir.md#kategorik-konumlar)).
+
+Örnek logdaki `Kullanıcı <SAYI> <*> yaptı` kalıbının `degiskenler` dizisi:
+
+<!-- denetim: veylog --bicim json --hepsi ornekler/laravel.log | jq '.kaliplar.satirlar[] | select(.kalip == "Kullanıcı <SAYI> <*> yaptı") | .degiskenler' -->
+```json
+[
+  {
+    "konum": 3,
+    "degerler": [
+      { "deger": "giriş", "adet": 8 },
+      { "deger": "çıkış", "adet": 1 }
+    ],
+    "baska": 0
+  }
+]
+```
 
 ### Saat dilimi
 
@@ -251,17 +273,19 @@ $ veylog --bicim markdown --ilk 2 ornekler/laravel.log
 - **Seviyeler:** CRITICAL 2 · ERROR 16 · WARNING 6 · NOTICE 1 · INFO 31 · DEBUG 3
 - **Kalıplar:** 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp (eşik 0,7) → parmak iziyle 24 grup
 
-| Adet | Seviye | İlk | Son | Kalıp | Örnek | Konum |
-|---:|---|---|---|---|---|---|
-| 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22, handle()` RedisException |
-| 6 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64, tahsilEt()` ConnectionException |
+| Adet | Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum |
+|---:|---|---|---|---|---|---|---|
+| 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` |  | `app/Http/Middleware/HizSiniri.php:22, handle()` RedisException |
+| 6 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` |  | `app/Services/OdemeServisi.php:64, tahsilEt()` ConnectionException |
 
 … 22 satır daha; tümünü görmek için `--hepsi`
 ```
 
 Karşılaştırmanın her bölümü ayrı bir tablodur ve artanların "Sonra" sütununda kat da yazar:
 `5 (15,4 kat)`. Ani artışlar da ayrı bir tablodur; `Zirve` hücresine zirve dilimin aralığı
-yazılır: `6 (16:10–16:20)`.
+yazılır: `6 (16:10–16:20)`. `Değerler` sütunu kalıptaki `<*>` konumlarının en sık değerlerini
+taşır, her değer kod olarak: `` `giriş` ×8, `çıkış` ×1 ``; birden çok `<*>` varsa konum
+sırasıyla (`` 2: `ahmet` ×4; 4: `giriş` ×5 ``). Kalıpta `<*>` yoksa hücre boştur.
 
 Markdown'da logdan gelen metin için üç tuzak var; üçü de GitHub'ın ayrıştırıcısıyla
 ([cmark-gfm](https://github.com/github/cmark-gfm)) denendi:

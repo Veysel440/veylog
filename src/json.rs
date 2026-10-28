@@ -387,8 +387,34 @@ fn satir_alanlari(satir: &KalipSatiri) -> Vec<(&'static str, Json)> {
         ("son", zaman(satir.son)),
         ("kalip", metin(&satir.kalip)),
         ("ornek", metin(&satir.ornek)),
+        ("degiskenler", degiskenler_json(satir)),
         ("istisna", istisna),
     ]
+}
+
+/// Kalıptaki `<*>` konumlarının değerleri: her konum için sırası (1'den), en sık değerler
+/// adetleriyle ve listelenmeyen farklı değer sayısı. Kalıpta `<*>` yoksa boş dizi.
+fn degiskenler_json(satir: &KalipSatiri) -> Json {
+    Json::Dizi(
+        satir
+            .degiskenler
+            .iter()
+            .map(|degisken| {
+                let degerler = degisken
+                    .degerler
+                    .iter()
+                    .map(|(deger, adet)| {
+                        Json::Nesne(vec![("deger", metin(deger)), ("adet", Json::Sayi(*adet))])
+                    })
+                    .collect();
+                Json::Nesne(vec![
+                    ("konum", Json::Sayi(degisken.konum)),
+                    ("degerler", Json::Dizi(degerler)),
+                    ("baska", Json::Sayi(degisken.baska)),
+                ])
+            })
+            .collect(),
+    )
 }
 
 fn metin(metin: &str) -> Json {
@@ -528,6 +554,59 @@ mod testler {
         let kalip = kayit["kalip"].as_str().unwrap();
         assert_eq!(kalip.chars().count(), 257);
         assert!(kalip.ends_with("values <*> <EPOSTA>, <ZAMAN>, <ZAMAN>))"));
+    }
+
+    #[test]
+    fn joker_konumlarinin_degerleri_yazilir() {
+        let rapor = ornek_rapor(&RaporAyarlari {
+            ilk: None,
+            ..RaporAyarlari::default()
+        });
+        let satirlar = rapor["kaliplar"]["satirlar"].as_array().unwrap();
+        let girisler = satirlar
+            .iter()
+            .find(|satir| satir["kalip"] == "Kullanıcı <SAYI> <*> yaptı")
+            .unwrap();
+        assert_eq!(
+            girisler["degiskenler"],
+            serde_json::json!([{
+                "konum": 3,
+                "degerler": [{"deger": "giriş", "adet": 8}, {"deger": "çıkış", "adet": 1}],
+                "baska": 0
+            }])
+        );
+        // Jokersiz kalıpta boş dizi
+        let sepet = satirlar
+            .iter()
+            .find(|satir| satir["kalip"] == "Sepet önbellekten okundu")
+            .unwrap();
+        assert_eq!(sepet["degiskenler"], serde_json::json!([]));
+        // Birden çok joker ve listelenmeyen değerler
+        let log: String = (0..7)
+            .map(|sira| {
+                format!(
+                    "[2026-10-24 10:00:{sira:02}] local.INFO: Durum: ORDER_{sira} için OLAY_{} işlendi\n",
+                    sira % 2
+                )
+            })
+            .collect();
+        let ozet = Ozet::metinden("a.log", &log, &RaporAyarlari::default()).unwrap();
+        let mut cikti = Vec::new();
+        yaz(&mut cikti, &ozet).unwrap();
+        let rapor: serde_json::Value = serde_json::from_slice(&cikti).unwrap();
+        let satir = &rapor["kaliplar"]["satirlar"][0];
+        assert_eq!(satir["kalip"], "Durum: <*> için <*> işlendi");
+        let degiskenler = satir["degiskenler"].as_array().unwrap();
+        assert_eq!(degiskenler.len(), 2);
+        assert_eq!(degiskenler[0]["konum"], 2);
+        assert_eq!(degiskenler[0]["degerler"].as_array().unwrap().len(), 5);
+        assert_eq!(degiskenler[0]["baska"], 2);
+        assert_eq!(degiskenler[1]["konum"], 4);
+        assert_eq!(
+            degiskenler[1]["degerler"],
+            serde_json::json!([{"deger": "OLAY_0", "adet": 4}, {"deger": "OLAY_1", "adet": 3}])
+        );
+        assert_eq!(degiskenler[1]["baska"], 0);
     }
 
     #[test]

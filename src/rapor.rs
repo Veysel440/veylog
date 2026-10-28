@@ -23,7 +23,7 @@ use std::io::{self, Write};
 
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_DUSUK_SEVIYE, ESIK};
 use crate::depo::{AltGrup, Depo, DilimSayilari};
-use crate::drain::Ayarlar;
+use crate::drain::{Ayarlar, cekirdek};
 use crate::filtre::Filtre;
 use crate::karsilastirma::{
     ANLAMLILIK, ARTIS_KATI, Degisim, Karsilastirma, KarsilastirmaHatasi, Pencere,
@@ -38,6 +38,10 @@ use crate::zaman::{SaatDilimi, Zaman, ZamanNoktasi, sure_tam_yaz, sure_yaz};
 pub const VARSAYILAN_ILK: usize = 10;
 /// Uzun kalıplar ve örnekler bu kadar karakterden sonra kesilir (metin ve Markdown).
 pub const KALIP_GENISLIGI: usize = 80;
+/// Bir `<*>` konumu için gösterilecek en fazla değer sayısı; kalanı "+N başka" olur.
+pub const EN_COK_DEGER: usize = 5;
+/// Metin çıktısında "değerler: " başlığının genişliği; taşan satırlar bu kadar içeriden başlar.
+const DEGERLER_GENISLIGI: usize = 10;
 
 /// Tablonun sırası.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +158,67 @@ pub struct KalipSatiri {
     pub ornek: String,
     /// Kayıtlar bir istisnadan geliyorsa: istisnanın sınıfı ve uygulama kodundaki yeri.
     pub parmak_izi: Option<ParmakIzi>,
+    /// Kalıptaki her `<*>` konumunun satırdaki kayıtlarda aldığı değerler, kalıptaki sırayla.
+    /// Kalıpta `<*>` yoksa boş.
+    pub degiskenler: Vec<DegiskenKonum>,
+}
+
+/// Kalıptaki bir `<*>` konumunun aldığı değerler: en çok görülen `EN_COK_DEGER` değer ve kaç
+/// farklı değerin daha görüldüğü.
+///
+/// Değerler depodaki maskeli mesajlardan rapor zamanında sayılır: her farklı maskeli mesaj zaten
+/// bir alt gruptur, ek bellek gerekmez. Belirtecin cümleden gelen ayraç ve noktalaması
+/// (`drain::cekirdek`) değere katılmaz: `(Ayşe,` değeri `Ayşe`dir. Kategorik bir konumun (`drain` modülündeki "aynı
+/// biçimdeki kodsal değerler") değerleri hangi işlerin, olayların ya da durumların görüldüğünü
+/// söyler; rakamlı bir konumda (`Yanıt süresi <*>`) en sık değerler görünür.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DegiskenKonum {
+    /// Konumun kalıptaki sırası, 1'den: `Kullanıcı <SAYI> <*> yaptı` kalıbında 3.
+    pub konum: usize,
+    /// Değer ve kayıt adedi, adede göre azalan; eşitlikte logda önce görülen önce.
+    pub degerler: Vec<(String, usize)>,
+    /// Listelenmeyen farklı değer sayısı.
+    pub baska: usize,
+}
+
+/// Bir `<*>` konumunun değerlerini sayar.
+#[derive(Debug, Default)]
+struct DegerSayaci<'d> {
+    /// Değerler ilk görüldükleri sırayla.
+    sira: Vec<&'d str>,
+    adetler: HashMap<&'d str, usize>,
+}
+
+impl<'d> DegerSayaci<'d> {
+    fn say(&mut self, deger: &'d str, adet: usize) {
+        match self.adetler.get_mut(deger) {
+            Some(toplam) => *toplam += adet,
+            None => {
+                self.sira.push(deger);
+                self.adetler.insert(deger, adet);
+            }
+        }
+    }
+
+    /// En çok görülen değerler. `konum`: konumun kalıptaki sırası, 1'den.
+    fn ozetle(&self, konum: usize) -> DegiskenKonum {
+        let mut sirali: Vec<(&str, usize)> = self
+            .sira
+            .iter()
+            .map(|&deger| (deger, self.adetler[deger]))
+            .collect();
+        // Kararlı sıralama: aynı adetteki değerler ilk görülme sırasını korur
+        sirali.sort_by_key(|&(_, adet)| Reverse(adet));
+        let gosterilen = sirali.len().min(EN_COK_DEGER);
+        DegiskenKonum {
+            konum,
+            degerler: sirali[..gosterilen]
+                .iter()
+                .map(|&(deger, adet)| (deger.to_owned(), adet))
+                .collect(),
+            baska: sirali.len() - gosterilen,
+        }
+    }
 }
 
 /// Kalıp çıkarmanın sonucu.
@@ -188,13 +253,20 @@ struct Grup<'d> {
     /// En geç kaydının sıra numarası: zamanı `son` olanlardan logda en sonra geleni.
     son_kayit: usize,
     ornek: &'d str,
+    /// Kalıptaki her `<*>` konumunun değerleri, `jokerler` ile aynı sırada.
+    degerler: Vec<DegerSayaci<'d>>,
 }
 
 impl<'d> Grup<'d> {
     /// Grubu ilk alt grubuyla açar. Alt gruplar ilk kayıtlarının sırasıyla geldiği için grubun
     /// ilk kaydı, dolayısıyla örneği de bu alt gruptadır. Alt grubun kendisini saymak
-    /// `ekle`nin işidir.
-    fn yeni(kume: usize, parmak_izi: Option<&'d ParmakIzi>, ilk_alt_grup: &'d AltGrup) -> Grup<'d> {
+    /// `ekle`nin işidir. `joker_sayisi`: kalıptaki `<*>` sayısı.
+    fn yeni(
+        kume: usize,
+        parmak_izi: Option<&'d ParmakIzi>,
+        ilk_alt_grup: &'d AltGrup,
+        joker_sayisi: usize,
+    ) -> Grup<'d> {
         Grup {
             kume,
             parmak_izi,
@@ -204,14 +276,23 @@ impl<'d> Grup<'d> {
             son: ilk_alt_grup.son(),
             son_kayit: ilk_alt_grup.son_kayit(),
             ornek: ilk_alt_grup.ornek(),
+            degerler: (0..joker_sayisi).map(|_| DegerSayaci::default()).collect(),
         }
     }
 
-    /// Alt grubu gruba katar: adedi artırır, en yüksek seviyeyi ve zaman aralığını günceller.
-    /// `parmak_izi`: alt grubun parmak izi. Gruptakilerin hepsi aynı hatanındır; satırları
-    /// farklı olabilir (konum fonksiyonla belirlenir). Gösterilen satır en yeni kaydınki olsun:
-    /// kod değiştiyse güncel satır. Aynı andaki kayıtlardan logda sonra gelen daha yenidir.
-    fn ekle(&mut self, alt_grup: &'d AltGrup, parmak_izi: Option<&'d ParmakIzi>) {
+    /// Alt grubu gruba katar: adedi artırır, en yüksek seviyeyi ve zaman aralığını günceller,
+    /// `<*>` konumlarındaki değerlerini sayar. `parmak_izi`: alt grubun parmak izi.
+    /// Gruptakilerin hepsi aynı hatanındır; satırları farklı olabilir (konum fonksiyonla
+    /// belirlenir). Gösterilen satır en yeni kaydınki olsun: kod değiştiyse güncel satır. Aynı
+    /// andaki kayıtlardan logda sonra gelen daha yenidir. `maskeli`: alt grubun maskeli mesajı;
+    /// `jokerler`: kalıptaki `<*>` konumları, artan sırada.
+    fn ekle(
+        &mut self,
+        alt_grup: &'d AltGrup,
+        parmak_izi: Option<&'d ParmakIzi>,
+        maskeli: &'d str,
+        jokerler: &[usize],
+    ) {
         if (alt_grup.son(), alt_grup.son_kayit()) >= (self.son, self.son_kayit) {
             self.parmak_izi = parmak_izi;
             self.son_kayit = alt_grup.son_kayit();
@@ -220,6 +301,21 @@ impl<'d> Grup<'d> {
         self.seviye = self.seviye.max(alt_grup.seviye());
         self.ilk = self.ilk.min(alt_grup.ilk());
         self.son = self.son.max(alt_grup.son());
+        if jokerler.is_empty() {
+            return;
+        }
+        // Maskeli mesaj kalıpla aynı sayıda belirteçtir (Drain yalnızca aynı uzunluktakileri
+        // bir kümeye koyar); belirteçler sırayla gezilir, joker konumlarındakiler sayılır
+        let mut jokerler = jokerler.iter().zip(&mut self.degerler).peekable();
+        for (sira, belirtec) in maskeli.split_whitespace().enumerate() {
+            if let Some(&(&konum, _)) = jokerler.peek()
+                && konum == sira
+                && let Some((_, sayac)) = jokerler.next()
+            {
+                // Değer cümleden gelen ayraç ve noktalama olmadan sayılır: "(Ayşe," → "Ayşe"
+                sayac.say(cekirdek(belirtec), alt_grup.adet());
+            }
+        }
     }
 }
 
@@ -232,6 +328,12 @@ pub fn kaliplari_cikar(depo: &Depo, ayarlar: &RaporAyarlari) -> KalipAnalizi {
     // bulunabilir
     let parmak_izleri = depo.parmak_izleri();
 
+    // Her kümenin kalıbındaki `<*>` konumları; kalıplar son hallerinde
+    let jokerler: Vec<Vec<usize>> = kumeler
+        .iter()
+        .map(|kume| kume.joker_konumlari().collect())
+        .collect();
+
     let mut gruplar: Vec<Grup<'_>> = Vec::new();
     // (küme numarası, parmak izi) → grubun `gruplar` listesindeki sırası
     let mut grup_sirasi: HashMap<(usize, Option<&ParmakIzi>), usize> = HashMap::new();
@@ -241,10 +343,15 @@ pub fn kaliplari_cikar(depo: &Depo, ayarlar: &RaporAyarlari) -> KalipAnalizi {
         let parmak_izi = parmak_izi.as_ref();
         // Bu küme ve parmak izi ilk kez görülüyorsa yeni bir grup aç, sonra alt grubu ona kat
         let sira = *grup_sirasi.entry((kume, parmak_izi)).or_insert_with(|| {
-            gruplar.push(Grup::yeni(kume, parmak_izi, alt_grup));
+            gruplar.push(Grup::yeni(kume, parmak_izi, alt_grup, jokerler[kume].len()));
             gruplar.len() - 1
         });
-        gruplar[sira].ekle(alt_grup, parmak_izi);
+        gruplar[sira].ekle(
+            alt_grup,
+            parmak_izi,
+            depo.maskeli_mesaj(alt_grup.maskeli()),
+            &jokerler[kume],
+        );
         alt_grup_grubu.push(sira);
     }
 
@@ -259,6 +366,12 @@ pub fn kaliplari_cikar(depo: &Depo, ayarlar: &RaporAyarlari) -> KalipAnalizi {
             son: grup.son,
             ornek: grup.ornek.to_owned(),
             parmak_izi: grup.parmak_izi.cloned(),
+            degiskenler: grup
+                .degerler
+                .iter()
+                .zip(&jokerler[grup.kume])
+                .map(|(sayac, &konum)| sayac.ozetle(konum + 1))
+                .collect(),
         })
         .collect();
     let mut sira: Vec<usize> = (0..satirlar.len()).collect();
@@ -935,6 +1048,20 @@ fn satir_yaz(
             kisalt(&gorunur(hucreler.ornek), KALIP_GENISLIGI - 7)
         )?;
     }
+    // <*> konumlarının en sık değerleri: hangi işler, olaylar, kullanıcılar. Liste kalıp
+    // genişliğine sığmıyorsa değerler bölünmeden alt satırlara taşar.
+    const DEGERLER: &str = "değerler: ";
+    let satirlar = degerler_satirlari(
+        &satir.degiskenler,
+        KALIP_GENISLIGI - DEGERLER.chars().count(),
+    );
+    for (sira, parca) in satirlar.iter().enumerate() {
+        if sira == 0 {
+            writeln!(cikti, "{girinti}{DEGERLER}{parca}")?;
+        } else {
+            writeln!(cikti, "{girinti}{:DEGERLER_GENISLIGI$}{parca}", "")?;
+        }
+    }
     // Kayıtlar bir istisnadan geliyorsa nerede oluştuğunu göster. Dosya yolu kısaltılmaz:
     // terminalde tıklanıp doğrudan açılabilsin.
     if let Some(parmak_izi) = &satir.parmak_izi {
@@ -945,6 +1072,68 @@ fn satir_yaz(
         )?;
     }
     Ok(())
+}
+
+/// `<*>` konumlarının değerleri tek satırda: `giriş ×6, çıkış ×3, +2 başka`. Kalıpta birden
+/// çok `<*>` varsa her konum sırasıyla: `2: ahmet ×4, veli ×1; 4: giriş ×5`. `bicimle`: her
+/// değerin yazılışı (Markdown'da kod olarak).
+pub fn degerler_metni(degiskenler: &[DegiskenKonum], bicimle: impl Fn(&str) -> String) -> String {
+    deger_parcalari(degiskenler, bicimle).concat()
+}
+
+/// Değerler, her biri en fazla `genislik` karakterlik satırlara bölünmüş. Bir değer satır
+/// ortasında bölünmez: sığmayan değer sonraki satıra geçer, ayracı önceki satırın sonunda
+/// kalır. Tek başına sığmayan bir değer kısaltılır. Kontrol karakterleri sembole çevrilir.
+pub fn degerler_satirlari(degiskenler: &[DegiskenKonum], genislik: usize) -> Vec<String> {
+    let mut satirlar: Vec<String> = Vec::new();
+    let mut satir = String::new();
+    for parca in deger_parcalari(degiskenler, |deger| gorunur(deger).into_owned()) {
+        let parca = parca.trim_end();
+        let parca = kisalt(parca, genislik);
+        let uzunluk = satir.chars().count();
+        if uzunluk > 0 && uzunluk + 1 + parca.chars().count() > genislik {
+            satirlar.push(std::mem::take(&mut satir));
+        }
+        if !satir.is_empty() {
+            satir.push(' ');
+        }
+        satir.push_str(&parca);
+    }
+    if !satir.is_empty() {
+        satirlar.push(satir);
+    }
+    satirlar
+}
+
+/// Değerlerin parçaları, sırayla: her parça bir değer adediyle (`giriş ×6`) ya da `+N başka`,
+/// sonunda ayracı (`, `; konumun son parçasında `; `; en sonda hiç). Birden çok konumda her
+/// konumun ilk parçası konumun sırasıyla başlar (`2: ahmet ×4`). `bicimle`: her değerin
+/// yazılışı (Markdown'da kod olarak).
+fn deger_parcalari(degiskenler: &[DegiskenKonum], bicimle: impl Fn(&str) -> String) -> Vec<String> {
+    let mut parcalar = Vec::new();
+    for (konum_sirasi, degisken) in degiskenler.iter().enumerate() {
+        let mut konumun: Vec<String> = degisken
+            .degerler
+            .iter()
+            .map(|(deger, adet)| format!("{} ×{adet}", bicimle(deger)))
+            .collect();
+        if degisken.baska > 0 {
+            konumun.push(format!("+{} başka", degisken.baska));
+        }
+        let son = konumun.len() - 1;
+        for (sira, mut parca) in konumun.into_iter().enumerate() {
+            if sira == 0 && degiskenler.len() > 1 {
+                parca = format!("{}: {parca}", degisken.konum);
+            }
+            if sira < son {
+                parca.push_str(", ");
+            } else if konum_sirasi + 1 < degiskenler.len() {
+                parca.push_str("; ");
+            }
+            parcalar.push(parca);
+        }
+    }
+    parcalar
 }
 
 /// Gösterilmeyen satırlar varsa söyler; yoksa kullanıcı tablonun bittiğini sanır.
@@ -2574,5 +2763,255 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         let mut cikti = Vec::new();
         metin_yaz(&mut cikti, &ozet).unwrap();
         String::from_utf8(cikti).unwrap()
+    }
+
+    /// Her mesaj için bir INFO kaydı, saniyede bir.
+    fn kayitlar(mesajlar: &[&str]) -> String {
+        mesajlar
+            .iter()
+            .enumerate()
+            .map(|(sira, mesaj)| {
+                format!(
+                    "[2026-10-24 10:{:02}:{:02}] production.INFO: {mesaj}\n",
+                    sira / 60,
+                    sira % 60
+                )
+            })
+            .collect()
+    }
+
+    /// Logun ilk kalıp satırı.
+    fn ilk_satir(log_metni: &str) -> KalipSatiri {
+        let mut ozet = Ozet::metinden("ornek.log", log_metni, &RaporAyarlari::default()).unwrap();
+        ozet.analiz.satirlar.remove(0)
+    }
+
+    #[test]
+    fn joker_konumunun_degerleri_sayilir() {
+        // Kategorik konum: aynı biçimdeki sınıf adları birleşir, değerleri adetleriyle sayılır
+        let log = kayitlar(&[
+            r"İş tamamlandı: App\Jobs\FaturaGonder",
+            r"İş tamamlandı: App\Jobs\EpostaGonder",
+            r"İş tamamlandı: App\Jobs\FaturaGonder",
+            r"İş tamamlandı: App\Jobs\StokGuncelle",
+        ]);
+        let satir = ilk_satir(&log);
+        assert_eq!(satir.kalip, "İş tamamlandı: <*>");
+        assert_eq!(
+            satir.degiskenler,
+            [DegiskenKonum {
+                konum: 3,
+                degerler: vec![
+                    (r"App\Jobs\FaturaGonder".to_owned(), 2),
+                    (r"App\Jobs\EpostaGonder".to_owned(), 1),
+                    (r"App\Jobs\StokGuncelle".to_owned(), 1),
+                ],
+                baska: 0,
+            }]
+        );
+        // Metinde değerler satırı örneğin altında, kalıp sütunuyla hizalı
+        let metin = metin_raporu(&log, &RaporAyarlari::default());
+        let satirlar: Vec<&str> = metin.lines().collect();
+        let kalip = satirlar
+            .iter()
+            .position(|satir| satir.ends_with("  İş tamamlandı: <*>"))
+            .unwrap();
+        let girinti = " ".repeat(39);
+        assert_eq!(
+            satirlar[kalip + 1],
+            format!("{girinti}örnek: İş tamamlandı: App\\Jobs\\FaturaGonder")
+        );
+        // Üçüncü değer 70 karaktere sığmaz: bölünmeden alt satıra taşar
+        assert_eq!(
+            satirlar[kalip + 2],
+            format!("{girinti}değerler: App\\Jobs\\FaturaGonder ×2, App\\Jobs\\EpostaGonder ×1,")
+        );
+        assert_eq!(
+            satirlar[kalip + 3],
+            format!("{girinti}          App\\Jobs\\StokGuncelle ×1")
+        );
+        assert_eq!(satirlar.len(), kalip + 4, "{metin}");
+        // Joker yoksa değerler satırı da yok
+        let metin = metin_raporu(
+            &kayitlar(&["Önbellek temizlendi"; 2]),
+            &RaporAyarlari::default(),
+        );
+        assert!(!metin.contains("değerler:"), "{metin}");
+        assert!(
+            ilk_satir(&kayitlar(&["Önbellek temizlendi"]))
+                .degiskenler
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn en_cok_gorulen_bes_deger_gosterilir() {
+        // 7 farklı durum; en sık 5'i adede göre azalan, eşitlikte önce görülen önce
+        let mut mesajlar = Vec::new();
+        for (durum, adet) in [
+            ("ORDER_A", 1),
+            ("ORDER_B", 3),
+            ("ORDER_C", 2),
+            ("ORDER_D", 3),
+            ("ORDER_E", 1),
+            ("ORDER_F", 4),
+            ("ORDER_G", 1),
+        ] {
+            for _ in 0..adet {
+                mesajlar.push(format!("Durum: {durum}"));
+            }
+        }
+        let mesajlar: Vec<&str> = mesajlar.iter().map(String::as_str).collect();
+        let log = kayitlar(&mesajlar);
+        let satir = ilk_satir(&log);
+        assert_eq!(satir.kalip, "Durum: <*>");
+        assert_eq!(satir.adet, 15);
+        let degisken = &satir.degiskenler[0];
+        assert_eq!(degisken.konum, 2);
+        let degerler: Vec<(&str, usize)> = degisken
+            .degerler
+            .iter()
+            .map(|(deger, adet)| (deger.as_str(), *adet))
+            .collect();
+        assert_eq!(
+            degerler,
+            [
+                ("ORDER_F", 4),
+                ("ORDER_B", 3),
+                ("ORDER_D", 3),
+                ("ORDER_C", 2),
+                ("ORDER_A", 1)
+            ]
+        );
+        assert_eq!(degisken.baska, 2);
+        assert_eq!(
+            degerler_metni(&satir.degiskenler, str::to_owned),
+            "ORDER_F ×4, ORDER_B ×3, ORDER_D ×3, ORDER_C ×2, ORDER_A ×1, +2 başka"
+        );
+        // Tam beş değer: "başka" yazılmaz
+        let bes = ilk_satir(&kayitlar(&[
+            "Durum: A_1",
+            "Durum: B_2",
+            "Durum: C_3",
+            "Durum: D_4",
+            "Durum: E_5",
+        ]));
+        assert_eq!(bes.degiskenler[0].degerler.len(), 5);
+        assert_eq!(bes.degiskenler[0].baska, 0);
+        assert!(!degerler_metni(&bes.degiskenler, str::to_owned).contains("başka"));
+    }
+
+    #[test]
+    fn birden_cok_joker_konum_sirasiyla_yazilir() {
+        // İki <*>: birinde kullanıcı adları (değişken konum, 101 ad), ötekinde sabitler
+        let mut mesajlar: Vec<String> = (0..101)
+            .map(|sira| format!("Kullanıcı k{sira:03} için ORDER_CREATED işlendi"))
+            .collect();
+        mesajlar.push("Kullanıcı k000 için ORDER_FAILED işlendi".to_owned());
+        let mesajlar: Vec<&str> = mesajlar.iter().map(String::as_str).collect();
+        let satir = ilk_satir(&kayitlar(&mesajlar));
+        assert_eq!(satir.kalip, "Kullanıcı <*> için <*> işlendi");
+        let konumlar: Vec<usize> = satir.degiskenler.iter().map(|d| d.konum).collect();
+        assert_eq!(konumlar, [2, 4]);
+        assert_eq!(satir.degiskenler[0].degerler[0], ("k000".to_owned(), 2));
+        assert_eq!(satir.degiskenler[0].baska, 96);
+        assert_eq!(
+            satir.degiskenler[1].degerler,
+            [
+                ("ORDER_CREATED".to_owned(), 101),
+                ("ORDER_FAILED".to_owned(), 1)
+            ]
+        );
+        assert_eq!(
+            degerler_metni(&satir.degiskenler, str::to_owned),
+            "2: k000 ×2, k001 ×1, k002 ×1, k003 ×1, k004 ×1, +96 başka; \
+             4: ORDER_CREATED ×101, ORDER_FAILED ×1"
+        );
+    }
+
+    #[test]
+    fn ayni_degerin_alt_gruplari_toplanir() {
+        // Aynı değer farklı alt gruplarda (burada farklı seviyelerde): adetleri toplanır
+        let log = "\
+[2026-10-24 10:00:00] production.INFO: Durum: ORDER_A
+[2026-10-24 10:00:01] production.WARNING: Durum: ORDER_A
+[2026-10-24 10:00:02] production.WARNING: Durum: ORDER_A
+[2026-10-24 10:00:03] production.WARNING: Durum: ORDER_A
+[2026-10-24 10:00:04] production.INFO: Durum: ORDER_B
+";
+        let satir = ilk_satir(log);
+        assert_eq!(satir.kalip, "Durum: <*>");
+        assert_eq!(satir.adet, 5);
+        assert_eq!(
+            satir.degiskenler[0].degerler,
+            [("ORDER_A".to_owned(), 4), ("ORDER_B".to_owned(), 1)]
+        );
+    }
+
+    #[test]
+    fn deger_cumlenin_ayraci_olmadan_sayilir() {
+        // "(Ayşe," belirtecinin değeri "Ayşe"; ayracı başka olan aynı ad aynı değerdir
+        let log = kayitlar(&[
+            "kayıt eklendi: (Ayşe, 1) tamam",
+            "kayıt eklendi: (Mehmet, 2) tamam",
+            "kayıt eklendi: Ayşe, 3) tamam",
+        ]);
+        let satir = ilk_satir(&log);
+        assert_eq!(satir.kalip, "kayıt eklendi: <*> <SAYI>) tamam");
+        assert_eq!(
+            satir.degiskenler[0].degerler,
+            [("Ayşe".to_owned(), 2), ("Mehmet".to_owned(), 1)]
+        );
+    }
+
+    #[test]
+    fn degerler_satiri_kisaltilir_ve_temizlenir() {
+        // Tek başına sığmayan bir değer kısaltılır; sığan değer alt satıra geçer; değerlerdeki
+        // kontrol karakterleri sembol olur
+        let uzun_a = format!("Durum: {}_A", "X".repeat(75));
+        let uzun_b = format!("Durum: {}_B", "Y".repeat(60));
+        let metin = metin_raporu(&kayitlar(&[&uzun_a, &uzun_b]), &RaporAyarlari::default());
+        let satirlar: Vec<&str> = metin.lines().collect();
+        let ilk = satirlar
+            .iter()
+            .position(|satir| satir.contains("değerler: "))
+            .unwrap();
+        let yazilan = satirlar[ilk]
+            .trim_start()
+            .strip_prefix("değerler: ")
+            .unwrap();
+        assert_eq!(yazilan.chars().count(), KALIP_GENISLIGI - 10, "{yazilan}");
+        assert!(yazilan.ends_with('…'));
+        assert_eq!(
+            satirlar[ilk + 1].trim_start(),
+            format!("{}_B ×1", "Y".repeat(60))
+        );
+        assert!(satirlar[ilk + 1].starts_with(&" ".repeat(49)));
+        // Her satır genişliğe sığar; parçalar virgülden bölünür
+        let satirlar = degerler_satirlari(
+            &[DegiskenKonum {
+                konum: 1,
+                degerler: vec![
+                    ("aaaa".to_owned(), 10),
+                    ("bbbb".to_owned(), 9),
+                    ("cccc".to_owned(), 8),
+                ],
+                baska: 4,
+            }],
+            20,
+        );
+        assert_eq!(satirlar, ["aaaa ×10, bbbb ×9,", "cccc ×8, +4 başka"]);
+        assert!(degerler_satirlari(&[], 20).is_empty());
+        let metin = metin_raporu(
+            &kayitlar(&[
+                "Durum kodu şimdi ORDER_A\u{1b}[2J",
+                "Durum kodu şimdi ORDER_B",
+            ]),
+            &RaporAyarlari::default(),
+        );
+        assert!(
+            metin.contains("değerler: ORDER_A␛[2J ×1, ORDER_B ×1\n"),
+            "{metin}"
+        );
     }
 }
