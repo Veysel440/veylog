@@ -240,7 +240,7 @@ fn ozet_cikar(
     let mut depo;
     // Normal bir dosya değilse (boru, aygıt) standart girdi gibi bir kez okunur
     let girdi = match dosya {
-        Some(dosya) if dosya.metadata().is_ok_and(|bilgi| bilgi.is_file()) => {
+        Some(dosya) if duz_dosya_mi(&dosya) => {
             let mut girdi = BufReader::with_capacity(TAMPON, dosya);
             let en_yeni = if on_tarama {
                 let en_yeni = okuyucu::en_yeni_zaman(
@@ -480,9 +480,36 @@ fn standart_girdi_dosyasi() -> Option<File> {
     #[cfg(any(unix, windows))]
     {
         let mut dosya = File::from(sahip);
-        let duz = dosya.metadata().ok()?.is_file() && dosya.stream_position().ok()? == 0;
+        let duz = duz_dosya_mi(&dosya) && dosya.stream_position().ok()? == 0;
         duz.then_some(dosya)
     }
+}
+
+/// Dosya diskteki düz bir dosya mı (boru, aygıt ya da konsol değil): baştan yeniden okunabilir
+/// mi? Windows'ta bir borunun tutamacı da `metadata()`'ya göre dosya olabilir (Windows'un dosya
+/// türlerinde boru yoktur) ve konumu 0 görünür; ayırt eden `GetFileType`'tır. Öyle
+/// sayılsaydı borudan gelen standart girdi kopyalanmaz, yeniden okunurken boş gelirdi.
+pub(crate) fn duz_dosya_mi(dosya: &File) -> bool {
+    #[cfg(windows)]
+    if !disk_dosyasi_mi(dosya) {
+        return false;
+    }
+    dosya.metadata().is_ok_and(|bilgi| bilgi.is_file())
+}
+
+/// Windows'ta tutamacın türü diskteki bir dosya mı (`FILE_TYPE_DISK`)? Boru `FILE_TYPE_PIPE`,
+/// konsol ve `NUL` `FILE_TYPE_CHAR`'dır.
+#[cfg(windows)]
+fn disk_dosyasi_mi(dosya: &File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    const DISK_DOSYASI: u32 = 0x0001; // FILE_TYPE_DISK
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileType(dosya: *mut std::ffi::c_void) -> u32;
+    }
+    // SAFETY: tutamaç `dosya` yaşadıkça açıktır; GetFileType yalnızca tutamacın türünü okur,
+    // belleğe bir şey yazmaz.
+    unsafe { GetFileType(dosya.as_raw_handle()) == DISK_DOSYASI }
 }
 
 /// Log dosyasını açar. Bir klasör verildiyse açmaya çalışmaz: Linux'ta bunun hatası "Is a
@@ -600,13 +627,33 @@ fn yazma_sonucunu_denetle(sonuc: io::Result<()>) {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod testler {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
+    /// Boru düz bir dosya sayılmaz, diskteki dosya sayılır. Windows'ta borunun tutamacı da
+    /// `metadata()`'ya göre dosya olabilir; öyle sayılsaydı borudan gelen standart girdi
+    /// kopyalanmaz, yeniden okunurken boş gelirdi.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn boru_duz_dosya_sayilmaz() {
+        let (okuyan, yazan) = io::pipe().unwrap();
+        #[cfg(unix)]
+        let boru = File::from(std::os::fd::OwnedFd::from(okuyan));
+        #[cfg(windows)]
+        let boru = File::from(std::os::windows::io::OwnedHandle::from(okuyan));
+        assert!(!duz_dosya_mi(&boru));
+        drop(yazan);
+        let yol = env::temp_dir().join(format!("veylog-duz-{}", process::id()));
+        fs::write(&yol, b"kayit\n").unwrap();
+        assert!(duz_dosya_mi(&File::open(&yol).unwrap()));
+        fs::remove_file(&yol).ok();
+    }
+
+    #[cfg(unix)]
     #[test]
     fn gecici_dosyayi_yalnizca_sahibi_okuyup_yazar() {
+        use std::os::unix::fs::PermissionsExt;
         let gecici = GeciciDosya::olustur().unwrap();
         // Dosya silindi ama açık; izinleri açık dosyadan okunur
         let izin = gecici.dosya().metadata().unwrap().permissions().mode();

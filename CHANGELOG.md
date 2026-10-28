@@ -7,6 +7,10 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 
 ### Düzeltmeler
 
+- Windows'ta borudan gelen standart girdi (`type laravel.log | veylog --son 1sa -`) düz bir
+  dosya sanılıyor, yeniden okunamıyordu: `--son` ve yalnızca saat verilmiş sınırlarla rapor
+  boş çıkıyor, `--ani-artis` örnekleri alt grubun ilk kaydından seçiliyordu. Standart girdinin
+  türüne Windows'ta `GetFileType` ile bakılır.
 - Windows'ta `--izle`, yeniden adlandırılarak döndürülen bir logun yerine açılan yeni dosyayı
   eskisinden kısa değilse fark etmiyordu: NTFS, aynı adla 15 saniye içinde açılan dosyaya
   eskisinin oluşturulma zamanını verir (dosya adı tünellemesi). Dosyalar artık birimin seri

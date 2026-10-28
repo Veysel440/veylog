@@ -57,7 +57,7 @@ use crate::komut_satiri::{Izleme, Secenekler};
 use crate::okuyucu::{OkumaSonucu, OrnekIstegi, OrnekKaynagi, SATIR_SINIRI, YenidenOkuyucu};
 use crate::rapor::{self, Ozet, OzetHatasi};
 use crate::zaman::sure_tam_yaz;
-use crate::{GeciciDosya, Hata, OkunamazKaynak, TAMPON, dosyayi_ac};
+use crate::{GeciciDosya, Hata, OkunamazKaynak, TAMPON, dosyayi_ac, duz_dosya_mi};
 
 /// `--aralik`ın en küçük değeri: daha sık bakmak işlemciyi boşuna yorar.
 pub const EN_KISA_ARALIK: Duration = Duration::from_millis(100);
@@ -1070,7 +1070,7 @@ pub fn calistir(
         return izleyici.akis_izle(akis_baslat(io::stdin()));
     }
     let dosya = dosyayi_ac(&secenekler.dosya).map_err(Hata::Okuma)?;
-    if dosya.metadata().is_ok_and(|bilgi| bilgi.is_file()) {
+    if duz_dosya_mi(&dosya) {
         let kaynak = DosyaKaynagi::new(&secenekler.dosya, dosya);
         let izleyici = Izleyici::new(
             secenekler,
