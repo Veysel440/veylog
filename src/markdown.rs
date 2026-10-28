@@ -220,21 +220,15 @@ fn ornek(ornek: &str, kalip: &str) -> String {
     }
 }
 
-/// Konum hücresi: `app/Services/X.php:88` ErrorException. View hatalarında satırsız bir şablon:
-/// `resources/views/vitrin.blade.php` ViewException
+/// Konum hücresi: `app/Services/X.php:88, toplam()` ErrorException. View hatalarında satırsız
+/// bir şablon: `resources/views/vitrin.blade.php` ViewException
 ///
 /// Kısa sınıf adı kod dışında yazılabilir: parmak izi yalnızca harf, rakam, `_`, `\` ve `@`
 /// içeren sınıf adlarını kabul eder.
 fn konum(satir: &KalipSatiri) -> String {
     match &satir.parmak_izi {
-        Some(parmak_izi) => match parmak_izi.konum() {
-            Some((dosya, satir_no)) => {
-                let yer = match satir_no {
-                    Some(satir_no) => format!("{dosya}:{satir_no}"),
-                    None => dosya.into_owned(),
-                };
-                format!("{} {}", kod(&gorunur(&yer)), parmak_izi.kisa_sinif())
-            }
+        Some(parmak_izi) => match parmak_izi.konum_metni() {
+            Some(yer) => format!("{} {}", kod(&gorunur(&yer)), parmak_izi.kisa_sinif()),
             None => format!("uygulama kodunda bulunamadı ({})", parmak_izi.kisa_sinif()),
         },
         None => String::new(),
@@ -317,7 +311,7 @@ mod testler {
 
 | Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |
 |---:|---:|---|---|---|---|---|---|
-| 0 | 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22` RedisException |
+| 0 | 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22, handle()` RedisException |
 | 0 | 1 | INFO | 16:24:10 | 16:24:10 | `Ödeme sağlayıcısı yeniden yanıt veriyor` |  |  |
 
 … 1 satır daha; tümünü görmek için `--hepsi`
@@ -326,7 +320,7 @@ mod testler {
 
 | Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |
 |---:|---:|---|---|---|---|---|---|
-| 1 | 0 | ERROR | 09:47:12 | 09:47:12 | `Attempt to read property "ad" on null` |  | `app/Http/Controllers/KategoriController.php:54` ErrorException |
+| 1 | 0 | ERROR | 09:47:12 | 09:47:12 | `Attempt to read property "ad" on null` |  | `app/Http/Controllers/KategoriController.php:54, goster()` ErrorException |
 | 1 | 0 | ERROR | 11:30:44 | 11:30:44 | `App\Jobs\FaturaGonder has been attempted too many times.` |  | uygulama kodunda bulunamadı (MaxAttemptsExceededException) |
 
 … 9 satır daha; tümünü görmek için `--hepsi`
@@ -335,7 +329,7 @@ mod testler {
 
 | Önce | Sonra | Seviye | İlk | Son | Kalıp | Örnek | Konum |
 |---:|---:|---|---|---|---|---|---|
-| 1 | 5 (15,4 kat) | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64` ConnectionException |
+| 1 | 5 (15,4 kat) | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64, tahsilEt()` ConnectionException |
 "#;
         let metin = karsilastirmali("16:11");
         assert!(metin.ends_with(beklenen), "{metin}");
@@ -355,7 +349,7 @@ mod testler {
 
 | Zirve | Olağan | Puan | Seviye | İlk | Son | Kalıp | Örnek | Konum |
 |---:|---:|---:|---|---|---|---|---|---|
-| 6 (16:10–16:20) | 0 | 4,0 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64` ConnectionException |
+| 6 (16:10–16:20) | 0 | 4,0 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64, tahsilEt()` ConnectionException |
 "#;
         let ani_artisli = |dakika| {
             let ayarlar = RaporAyarlari {
@@ -447,11 +441,11 @@ mod testler {
         ));
         // Yer tutucular kod içinde; konum dosya:satır ve kısa sınıf adıyla
         assert!(metin.contains(
-            "| 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22` RedisException |\n"
+            "| 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22, handle()` RedisException |\n"
         ));
         // Kalıp ham mesajla aynıysa örnek hücresi boş
         assert!(metin.contains(
-            "| 4 | ERROR | 15:02:11 | 16:58:12 | `Undefined array key \"kargo_ucreti\"` |  | `app/Services/SepetHesaplayici.php:88` ErrorException |\n"
+            "| 4 | ERROR | 15:02:11 | 16:58:12 | `Undefined array key \"kargo_ucreti\"` |  | `app/Services/SepetHesaplayici.php:88, toplam()` ErrorException |\n"
         ));
         // SQL'deki ters tırnaklar yüzünden çift çerçeve
         assert!(metin.contains("| `` Yavaş sorgu (<SAYI> ms): select * from `siparisler`"));

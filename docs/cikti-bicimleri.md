@@ -18,9 +18,9 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
 {
   "surum": "0.1.0",
   "dosya": "ornekler/laravel.log",
-  "satir_sayisi": 203,
+  "satir_sayisi": 205,
   "kayit_sayisi": 59,
-  "devam_satiri_sayisi": 141,
+  "devam_satiri_sayisi": 143,
   "yetim_satir_sayisi": 3,
   "zaman_araligi": {
     "en_eski": "2026-10-24 08:59:58",
@@ -42,6 +42,7 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
     "kalip_sayisi": 23,
     "grup_sayisi": 24,
     "esik": 0.7,
+    "konum": "metot",
     "siralama": "onem",
     "gosterilmeyen": 23,
     "satirlar": [
@@ -55,7 +56,8 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
         "istisna": {
           "sinif": "RedisException",
           "dosya": "app/Http/Middleware/HizSiniri.php",
-          "satir": 22
+          "satir": 22,
+          "metot": "App\\Http\\Middleware\\HizSiniri->handle"
         }
       }
     ]
@@ -69,9 +71,15 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
 - Bütün zamanlar raporun saat diliminde ve tek biçimdedir: `2026-10-24 17:05:13` (yıl, ay,
   gün, saat, dakika, saniye; kesir ve dilim yazılmaz). Dilim `saat_dilimi` alanındadır.
 - `dosya` logun yoludur; standart girdiden okunduysa `<standart girdi>`.
-- `istisna`, kayıtlar bir istisnadan gelmiyorsa `null`'dır. İstisnanın uygulama kodunda yeri
-  bulunamadıysa `dosya` ve `satir` `null`'dır. View hatalarında `dosya` şablondur ve `satir`
-  `null`'dır.
+- `istisna`, kayıtlar bir istisnadan gelmiyorsa `null`'dır. `metot` konumun içinde bulunduğu
+  fonksiyonun tam adıdır: `App\Http\Middleware\HizSiniri->handle`, closure'larda
+  `App\Services\SiparisServisi->{closure:olustur()}`. O zaman `satir` o hatanın en yeni
+  kaydının satırıdır ([satır değil fonksiyon](nasil-calisir.md#satır-değil-fonksiyon)). Konum
+  satırla belirlendiyse (`--konum satir`, bir dosyanın en üst düzeyindeki kod, fonksiyonu
+  bilinmeyen JSON kayıtları) `metot` `null`'dır. İstisnanın uygulama kodunda yeri
+  bulunamadıysa `dosya`, `satir` ve `metot` `null`'dır. View hatalarında `dosya` şablondur;
+  `satir` ve `metot` `null`'dır.
+- `konum`: konumun neyle belirlendiği (`--konum`): `metot` ya da `satir`.
 - `seviyeler` yalnızca logda geçen seviyeleri, en önemlisi başta olacak şekilde içerir.
 - `ham_mesaj_yaklasik`: `ham_mesaj_sayisi` bir tahmin mi? 262 144'ten fazla farklı ham mesaj
   varsa sayı HyperLogLog ile tahmin edilir (±%0,4,
@@ -203,7 +211,7 @@ veylog --bicim json --hepsi laravel.log | jq '.kaliplar.satirlar[0]'
 # Hatalar ve uygulama kodundaki yerleri, sekmeyle ayrılmış
 veylog --bicim json --hepsi laravel.log | jq -r '.kaliplar.satirlar[]
   | select(.seviye == "CRITICAL" or .seviye == "ERROR")
-  | "\(.adet)\t\(.istisna.dosya // "-")\t\(.kalip)"'
+  | "\(.adet)\t\(.istisna.dosya // "-")\t\(.istisna.metot // "-")\t\(.kalip)"'
 
 # CI adımı: logda CRITICAL varsa başarısız ol (jq -e, sonuç false ise 1 koduyla çıkar)
 veylog --bicim json laravel.log | jq -e '.seviyeler.CRITICAL // 0 | . == 0'
@@ -238,15 +246,15 @@ tırnak, ters bölü, ESC, emoji gibi zor metinler yazılıp geri okunduğunda a
 $ veylog --bicim markdown --ilk 2 ornekler/laravel.log
 ## veylog: `ornekler/laravel.log`
 
-- **Satır:** 203 · **Kayıt:** 59 · **Devam satırı:** 141 · **Yetim satır:** 3
+- **Satır:** 205 · **Kayıt:** 59 · **Devam satırı:** 143 · **Yetim satır:** 3
 - **Zaman aralığı:** 2026-10-24 08:59:58 → 2026-10-24 18:31:07
 - **Seviyeler:** CRITICAL 2 · ERROR 16 · WARNING 6 · NOTICE 1 · INFO 31 · DEBUG 3
 - **Kalıplar:** 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp (eşik 0,7) → parmak iziyle 24 grup
 
 | Adet | Seviye | İlk | Son | Kalıp | Örnek | Konum |
 |---:|---|---|---|---|---|---|
-| 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22` RedisException |
-| 6 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64` ConnectionException |
+| 2 | CRITICAL | 17:05:13 | 17:06:45 | `Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]` | `Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]` | `app/Http/Middleware/HizSiniri.php:22, handle()` RedisException |
+| 6 | ERROR | 16:10:02 | 16:16:02 | `cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…` | `cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes receiv…` | `app/Services/OdemeServisi.php:64, tahsilEt()` ConnectionException |
 
 … 22 satır daha; tümünü görmek için `--hepsi`
 ```

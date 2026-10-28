@@ -10,6 +10,7 @@
 //! veylog --saat-dilimi +03:00 storage/logs/laravel.log
 //! veylog --desen '%datetime% [%level_name%] %message% %context%' storage/logs/app.log
 //! veylog --zaman-bicimi 'd.m.Y H:i:s' storage/logs/laravel.log
+//! veylog --konum satir storage/logs/laravel.log
 //! zcat laravel-2026-10-24.log.gz | veylog -
 //! ```
 //!
@@ -29,6 +30,7 @@ use std::path::PathBuf;
 use crate::ani_artis::{EN_DUSUK_SEVIYE, EN_UZUN_DILIM};
 use crate::filtre::sure_ayristir;
 use crate::kayit::Seviye;
+use crate::parmak_izi::KonumTuru;
 use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
 use crate::satir_bicimi::SatirBicimi;
 use crate::zaman::{SaatDilimi, ZamanNoktasi};
@@ -38,8 +40,9 @@ use crate::zaman_bicimi::ZamanBicimi;
 pub const KULLANIM: &str = "Kullanım: veylog [SEÇENEKLER] <log-dosyası>";
 
 /// Bilinen uzun seçenekler. Yazım hatası yapıldığında öneri bu listeden seçilir.
-const UZUN_SECENEKLER: [&str; 18] = [
+const UZUN_SECENEKLER: [&str; 19] = [
     "--esik",
+    "--konum",
     "--ilk",
     "--hepsi",
     "--siralama",
@@ -232,6 +235,10 @@ where
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
                 rapor.drain.benzerlik_esigi = esik_ayristir(ad, &deger)?;
             }
+            "--konum" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                rapor.konum_turu = konum_ayristir(ad, &deger)?;
+            }
             "-n" | "--ilk" => {
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
                 rapor.ilk = Some(ilk_ayristir(ad, &deger)?);
@@ -336,6 +343,10 @@ pub fn yardim_metni() -> String {
         .iter()
         .map(|bicim| format!("{:28}{:<10}{}\n", "", bicim.ad(), bicim.aciklama()))
         .collect();
+    let konum_turleri: String = KonumTuru::HEPSI
+        .iter()
+        .map(|tur| format!("{:28}{:<7}{}\n", "", tur.ad(), tur.aciklama()))
+        .collect();
 
     format!(
         "\
@@ -346,7 +357,8 @@ veylog {surum}: Laravel log dosyalarını özetler.
 Seçenekler:
   -e, --esik <sayı>       Drain benzerlik eşiği, 0 ile 1 arası. Büyüdükçe kalıplar daha az
                           birleşir. [varsayılan: {esik}]
-  -n, --ilk <sayı>        Tabloda gösterilecek satır sayısı. [varsayılan: {VARSAYILAN_ILK}]
+      --konum <tür>       Bir hatanın yeri neyle belirlensin. [varsayılan: {konum}]
+{konum_turleri}  -n, --ilk <sayı>        Tabloda gösterilecek satır sayısı. [varsayılan: {VARSAYILAN_ILK}]
       --hepsi             Tablonun tamamını göster.
   -s, --siralama <ölçüt>  Tablonun sırası. [varsayılan: {siralama}]
 {siralamalar}  -b, --bicim <ad>        Çıktının biçimi. [varsayılan: {bicim}]
@@ -360,9 +372,9 @@ Seçenekler:
                           anları bul. Dilim 1 ile {EN_UZUN_DILIM} dakika arası; 1 verilirse her
                           dakika ayrı sayılır.
       --saat-dilimi <dilim>
-                          Zamanları bu saat diliminde göster: +03:00, -05:30, Z (UTC). Saat
-                          dilimi yazılı kayıtlar bu dilime çevrilir, yazılmamışlar bu dilimde
-                          sayılır. Verilmezse logda saat dilimi yazılı ilk kaydınki.
+                          Zamanları bu saat diliminde göster: +03:00, -05:30, Z (UTC).
+                          Saat dilimi yazılı kayıtlar bu dilime çevrilir, yazılmamışlar bu
+                          dilimde sayılır. Verilmezse logda saat dilimi yazılı ilk kaydınki.
 
 Log biçimi (verilmezse Laravel'inki; Monolog'un JSON satırları her zaman okunur):
       --desen <desen>     Bir kaydı başlatan satırın biçimi: Monolog'un biçim dizgesi
@@ -371,12 +383,13 @@ Log biçimi (verilmezse Laravel'inki; Monolog'un JSON satırları her zaman okun
                           (?P<mesaj>...) gerekli, (?P<seviye>...) ve (?P<baglam>...) isteğe
                           bağlı. Uymayan satırlar bir önceki kaydın devamıdır.
       --zaman-bicimi <biçim>
-                          Zamanın biçimi, PHP'nin date() dizgesiyle (Monolog'un dateFormat'ı):
-                          \"d.m.Y H:i:s\", \"d/M/Y:H:i:s O\", \"U\". Verilmezse 2026-10-24 14:03:11
-                          ya da ISO 8601 (2026-10-24T14:03:11+03:00).
+                          Zamanın biçimi, PHP'nin date() dizgesiyle (Monolog'un
+                          dateFormat'ı): \"d.m.Y H:i:s\", \"d/M/Y:H:i:s O\", \"U\". Verilmezse
+                          2026-10-24 14:03:11 ya da ISO 8601 (2026-10-24T14:03:11+03:00).
 
 Filtreler (raporu yalnızca uyan kayıtlarla çıkarır; satır ve kayıt sayıları dosyanındır):
-      --seviye <seviye>   Bu seviye ve üstündekiler: {seviyeler}.
+      --seviye <seviye>   Bu seviye ve üstündekiler:
+                          {seviyeler}.
       --baslangic <zaman> Bu andan (dahil) sonraki kayıtlar.
       --bitis <zaman>     Bu andan (hariç) önceki kayıtlar. Zamanlar --karsilastir gibi
                           yazılır; yalnızca saat verilirse logun son günü.
@@ -390,10 +403,10 @@ Dosya yerine - verilirse log standart girdiden okunur. Seçenekler dosya adında
 sonra yazılabilir. Değer boşlukla ya da \"=\" ile verilir (--esik 0,8 ya da --esik=0,8), kısa
 seçeneklerde bitişik de yazılabilir (-n20); ondalık ayracı virgül de olabilir, nokta da.
 Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biçim, --karşılaştır,
---ani-artış, --zaman-biçimi). --ilk her biçimde ve her bölümde geçerlidir; JSON'da bütün satırlar için
---hepsi. --siralama kalıp tablosunun ve karşılaştırmanın sırasını belirler; ani artışlar
-puanı en yüksek olan başta olacak şekilde dizilir. --karsilastir, --baslangic ve --bitis
-zamanları raporun saat dilimindedir.
+--ani-artış, --zaman-biçimi, --konum satır). --ilk her biçimde ve her bölümde geçerlidir;
+JSON'da bütün satırlar için --hepsi. --siralama kalıp tablosunun ve karşılaştırmanın
+sırasını belirler; ani artışlar puanı en yüksek olan başta olacak şekilde dizilir.
+--karsilastir, --baslangic ve --bitis zamanları raporun saat dilimindedir.
 
 Çıkış kodları: 0 başarılı, 1 dosya okunamadı ya da çıktı yazılamadı, 2 kullanım hatası
 (karşılaştırma noktasının logun dışında kalması da).
@@ -410,10 +423,12 @@ zamanları raporun saat dilimindedir.
   veylog --saat-dilimi +03:00 storage/logs/laravel.log
   veylog --desen '%datetime% [%level_name%] %message% %context%' storage/logs/app.log
   veylog --zaman-bicimi 'd.m.Y H:i:s' storage/logs/laravel.log
+  veylog --konum satir storage/logs/laravel.log
   zcat laravel-2026-10-24.log.gz | veylog -
 ",
         surum = env!("CARGO_PKG_VERSION"),
         esik = ondalik(varsayilan.drain.benzerlik_esigi),
+        konum = varsayilan.konum_turu.ad(),
         siralama = varsayilan.siralama.ad(),
         bicim = Bicim::Metin.ad(),
         seviye = EN_DUSUK_SEVIYE.ad(),
@@ -497,6 +512,18 @@ fn siralama_ayristir(ad: &str, deger: &str) -> Result<Siralama, SecenekHatasi> {
             .iter()
             .map(|siralama| siralama.ad())
             .collect();
+        gecersiz(
+            ad,
+            deger,
+            format!("şunlardan biri olmalı: {}", adlar.join(", ")),
+        )
+    })
+}
+
+/// `--konum`: konum türlerinden birinin adı.
+fn konum_ayristir(ad: &str, deger: &str) -> Result<KonumTuru, SecenekHatasi> {
+    KonumTuru::ayristir(&sadelestir(deger)).ok_or_else(|| {
+        let adlar: Vec<&str> = KonumTuru::HEPSI.iter().map(|tur| tur.ad()).collect();
         gecersiz(
             ad,
             deger,
@@ -681,6 +708,7 @@ mod testler {
         assert_eq!(secenekler.rapor.drain.benzerlik_esigi, 0.7);
         assert_eq!(secenekler.rapor.ilk, Some(VARSAYILAN_ILK));
         assert_eq!(secenekler.rapor.siralama, Siralama::Onem);
+        assert_eq!(secenekler.rapor.konum_turu, KonumTuru::Metot);
         assert_eq!(secenekler.bicim, Bicim::Metin);
         assert_eq!(secenekler.rapor.karsilastir, None);
         assert_eq!(secenekler.rapor.ani_artis, None);
@@ -854,6 +882,29 @@ mod testler {
         assert_eq!(
             hata(&["--bicim", "xml", "a.log"]).to_string(),
             "--bicim için geçersiz değer \"xml\": şunlardan biri olmalı: metin, json, markdown"
+        );
+    }
+
+    #[test]
+    fn konum_turu_secilebilir() {
+        for (argumanlar, beklenen) in [
+            (&["--konum", "satir", "a.log"][..], KonumTuru::Satir),
+            (&["--konum=metot", "a.log"], KonumTuru::Metot),
+            (&["a.log", "--konum", "satır"], KonumTuru::Satir),
+        ] {
+            assert_eq!(
+                ozet(argumanlar).rapor.konum_turu,
+                beklenen,
+                "{argumanlar:?}"
+            );
+        }
+        assert_eq!(
+            hata(&["--konum", "dosya", "a.log"]).to_string(),
+            "--konum için geçersiz değer \"dosya\": şunlardan biri olmalı: metot, satir"
+        );
+        assert_eq!(
+            hata(&["a.log", "--konum"]),
+            SecenekHatasi::DegerEksik("--konum".to_string())
         );
     }
 
@@ -1091,6 +1142,19 @@ mod testler {
         }
         for bicim in Bicim::HEPSI {
             assert!(metin.contains(bicim.aciklama()), "{}", bicim.ad());
+        }
+        assert!(metin.contains("--konum <tür>"));
+        assert!(metin.contains("[varsayılan: metot]"));
+        for tur in KonumTuru::HEPSI {
+            assert!(metin.contains(tur.aciklama()), "{}", tur.ad());
+        }
+    }
+
+    #[test]
+    fn yardim_metninin_satirlari_kisa() {
+        // Terminalde satırlar bölünmesin: en uzunu 92 karakter
+        for satir in yardim_metni().lines() {
+            assert!(satir.chars().count() <= 92, "{satir}");
         }
     }
 

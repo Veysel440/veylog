@@ -74,6 +74,30 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 - Ani artışın örneği yeniden okunurken kayıt devam satırlarıyla birlikte toplanır: istisna
   metninin mesajı devam satırlarındadır.
 
+### Satır numarasından bağımsız parmak izi
+
+- Bir hatanın yeri dosya ve satırın içinde bulunduğu fonksiyondur:
+  `app/Services/SepetHesaplayici.php:88, toplam()`. Bir dağıtım dosyanın üstüne satır eklese
+  de aynı hata tablonun aynı satırında kalır; `--karsilastir` onu kaybolan ve yeni çıkan
+  saymaz.
+  Fonksiyon, yığın izinde bir sonraki satırda çağrılan fonksiyondur. PHP'nin bir uyarısından
+  doğan `ErrorException`'da fırlatıldığı yer yığın izinde de görünür; fonksiyonu o satırınkidir.
+- Gösterilen satır o hatanın en yeni kaydınınkidir: kod değiştiyse güncel satır.
+- Closure'lar tanımlandıkları fonksiyonla ayrılır: `{closure:olustur()}`. Fonksiyon PHP
+  8.4'ün closure adından (`{closure:App\Services\SiparisServisi::olustur():12}`) okunur,
+  öncesinde yığın izinden bulunur: closure'dan dışa doğru aynı dosyadaki ilk satırın
+  fonksiyonu. Rota dosyalarındaki closure'lar `{closure}` diye yazılır.
+- Bir dosyanın en üst düzeyindeki kod (dahil edilen dosya, çalıştırılan betik) bir
+  fonksiyonun içinde değildir; konumu satırla belirlenir.
+- Çağrıları yazılmayan kayıtların (Monolog'un JSON yığın izi, kapalı yığın izi) fonksiyonu
+  logun öteki yığın izlerinden öğrenilir: aynı hatanın JSON ve metin kayıtları birleşir. İki
+  farklı fonksiyonda görülen satır kullanılmaz.
+- `--konum satir`: dosya ve satır, 0.1'deki gibi.
+- JSON çıktısında `istisna.metot` (fonksiyonun tam adı) ve `kaliplar.konum` alanları;
+  Markdown'ın konum hücresinde fonksiyon.
+- Örnek logdaki Redis hatasının yığın izine middleware'i çağıran satır eklendi.
+- Yardım metninde 92 karakteri aşan satırlar bölündü.
+
 ## [0.1.0] - 2026-10-26
 
 İlk sürüm.

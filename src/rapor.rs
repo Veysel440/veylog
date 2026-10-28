@@ -30,7 +30,7 @@ use crate::karsilastirma::{
 };
 use crate::kayit::Seviye;
 use crate::okuyucu::OrnekKaynagi;
-use crate::parmak_izi::ParmakIzi;
+use crate::parmak_izi::{KonumTuru, ParmakIzi};
 use crate::satir_bicimi::SatirBicimi;
 use crate::zaman::{SaatDilimi, Zaman, ZamanNoktasi, sure_tam_yaz, sure_yaz};
 
@@ -119,6 +119,8 @@ pub struct RaporAyarlari {
     pub saat_dilimi: Option<SaatDilimi>,
     /// Satırların biçimi (`--desen`, `--zaman-bicimi`); varsayılanı Laravel'inki.
     pub satir_bicimi: SatirBicimi,
+    /// Parmak izlerinin konumu neyle belirlenir (`--konum`).
+    pub konum_turu: KonumTuru,
 }
 
 impl Default for RaporAyarlari {
@@ -132,6 +134,7 @@ impl Default for RaporAyarlari {
             filtre: Filtre::default(),
             saat_dilimi: None,
             satir_bicimi: SatirBicimi::default(),
+            konum_turu: KonumTuru::default(),
         }
     }
 }
@@ -182,6 +185,8 @@ struct Grup<'d> {
     seviye: Seviye,
     ilk: Zaman,
     son: Zaman,
+    /// En geç kaydının sıra numarası: zamanı `son` olanlardan logda en sonra geleni.
+    son_kayit: usize,
     ornek: &'d str,
 }
 
@@ -197,12 +202,20 @@ impl<'d> Grup<'d> {
             seviye: ilk_alt_grup.seviye(),
             ilk: ilk_alt_grup.ilk(),
             son: ilk_alt_grup.son(),
+            son_kayit: ilk_alt_grup.son_kayit(),
             ornek: ilk_alt_grup.ornek(),
         }
     }
 
     /// Alt grubu gruba katar: adedi artırır, en yüksek seviyeyi ve zaman aralığını günceller.
-    fn ekle(&mut self, alt_grup: &'d AltGrup) {
+    /// `parmak_izi`: alt grubun parmak izi. Gruptakilerin hepsi aynı hatanındır; satırları
+    /// farklı olabilir (konum fonksiyonla belirlenir). Gösterilen satır en yeni kaydınki olsun:
+    /// kod değiştiyse güncel satır. Aynı andaki kayıtlardan logda sonra gelen daha yenidir.
+    fn ekle(&mut self, alt_grup: &'d AltGrup, parmak_izi: Option<&'d ParmakIzi>) {
+        if (alt_grup.son(), alt_grup.son_kayit()) >= (self.son, self.son_kayit) {
+            self.parmak_izi = parmak_izi;
+            self.son_kayit = alt_grup.son_kayit();
+        }
         self.adet += alt_grup.adet();
         self.seviye = self.seviye.max(alt_grup.seviye());
         self.ilk = self.ilk.min(alt_grup.ilk());
@@ -231,7 +244,7 @@ pub fn kaliplari_cikar(depo: &Depo, ayarlar: &RaporAyarlari) -> KalipAnalizi {
             gruplar.push(Grup::yeni(kume, parmak_izi, alt_grup));
             gruplar.len() - 1
         });
-        gruplar[sira].ekle(alt_grup);
+        gruplar[sira].ekle(alt_grup, parmak_izi);
         alt_grup_grubu.push(sira);
     }
 
@@ -1194,14 +1207,14 @@ Yeni çıkanlar (yalnızca sonra): 3
   önce  sonra  seviye     ilk       son       kalıp
      0      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]
                                               örnek: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
-                                              konum: app/Http/Middleware/HizSiniri.php:22 (RedisException)
+                                              konum: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)
      0      1  INFO       16:24:10  16:24:10  Ödeme sağlayıcısı yeniden yanıt veriyor
   … 1 satır daha; tümünü görmek için --hepsi
 
 Kaybolanlar (yalnızca önce): 11
   önce  sonra  seviye     ilk       son       kalıp
      1      0  ERROR      09:47:12  09:47:12  Attempt to read property "ad" on null
-                                              konum: app/Http/Controllers/KategoriController.php:54 (ErrorException)
+                                              konum: app/Http/Controllers/KategoriController.php:54, goster() (ErrorException)
      1      0  ERROR      11:30:44  11:30:44  App\Jobs\FaturaGonder has been attempted too many times.
                                               konum: uygulama kodunda bulunamadı (MaxAttemptsExceededException)
   … 9 satır daha; tümünü görmek için --hepsi
@@ -1211,7 +1224,7 @@ Artanlar (sonra ≥ 2 kat sık, tesadüf ihtimali < %1): 1
      1      5  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
                                               artış: saatte 0,1 → 2,1 (15,4 kat)
                                               örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
-                                              konum: app/Services/OdemeServisi.php:64 (ConnectionException)
+                                              konum: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
 "#;
         assert!(metin.ends_with(beklenen), "{metin}");
     }
@@ -1291,7 +1304,7 @@ Ani artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1
       6       0   4,0  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
                                                       artış: 16:10–16:20 arası 6 kayıt
                                                       örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
-                                                      konum: app/Services/OdemeServisi.php:64 (ConnectionException)
+                                                      konum: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
 "#;
         assert!(metin.ends_with(beklenen), "{metin}");
     }
@@ -1763,24 +1776,23 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         Option<String>,
     );
 
-    /// `rastgele_log`'un yazdığı istisnaların parmak izleri: yığın izindeki dosyaya göre.
-    const ISTISNALAR: [(&str, &str, &str); 2] = [
-        (
-            "Sepet1.php(12)",
-            "RuntimeException",
-            "app/Services/Sepet1.php:12 (RuntimeException)",
-        ),
-        (
-            "Sepet2.php(20)",
-            "LogicException",
-            "app/Services/Sepet2.php:20 (LogicException)",
-        ),
+    /// `rastgele_log`'un yazdığı istisnalar: `app/Services`'teki sınıf (dosyanın adı da odur),
+    /// istisnanın sınıfı, uygulama kodundaki satırın fonksiyonu ve satırları. Kod değişmiş gibi
+    /// aynı hata iki satırda görünür.
+    const ISTISNALAR: [(&str, &str, &str, [u32; 2]); 2] = [
+        ("Sepet1", "RuntimeException", "olustur", [12, 15]),
+        ("Sepet2", "LogicException", "iptal", [20, 24]),
     ];
+
+    /// Başvuru tablosunda bir grup: küme, parmak izinin satırsız hali (dosya ve gerisi), en
+    /// yeni kaydın zamanı ve satırı, tablo satırı.
+    type BasvuruGrubu = (usize, Option<(String, String)>, (Zaman, u32), Satir);
 
     /// v0.1.0'ın kalıp tablosu (`rastgele_log`'un logları için): her kaydın maskeli mesajı
     /// logdaki sırayla, önbelleksiz Drain'den geçer; kayıtlar küme numarasına ve parmak izine
     /// göre gruplanır. Grubun ilk ve son zamanı zamanı en küçük ve en büyük olan ilk kayıttan,
-    /// örneği ilk kaydından.
+    /// örneği ilk kaydından. Parmak izi satıra bağlı değildir; gösterilen satır en yeni
+    /// kaydınkidir, aynı andakilerden logda sonra gelenin.
     fn kayit_kayit_tablo(metin: &str, ayarlar: &Ayarlar) -> Vec<Satir> {
         let (kayitlar, _) = crate::kayit::deneme::topla(metin);
         let maskeliler: Vec<String> = kayitlar
@@ -1788,18 +1800,28 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             .map(|kayit| crate::maske::maskele(&kayit.mesaj).into_owned())
             .collect();
         let (kumeler, numaralar) = crate::drain::kumele(ayarlar, &maskeliler);
-        let mut gruplar: Vec<(usize, Satir)> = Vec::new();
+        let mut gruplar: Vec<BasvuruGrubu> = Vec::new();
         for (kayit, kume) in kayitlar.iter().zip(numaralar) {
             let zaman = Zaman::kayittan(&kayit.zaman);
-            let konum = ISTISNALAR
-                .iter()
-                .find(|(dosya, _, _)| kayit.devam.iter().any(|satir| satir.contains(dosya)))
-                .map(|(_, _, iz)| iz.to_string());
+            // Yığın izindeki uygulama satırı: `#0 /var/www/magaza/app/Services/Sepet1.php(15): ...`
+            let istisna = ISTISNALAR.iter().find_map(|&(sinif_adi, sinif, metot, _)| {
+                let cerceve = format!("/app/Services/{sinif_adi}.php(");
+                kayit.devam.iter().find_map(|satir| {
+                    let (_, sonrasi) = satir.split_once(&cerceve)?;
+                    let satir_no: u32 = sonrasi.split(')').next()?.parse().ok()?;
+                    let dosya = format!("app/Services/{sinif_adi}.php");
+                    Some(((dosya, format!(", {metot}() ({sinif})")), satir_no))
+                })
+            });
+            let (kimlik, satir_no) = match istisna {
+                Some((kimlik, satir_no)) => (Some(kimlik), satir_no),
+                None => (None, 0),
+            };
             match gruplar
                 .iter_mut()
-                .find(|(numara, satir)| *numara == kume && satir.6 == konum)
+                .find(|(numara, grup_kimligi, _, _)| *numara == kume && *grup_kimligi == kimlik)
             {
-                Some((_, satir)) => {
+                Some((_, _, en_yeni, satir)) => {
                     satir.1 += 1;
                     satir.2 = satir.2.max(kayit.seviye);
                     if zaman < Zaman::kayittan(&satir.3) {
@@ -1808,9 +1830,15 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
                     if zaman > Zaman::kayittan(&satir.4) {
                         satir.4 = kayit.zaman.clone();
                     }
+                    // Kayıtlar logdaki sırayla: aynı andaki kayıt daha yenidir
+                    if zaman >= en_yeni.0 {
+                        *en_yeni = (zaman, satir_no);
+                    }
                 }
                 None => gruplar.push((
                     kume,
+                    kimlik,
+                    (zaman, satir_no),
                     (
                         kumeler[kume].metin(),
                         1,
@@ -1818,12 +1846,18 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
                         kayit.zaman.clone(),
                         kayit.zaman.clone(),
                         kayit.mesaj.clone(),
-                        konum,
+                        None,
                     ),
                 )),
             }
         }
-        let mut satirlar: Vec<Satir> = gruplar.into_iter().map(|(_, satir)| satir).collect();
+        let mut satirlar: Vec<Satir> = gruplar
+            .into_iter()
+            .map(|(_, kimlik, (_, satir_no), mut satir)| {
+                satir.6 = kimlik.map(|(dosya, gerisi)| format!("{dosya}:{satir_no}{gerisi}"));
+                satir
+            })
+            .collect();
         satirlar.sort();
         satirlar
     }
@@ -1902,9 +1936,11 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             let seviye = rastgele.sec(&["ERROR", "WARNING", "INFO"]);
             let mut kayit = format!("[{}] local.{seviye}: {mesaj}", Zaman::saniyeden(saniye));
             if istisnali && tur == 4 && rastgele.sayi(2) == 0 {
-                let (dosya, sinif, _) = ISTISNALAR[rastgele.sayi(2)];
+                let (sinif_adi, sinif, metot, satirlar) = ISTISNALAR[rastgele.sayi(2)];
+                // Satır zamandan seçilir: rastgele sayıların sırası değişmesin
+                let satir = satirlar[usize::from(saniye % 3 == 0)];
                 kayit.push_str(&format!(
-                    " {{\"exception\":\"[object] ({sinif}(code: 0): {mesaj} at /var/www/magaza/vendor/firma/paket/src/A.php:3)\n[stacktrace]\n#0 /var/www/magaza/app/Services/{dosya}: A->b()\n#1 {{main}}\n\"}} "
+                    " {{\"exception\":\"[object] ({sinif}(code: 0): {mesaj} at /var/www/magaza/vendor/firma/paket/src/A.php:3)\n[stacktrace]\n#0 /var/www/magaza/app/Services/{sinif_adi}.php({satir}): A->b()\n#1 /var/www/magaza/vendor/firma/paket/src/C.php(9): App\\\\Services\\\\{sinif_adi}->{metot}()\n#2 {{main}}\n\"}} "
                 ));
             }
             satirlar.push(kayit);
@@ -2018,6 +2054,35 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         }
         assert!(farkli > 0);
         assert_eq!(tablo_kayit_kayit_ayni_mi(&metin), 5);
+    }
+
+    /// Logun bütün kayıtlarını aynı ana taşır: `[1970-01-01 10:00:00]`.
+    fn ayni_anda(metin: &str) -> String {
+        metin
+            .lines()
+            .map(|satir| match satir.get(20..) {
+                Some(geri) if satir.as_bytes().get(20) == Some(&b']') => {
+                    format!("[1970-01-01 10:00:00{geri}")
+                }
+                _ => satir.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn bolunen_alt_grubun_en_gec_kaydi_da_bulunur() {
+        // Bütün kayıtlar aynı anda: bir satırın konumu logda en sonra gelen kaydınınkidir.
+        // Bu tohumlarla üretilen loglarda ikinci turda bölünen alt gruplar var; parçaların en
+        // geç kayıtları da yeniden bulunmalı.
+        for tohum in [4u64, 17, 37] {
+            let mut rastgele = Rastgele(tohum.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let adet = 150 + rastgele.sayi(250);
+            let ad_sayisi = 120 + rastgele.sayi(300);
+            let metin = ayni_anda(&rastgele_log(&mut rastgele, adet, ad_sayisi, true, true));
+            assert!(metin.starts_with("[1970-01-01 10:00:00] "), "{tohum}");
+            assert!(tablo_kayit_kayit_ayni_mi(&metin) > 0, "{tohum}");
+        }
     }
 
     #[test]
@@ -2198,7 +2263,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         assert!(ilk.ornek.contains("10.0.3.12:6379"));
         assert_eq!(
             ilk.parmak_izi.as_ref().map(|iz| iz.to_string()).as_deref(),
-            Some("app/Http/Middleware/HizSiniri.php:22 (RedisException)")
+            Some("app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)")
         );
 
         // Aynı PHP mesajı iki ayrı denetleyiciden geliyor: iki ayrı hata
@@ -2211,8 +2276,8 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         assert_eq!(
             konumlar,
             [
-                "app/Http/Controllers/KategoriController.php:54 (ErrorException)",
-                "app/Http/Controllers/UrunController.php:72 (ErrorException)",
+                "app/Http/Controllers/KategoriController.php:54, goster() (ErrorException)",
+                "app/Http/Controllers/UrunController.php:72, goster() (ErrorException)",
             ]
         );
 
@@ -2245,7 +2310,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
     fn ozet_ornek_log_icin_dogru_yazilir() {
         let metin = metin_raporu(ORNEK_LOG, &RaporAyarlari::default());
 
-        assert!(metin.starts_with("ornek.log: 203 satır\n"));
+        assert!(metin.starts_with("ornek.log: 205 satır\n"));
         assert!(metin.contains("\nSeviyeler:\n  CRITICAL     2\n  ERROR       16\n"));
         assert!(metin.contains(
             "Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp (eşik 0,7) → parmak iziyle 24 grup\n"
@@ -2257,7 +2322,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         ));
         // Konum satırı da kalıp sütununun hizasında başlar
         assert!(metin.contains(
-            "\n                                       konum: app/Http/Middleware/HizSiniri.php:22 (RedisException)\n"
+            "\n                                       konum: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)\n"
         ));
         // 24 satırın 10'u gösterildi; kalanlar söylenir
         assert!(metin.ends_with("\n  … 14 satır daha; tümünü görmek için --hepsi\n"));
@@ -2322,7 +2387,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         let metin = String::from_utf8(cikti).unwrap();
         assert!(
             metin.starts_with(
-                "ornek.log: 203 satır\n  Kayıt         : 59\n  Devam satırı  : 141\n  Yetim satır   : 3\n  Filtre        : ERROR ve üstü, 2026-10-24 17:01:07 ve sonrası (son 1 sa 30 dk): 3 kayıt\n  Zaman aralığı : 2026-10-24 17:05:13 → 2026-10-24 17:55:03\n"
+                "ornek.log: 205 satır\n  Kayıt         : 59\n  Devam satırı  : 143\n  Yetim satır   : 3\n  Filtre        : ERROR ve üstü, 2026-10-24 17:01:07 ve sonrası (son 1 sa 30 dk): 3 kayıt\n  Zaman aralığı : 2026-10-24 17:05:13 → 2026-10-24 17:55:03\n"
             ),
             "{metin}"
         );
@@ -2351,7 +2416,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
     fn ozet_sayilari_ve_gosterilecek_satirlar() {
         let ozet = Ozet::metinden("ornek.log", ORNEK_LOG, &RaporAyarlari::default()).unwrap();
 
-        assert_eq!(ozet.satir_sayisi, 203);
+        assert_eq!(ozet.satir_sayisi, 205);
         assert_eq!(ozet.kayit_sayisi, 59);
         assert_eq!(ozet.zaman_gosterimi(), ZamanGosterimi::Saat);
         assert_eq!(ozet.seviyeler[0], (Seviye::Critical, 2));
@@ -2384,6 +2449,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
                 filtre: (!filtre.bos_mu()).then(|| filtre.coz(en_yeni).expect("geçerli filtre")),
                 saat_dilimi: ayarlar.saat_dilimi,
                 satir_bicimi: ayarlar.satir_bicimi.clone(),
+                konum_turu: ayarlar.konum_turu,
             };
             let mut depo = Depo::doldur(depo_ayarlari, log_metni.as_bytes()).unwrap();
             let mut kaynak = YenidenOkuyucu::new(
@@ -2398,6 +2464,111 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
     }
 
     /// Metin raporunu ekran yerine bir bayt dizisine yazar ve metin olarak döndürür.
+    #[test]
+    fn konumun_satiri_gruptaki_en_yeni_kayittan() {
+        // Aynı hata üç kayıtta: ikisi metin, biri JSON. JSON kaydının fonksiyonu metin
+        // kayıtlarından öğrenilir: üçü tek satırdır. JSON kaydı en yenisi; gösterilen satır
+        // onunki.
+        let metin_kaydi = |zaman: &str, satir: u32| {
+            format!(
+                r#"[2026-10-24 {zaman}] production.ERROR: Undefined array key "kargo_ucreti" {{"exception":"[object] (ErrorException(code: 0): Undefined array key \"kargo_ucreti\" at /var/www/magaza/app/Services/SepetHesaplayici.php:{satir})
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError()
+#1 /var/www/magaza/app/Services/SepetHesaplayici.php({satir}): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{{closure}}()
+#2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam()
+#3 {{main}}
+"}}"#
+            )
+        };
+        let json_kaydi = r#"{"message":"Undefined array key \"kargo_ucreti\"","context":{"exception":{"class":"ErrorException","message":"Undefined array key \"kargo_ucreti\"","code":0,"file":"/var/www/magaza/app/Services/SepetHesaplayici.php:88"}},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-24T13:00:00+00:00","extra":{}}"#;
+        let log = [
+            metin_kaydi("10:00:00", 88),
+            metin_kaydi("12:00:00", 91),
+            json_kaydi.to_string(),
+        ]
+        .join("\n");
+        let ozet = Ozet::metinden("ornek.log", &log, &RaporAyarlari::default()).unwrap();
+        let satirlar = &ozet.analiz.satirlar;
+        assert_eq!(satirlar.len(), 1);
+        assert_eq!(satirlar[0].adet, 3);
+        assert_eq!(
+            satirlar[0].parmak_izi.as_ref().map(ToString::to_string),
+            Some("app/Services/SepetHesaplayici.php:88, toplam() (ErrorException)".to_string())
+        );
+        // JSON kaydı olmadan en yeni kayıt 91. satırda; log sıralı olmasa da
+        let gosterilen = |kayitlar: &[String]| {
+            let ozet = Ozet::metinden("ornek.log", &kayitlar.join("\n"), &RaporAyarlari::default())
+                .unwrap();
+            assert_eq!(ozet.analiz.satirlar.len(), 1);
+            ozet.analiz.satirlar[0]
+                .parmak_izi
+                .as_ref()
+                .and_then(ParmakIzi::gosterilen_satir)
+        };
+        assert_eq!(
+            gosterilen(&[
+                metin_kaydi("10:00:00", 88),
+                metin_kaydi("12:00:00", 91),
+                metin_kaydi("11:00:00", 88),
+            ]),
+            Some(91)
+        );
+        // Aynı andaki kayıtlardan logda sonra gelen daha yenidir
+        assert_eq!(
+            gosterilen(&[metin_kaydi("10:00:00", 91), metin_kaydi("10:00:00", 88)]),
+            Some(88)
+        );
+        assert_eq!(
+            gosterilen(&[metin_kaydi("10:00:00", 88), metin_kaydi("10:00:00", 91)]),
+            Some(91)
+        );
+        // Eşitlikte alt grubun ilk kaydı değil, en geç kaydı sayılır: 88'in alt grubu önce
+        // açıldı ve aynı andaki kaydı logda 91'inkinden sonra
+        assert_eq!(
+            gosterilen(&[
+                metin_kaydi("09:00:00", 88),
+                metin_kaydi("10:00:00", 91),
+                metin_kaydi("10:00:00", 88),
+            ]),
+            Some(88)
+        );
+    }
+
+    #[test]
+    fn ayni_fonksiyondaki_farkli_kaliplar_kendi_satirlarini_gosterir() {
+        // Rota dosyasındaki iki closure'da iki farklı hata. Konumları aynı (`routes/web.php`,
+        // `{closure}`), kalıpları farklı: iki satır, her biri kendi kaydının satırıyla.
+        let rota_kaydi = |zaman: &str, mesaj: &str, satir: u32| {
+            format!(
+                r#"[2026-10-24 {zaman}] production.ERROR: {mesaj} {{"exception":"[object] (RuntimeException(code: 0): {mesaj} at /var/www/magaza/routes/web.php:{satir})
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/CallableDispatcher.php(39): Illuminate\\Routing\\RouteFileRegistrar->{{closure}}()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/Route.php(254): Illuminate\\Routing\\CallableDispatcher->dispatch()
+#2 {{main}}
+"}}"#
+            )
+        };
+        let log = [
+            rota_kaydi("10:00:00", "Kapanış rotasında hata", 21),
+            rota_kaydi("11:00:00", "Dize olarak loglanan istisna", 24),
+        ]
+        .join("\n");
+        let ozet = Ozet::metinden("ornek.log", &log, &RaporAyarlari::default()).unwrap();
+        let konumlar: Vec<String> = ozet
+            .analiz
+            .satirlar
+            .iter()
+            .map(|satir| satir.parmak_izi.as_ref().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            konumlar,
+            [
+                "routes/web.php:21, {closure} (RuntimeException)",
+                "routes/web.php:24, {closure} (RuntimeException)",
+            ]
+        );
+    }
+
     fn metin_raporu(log_metni: &str, ayarlar: &RaporAyarlari) -> String {
         let ozet = Ozet::metinden("ornek.log", log_metni, ayarlar).unwrap();
         let mut cikti = Vec::new();

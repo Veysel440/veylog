@@ -1,4 +1,4 @@
-//! Hata parmak izi: istisna sınıfı ve uygulama kodundaki ilk satır.
+//! Hata parmak izi: istisna sınıfı, uygulama kodundaki ilk satır ve o satırın fonksiyonu.
 //!
 //! Laravel yakalanmayan bir istisnayı şöyle loglar (satırlar kısaltıldı):
 //!
@@ -14,7 +14,37 @@
 //!
 //! Aynı PHP mesajı (`Attempt to read property "ad" on null`) kodun birçok yerinden gelebilir.
 //! Mesaja bakan Drain bunları tek kalıpta birleştirir. Parmak izi ise hatanın kodun neresinde
-//! oluştuğuna bakar: istisnanın sınıfı ve uygulama kodunda ilk göründüğü dosya:satır.
+//! oluştuğuna bakar: istisnanın sınıfı, uygulama kodunda ilk göründüğü dosya ve o satırın
+//! içinde bulunduğu fonksiyon.
+//!
+//! **Satır değil fonksiyon.** Satır numarası, dosyanın üst kısmına bir satır eklenince değişir:
+//! bir dağıtımdan önceki ve sonraki aynı hata iki ayrı hata gibi görünür, `--karsilastir` onu
+//! hem "kaybolan" hem "yeni çıkan" sayar. Bu yüzden konum dosya ve fonksiyondur (`--konum satir`
+//! ile dosya ve satır). Yığın izinin her satırı bir yeri ve o yerde çağrılan fonksiyonu yazar;
+//! bir yerin içinde bulunduğu fonksiyon, bir sonraki satırda çağrılan fonksiyondur:
+//!
+//! ```text
+//! #1 /var/www/magaza/app/Services/SepetHesaplayici.php(88): ...->{closure}(...)
+//! #2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam(...)
+//! ```
+//!
+//! `SepetHesaplayici.php:88`, `SepetHesaplayici->toplam()`'ın içindedir. Gösterilen satır o
+//! konumdaki en yeni kaydınkidir (kod değiştiyse güncel satır); kimliğin parçası değildir.
+//!
+//! - **Closure.** Closure'ın adı yerini söylemez: bir sınıftaki bütün closure'lar
+//!   `App\Services\SiparisServisi->{closure}` diye yazılır. Ada closure'ın tanımlandığı
+//!   fonksiyon da katılır: `{closure:olustur()}`. PHP 8.4 onu closure'ın adına yazar
+//!   (`{closure:App\Services\SiparisServisi::olustur():25}`). Öncesinde yığın izinden bulunur:
+//!   closure çoğu zaman tanımlandığı yerden bir fonksiyona verilir
+//!   (`DB::transaction(function () {...})`), o da closure'ı çağırır. Yığın izinde closure'dan
+//!   dışa doğru aynı dosyadaki ilk satır böylece onu tanımlayan fonksiyonun içindedir.
+//! - **En üst düzey.** Dahil edilen bir dosyanın (`routes/web.php`, `require(...)`) ya da
+//!   çalıştırılan betiğin (`{main}`) en üst düzeyindeki kod bir fonksiyonun içinde değildir:
+//!   konum satırla belirlenir.
+//! - **Çağrısız yığın izi.** JSON'un yığın izinde çağrılar yazılmaz; yığın izi kapalıysa
+//!   yalnızca fırlatıldığı yer bilinir. Aynı satır logun başka bir kaydının yığın izinde
+//!   geçiyorsa fonksiyon oradan öğrenilir (`MetotHaritasi`); geçmiyorsa konum satırla
+//!   belirlenir.
 //!
 //! Monolog'un JSON biçiminde istisna bağlamda bir nesnedir. Yığın izi (`trace`) yalnızca
 //! biçimlendiricide `includeStacktraces` açıksa yazılır; kapalıysa yalnızca fırlatıldığı yer
@@ -59,8 +89,10 @@
 //! time of 30 seconds exceeded`) ve yerleri rastgeledir: süre o an nerede dolduysa.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::iter;
 
 use crate::istisna_metni::IstisnaMetni;
@@ -87,6 +119,10 @@ const DERLENMIS_SABLON_KLASORLERI: [(&str, &str); 2] = [
 /// paketler ve Blade'in derlenmiş şablonları.
 const UYGULAMA_DISI: [&str; 2] = ["vendor/", "storage/framework/views/"];
 
+/// Yığın izinde bir dosyanın dahil edildiği çağrılar. Dahil edilen dosyanın en üst düzeyindeki
+/// kod bir fonksiyonun içinde değildir: yığın izinde bu çağrının içindeymiş gibi görünür.
+const DAHIL_ETMELER: [&str; 4] = ["require", "require_once", "include", "include_once"];
+
 /// Kök bilinmediğinde şablonun köke göre yolunu bulmak için aranan klasör ve ondan önceki
 /// ayraç. Laravel şablonları varsayılan olarak burada tutar.
 const SABLON_KLASORLERI: [(&str, &str); 2] =
@@ -104,11 +140,55 @@ struct Konum<'a> {
 }
 
 impl Konum<'_> {
-    fn sahiplen(&self) -> Yer {
+    /// Parmak izinin yeri. `metot`: yerin içinde bulunduğu fonksiyon, biliniyorsa.
+    fn sahiplen(&self, metot: Option<&str>, tur: KonumTuru) -> Yer {
+        let metot = match tur {
+            KonumTuru::Metot => metot.map(str::to_owned),
+            KonumTuru::Satir => None,
+        };
         Yer {
             dosya: ayraci_duzelt(&self.dosya).into_owned(),
-            satir: self.satir,
+            kimlik_satiri: if metot.is_some() { None } else { self.satir },
+            metot,
+            satir: Gosterilen(self.satir),
         }
+    }
+}
+
+/// Parmak izinin konumunun neyle belirlendiği (`--konum`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KonumTuru {
+    /// Dosya ve satırın içinde bulunduğu fonksiyon: satır numaraları değişse de aynı hata
+    /// aynı kalır. Fonksiyon bilinmiyorsa (JSON'un yığın izi) satır.
+    #[default]
+    Metot,
+    /// Dosya ve satır.
+    Satir,
+}
+
+impl KonumTuru {
+    /// Bütün türler; yardım metni ve hata mesajları bu listeden üretilir.
+    pub const HEPSI: [KonumTuru; 2] = [KonumTuru::Metot, KonumTuru::Satir];
+
+    /// Komut satırındaki adı.
+    pub fn ad(self) -> &'static str {
+        match self {
+            KonumTuru::Metot => "metot",
+            KonumTuru::Satir => "satir",
+        }
+    }
+
+    /// Yardım metnindeki açıklaması.
+    pub fn aciklama(self) -> &'static str {
+        match self {
+            KonumTuru::Metot => "dosya ve fonksiyon: satırlar kaysa da hata aynı kalır",
+            KonumTuru::Satir => "dosya ve satır",
+        }
+    }
+
+    /// Komut satırındaki adından: "satir" → KonumTuru::Satir
+    pub fn ayristir(ad: &str) -> Option<KonumTuru> {
+        KonumTuru::HEPSI.into_iter().find(|tur| tur.ad() == ad)
     }
 }
 
@@ -116,16 +196,46 @@ impl Konum<'_> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Yer {
     dosya: String,
-    satir: Option<u32>,
+    /// İçinde bulunduğu fonksiyon (`App\Services\SepetHesaplayici->toplam`); konum satırla
+    /// belirleniyorsa None.
+    metot: Option<String>,
+    /// Kimliğin parçası olan satır: konum satırla belirleniyorsa satır, fonksiyonla
+    /// belirleniyorsa None.
+    kimlik_satiri: Option<u32>,
+    /// Gösterilen satır. Fonksiyonla belirlenen bir konumda karşılaştırmaya katılmaz: aynı
+    /// fonksiyondaki iki satır aynı yerdir. Özette o konumdaki en yeni kaydınkidir.
+    satir: Gosterilen<Option<u32>>,
 }
 
+/// `app/Services/SepetHesaplayici.php:88, toplam()`
 impl fmt::Display for Yer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.satir {
-            Some(satir) => write!(f, "{}:{satir}", self.dosya),
-            None => write!(f, "{}", self.dosya),
+        write!(f, "{}", self.dosya)?;
+        if let Some(satir) = self.satir.0 {
+            write!(f, ":{satir}")?;
         }
+        if let Some(metot) = &self.metot {
+            write!(f, ", {}", kisa_metot(metot, &self.dosya))?;
+        }
+        Ok(())
     }
+}
+
+/// Yalnızca gösterilen bir değer: eşitliğe katılmaz, her değer her değere eşittir. Bir
+/// `HashMap` anahtarında ilk eklenen anahtarın değeri kalır.
+#[derive(Debug, Clone, Copy)]
+struct Gosterilen<T>(T);
+
+impl<T> PartialEq for Gosterilen<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for Gosterilen<T> {}
+
+impl<T> Hash for Gosterilen<T> {
+    fn hash<H: Hasher>(&self, _: &mut H) {}
 }
 
 /// Konum adayı: istisnanın fırlatıldığı yer ya da yığın izindeki bir satır.
@@ -134,6 +244,34 @@ struct Aday<'a> {
     konum: Konum<'a>,
     /// Satır isteği yalnızca bir sonraki adıma mı iletiyor (`return $next($request);`)?
     iletici: bool,
+    /// Satırın içinde bulunduğu fonksiyonun tam adı (`kapsayan`). Satır bir dosyanın en üst
+    /// düzeyindeyse ya da çağrılar bilinmiyorsa (JSON'un yığın izi) None.
+    metot: Option<Cow<'a, str>>,
+}
+
+/// Yığın izinin bir satırı: yeri (`[internal function]` ve `{main}` satırlarında dosya yok) ve
+/// o yerde çağrılan fonksiyon, logda yazıldığı gibi.
+#[derive(Debug, Clone, PartialEq)]
+struct Cerceve<'a> {
+    yer: Option<Konum<'a>>,
+    cagri: &'a str,
+}
+
+/// Yığın izindeki bir çağrının fonksiyonu, çözülmüş.
+#[derive(Debug, Clone, PartialEq)]
+enum Fonksiyon<'a> {
+    /// Adı olan bir fonksiyon ya da metot: `App\Services\Sepet->toplam`, `App\Models\Urun::bul`,
+    /// `App\yardimci`.
+    Adli(Cow<'a, str>),
+    /// Bir closure. `sinif`: bağlı olduğu sınıf ve ayraç (`App\Services\Siparis->`), yoksa
+    /// boş. `sahibi`: tanımlandığı fonksiyon, PHP 8.4'ün verdiği addan okunabildiyse.
+    Closure {
+        sinif: Cow<'a, str>,
+        sahibi: Option<Cow<'a, str>>,
+    },
+    /// Bir fonksiyon değil, bir dosyanın en üst düzeyi: `{main}` çalıştırılan betik,
+    /// `require(...)` ve benzerleri dahil edilen dosya.
+    EnUst,
 }
 
 /// Bir hatanın kimliği: hangi istisna, uygulama kodunun neresinde?
@@ -164,11 +302,37 @@ impl ParmakIzi {
     pub fn konum(&self) -> Option<(Cow<'_, str>, Option<u32>)> {
         self.konum
             .as_ref()
-            .map(|konum| (Cow::Borrowed(konum.dosya.as_str()), konum.satir))
+            .map(|konum| (Cow::Borrowed(konum.dosya.as_str()), konum.satir.0))
+    }
+
+    /// Konumun içinde bulunduğu fonksiyonun tam adı: `App\Services\SepetHesaplayici->toplam`,
+    /// `App\Services\SiparisServisi->{closure:olustur()}`. Konum satırla belirleniyorsa None.
+    pub fn metot(&self) -> Option<&str> {
+        self.konum.as_ref()?.metot.as_deref()
+    }
+
+    /// Konumun raporda gösterilen hali: `app/Services/SepetHesaplayici.php:88, toplam()`.
+    /// Hata tamamen vendor içindeyse None.
+    pub fn konum_metni(&self) -> Option<String> {
+        self.konum.as_ref().map(ToString::to_string)
+    }
+
+    /// Gösterilen satır: konum satırla belirleniyorsa kimliğin parçası, fonksiyonla
+    /// belirleniyorsa bir kaydın satırı.
+    pub fn gosterilen_satir(&self) -> Option<u32> {
+        self.konum.as_ref()?.satir.0
+    }
+
+    /// Aynı hatanın başka bir kaydının satırını gösterir: kimlik değişmez. Özet, bir konumda
+    /// en yeni kaydın satırını gösterir.
+    pub fn satiri_goster(&mut self, satir: Option<u32>) {
+        if let Some(konum) = &mut self.konum {
+            konum.satir = Gosterilen(satir);
+        }
     }
 }
 
-/// Raporda gösterilen hali: `app/Services/SepetHesaplayici.php:88 (ErrorException)`
+/// Raporda gösterilen hali: `app/Services/SepetHesaplayici.php:88, toplam() (ErrorException)`
 impl fmt::Display for ParmakIzi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.konum {
@@ -227,7 +391,7 @@ impl<'k> Istisna<'k> {
             } else if kirpilmis == "[stacktrace]" {
                 yigin_izinde = true;
             } else if yigin_izinde {
-                cerceveler.extend(cerceve_ayristir(kirpilmis, true));
+                cerceveler.extend(cerceve_ayristir(kirpilmis));
             } else {
                 // Kırpılmamış hali saklanır: " at /yol/Dosya.php:88)" satırındaki baştaki
                 // boşluk, " at " aramasının parçasıdır
@@ -237,10 +401,6 @@ impl<'k> Istisna<'k> {
 
         // 3. Adaylar içten dışa sıralı: önce istisnanın fırlatıldığı yer, sonra sırayla
         //    oraya giden çağrılar
-        let firlatildigi = firlatildigi_yer(baslik_sonu).map(|konum| Aday {
-            konum,
-            iletici: false,
-        });
         let sinif = metni_coz(sinif);
         // View hatasında şablon, mesajın son satırındadır; o da başlığın son satırıdır
         let sablon = sablon_yolu(baslik_sonu)
@@ -249,7 +409,7 @@ impl<'k> Istisna<'k> {
 
         Some(Istisna {
             sinif,
-            adaylar: firlatildigi.into_iter().chain(cerceveler).collect(),
+            adaylar: adaylari_kur(firlatildigi_yer(baslik_sonu), &cerceveler, true),
             sablon,
         })
     }
@@ -277,6 +437,7 @@ impl<'k> Istisna<'k> {
             .map(|konum| Aday {
                 konum,
                 iletici: false,
+                metot: None,
             })
             .collect();
         let sinif = metni_coz(sinif);
@@ -297,23 +458,21 @@ impl<'k> Istisna<'k> {
     /// PHP'nin istisna metni (`Log::error($e)`): kaçış yoktur, adlar ve yollar olduğu gibi
     /// alınır.
     fn php_metninden(metin: IstisnaMetni<'k>) -> Istisna<'k> {
-        let firlatildigi = Aday {
-            konum: Konum {
-                dosya: Cow::Borrowed(metin.dosya),
-                satir: Some(metin.satir),
-            },
-            iletici: false,
+        let firlatildigi = Konum {
+            dosya: Cow::Borrowed(metin.dosya),
+            satir: Some(metin.satir),
         };
-        let cerceveler = metin
+        let cerceveler: Vec<Cerceve<'k>> = metin
             .cerceveler
             .iter()
-            .filter_map(|satir| cerceve_ayristir(satir, false));
+            .filter_map(|satir| cerceve_ayristir(satir))
+            .collect();
         let sablon = sablon_yolu(metin.baslik_sonu)
             .filter(|_| view_hatasi_mi(metin.sinif))
             .map(Cow::Borrowed);
         Istisna {
             sinif: Cow::Borrowed(metin.sinif),
-            adaylar: iter::once(firlatildigi).chain(cerceveler).collect(),
+            adaylar: adaylari_kur(Some(firlatildigi), &cerceveler, false),
             sablon,
         }
     }
@@ -347,28 +506,35 @@ impl<'k> Istisna<'k> {
             .map(String::as_str)
     }
 
+    /// Kaydın proje kökü: kendi yollarında bulunan ya da yoksa `kokler`den biri (logun bütün
+    /// kayıtlarında bulunan kökler).
+    pub fn cozulmus_kok<'b>(&'b self, kokler: &'b BTreeSet<String>) -> Option<&'b str> {
+        self.kok().or_else(|| self.bilinen_kok(kokler))
+    }
+
     /// Parmak izi. `kokler`: logun bütün kayıtlarında bulunan kökler; kaydın kendi kökü
     /// yoksa denenir.
-    pub fn parmak_izi(&self, kokler: &BTreeSet<String>) -> ParmakIzi {
-        match self.kok() {
-            Some(kok) => self.koke_gore(Some(kok)),
-            None => self.koke_gore(self.bilinen_kok(kokler)),
-        }
+    pub fn parmak_izi(&self, kokler: &BTreeSet<String>, tur: KonumTuru) -> ParmakIzi {
+        self.koke_gore(self.cozulmus_kok(kokler), tur)
     }
 
     /// Verilen köke göre parmak izi. Kaydın kendi kökü varsa (`kok`) parmak izi başka
     /// kayıtlara bakmadan böyle bulunur.
-    pub fn koke_gore(&self, kok: Option<&str>) -> ParmakIzi {
+    pub fn koke_gore(&self, kok: Option<&str>, tur: KonumTuru) -> ParmakIzi {
         // View hatasında konum şablondur; şablon uygulamada değilse (bir paketin şablonu)
         // yığın izine bakılır
-        let konum = self
+        let sablon = self
             .sablon
             .as_deref()
-            .and_then(|sablon| sablon_konumu(sablon, kok))
-            .or_else(|| uygulamadaki_ilk(&self.adaylar, kok));
+            .and_then(|sablon| sablon_konumu(sablon, kok));
+        let konum = match sablon {
+            Some(sablon) => Some(sablon.sahiplen(None, tur)),
+            None => uygulamadaki_ilk(&self.adaylar, kok)
+                .map(|(konum, metot)| konum.sahiplen(metot, tur)),
+        };
         ParmakIzi {
             sinif: self.sinif.to_string(),
-            konum: konum.as_ref().map(Konum::sahiplen),
+            konum,
         }
     }
 
@@ -379,7 +545,12 @@ impl<'k> Istisna<'k> {
             adaylar: self
                 .adaylar
                 .iter()
-                .map(|aday| (aday.konum.dosya.to_string(), aday.konum.satir, aday.iletici))
+                .map(|aday| TaslakAdayi {
+                    dosya: aday.konum.dosya.to_string(),
+                    satir: aday.konum.satir,
+                    iletici: aday.iletici,
+                    metot: aday.metot.as_deref().map(str::to_owned),
+                })
                 .collect(),
             sablon: self.sablon.as_deref().map(str::to_owned),
         }
@@ -392,9 +563,18 @@ impl<'k> Istisna<'k> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IstisnaTaslagi {
     sinif: String,
-    /// Adaylar: dosya (çözülmüş), satır, iletici mi?
-    adaylar: Vec<(String, Option<u32>, bool)>,
+    adaylar: Vec<TaslakAdayi>,
     sablon: Option<String>,
+}
+
+/// Taslaktaki bir aday: `Aday`ın satırlardan bağımsız kopyası.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TaslakAdayi {
+    /// Çözülmüş haliyle
+    dosya: String,
+    satir: Option<u32>,
+    iletici: bool,
+    metot: Option<String>,
 }
 
 impl IstisnaTaslagi {
@@ -405,12 +585,13 @@ impl IstisnaTaslagi {
             adaylar: self
                 .adaylar
                 .iter()
-                .map(|(dosya, satir, iletici)| Aday {
+                .map(|aday| Aday {
                     konum: Konum {
-                        dosya: Cow::Borrowed(dosya),
-                        satir: *satir,
+                        dosya: Cow::Borrowed(&aday.dosya),
+                        satir: aday.satir,
                     },
-                    iletici: *iletici,
+                    iletici: aday.iletici,
+                    metot: aday.metot.as_deref().map(Cow::Borrowed),
                 })
                 .collect(),
             sablon: self.sablon.as_deref().map(Cow::Borrowed),
@@ -418,36 +599,142 @@ impl IstisnaTaslagi {
     }
 }
 
-/// Adaylardan uygulama kodundaki ilki. Köke göre yolu "vendor/" ya da
-/// "storage/framework/views/" ile başlamayan ve giriş noktası olmayan ilk aday; iletici
-/// satırlar atlanır. Kök varsa onun dışındaki yollar (`strip_prefix` None verir) de atlanır.
-fn uygulamadaki_ilk<'b>(adaylar: &'b [Aday<'_>], kok: Option<&str>) -> Option<Konum<'b>> {
+/// Yığın izlerinden öğrenilen: uygulama kodunun hangi satırı hangi fonksiyonun içinde.
+///
+/// JSON'un yığın izinde çağrılar yazılmaz; yığın izi kapalıysa yalnızca fırlatıldığı yer
+/// bilinir. Böyle bir kaydın konumu satırla belirlenir. Aynı satır logun başka bir kaydının
+/// yığın izinde geçiyorsa (log biçimi değiştirilmiş, bir kanal JSON yazıyor) fonksiyonu
+/// bilinir: konum fonksiyonla belirlenir, kayıt aynı hatanın metin biçimindeki kayıtlarıyla
+/// birleşir.
+///
+/// Log bir dağıtımı aşıyorsa bir satır, kod değiştiği için başka bir fonksiyona kaymış olabilir.
+/// İki farklı fonksiyonda görülen satır belirsizdir, kullanılmaz.
+#[derive(Debug, Clone, Default)]
+pub struct MetotHaritasi {
+    /// Dosya, parmak izindeki gibi köke göre ve ayracı `/` → satır → fonksiyonun tam adı;
+    /// satır belirsizse None.
+    dosyalar: HashMap<Box<str>, HashMap<u32, Option<Box<str>>>>,
+}
+
+impl MetotHaritasi {
+    /// İstisnanın yığın izinden öğrenir. `kok`: kaydın proje kökü.
+    pub fn ogren(&mut self, istisna: &Istisna<'_>, kok: Option<&str>) {
+        for aday in &istisna.adaylar {
+            let (Some(metot), Some(satir)) = (aday.metot.as_deref(), aday.konum.satir) else {
+                continue;
+            };
+            let Some(dosya) = uygulama_yolu(&aday.konum.dosya, kok) else {
+                continue;
+            };
+            let dosya = ayraci_duzelt(dosya);
+            // Dosya çoğu zaman bilinir: tek arama
+            match self.dosyalar.get_mut(&*dosya) {
+                Some(satirlar) => satira_yaz(satirlar, satir, metot),
+                None => {
+                    let mut satirlar = HashMap::new();
+                    satira_yaz(&mut satirlar, satir, metot);
+                    self.dosyalar.insert(Box::from(&*dosya), satirlar);
+                }
+            }
+        }
+    }
+
+    /// Satırın içinde bulunduğu fonksiyon; bilinmiyorsa ya da belirsizse None.
+    fn bul(&self, dosya: &str, satir: u32) -> Option<&str> {
+        self.dosyalar.get(dosya)?.get(&satir)?.as_deref()
+    }
+
+    /// Parmak izinin konumu satırla belirlenmişse ve satırın fonksiyonu biliniyorsa konumu
+    /// fonksiyonla belirler. Fonksiyonla belirlenmiş konumlar ve şablonlar (satırları yok)
+    /// değişmez.
+    pub fn tamamla(&self, iz: &mut ParmakIzi) {
+        let Some(konum) = &mut iz.konum else { return };
+        let (None, Some(satir)) = (&konum.metot, konum.kimlik_satiri) else {
+            return;
+        };
+        if let Some(metot) = self.bul(&konum.dosya, satir) {
+            konum.metot = Some(metot.to_owned());
+            konum.kimlik_satiri = None;
+        }
+    }
+}
+
+/// Satırın fonksiyonunu dosyanın satırlarına yazar. Satır başka bir fonksiyonda görülmüşse
+/// belirsizdir: None.
+fn satira_yaz(satirlar: &mut HashMap<u32, Option<Box<str>>>, satir: u32, metot: &str) {
+    match satirlar.entry(satir) {
+        Entry::Vacant(bos) => {
+            bos.insert(Some(Box::from(metot)));
+        }
+        Entry::Occupied(mut dolu) => {
+            if dolu
+                .get()
+                .as_deref()
+                .is_some_and(|bilinen| bilinen != metot)
+            {
+                dolu.insert(None);
+            }
+        }
+    }
+}
+
+/// Adaylardan uygulama kodundaki ilki ve içinde bulunduğu fonksiyon; iletici satırlar atlanır.
+fn uygulamadaki_ilk<'b>(
+    adaylar: &'b [Aday<'_>],
+    kok: Option<&str>,
+) -> Option<(Konum<'b>, Option<&'b str>)> {
     adaylar
         .iter()
         .filter(|aday| !aday.iletici)
         .find_map(|aday| {
-            let dosya = match kok {
-                Some(kok) => aday.konum.dosya.strip_prefix(kok)?,
-                None => &aday.konum.dosya,
-            };
-            let yol = ayraci_duzelt(dosya);
-            let uygulamada = !UYGULAMA_DISI.iter().any(|klasor| yol.starts_with(klasor))
-                && !GIRIS_NOKTALARI.contains(&&*yol);
-            uygulamada.then_some(Konum {
-                dosya: Cow::Borrowed(dosya),
+            let konum = Konum {
+                dosya: Cow::Borrowed(uygulama_yolu(&aday.konum.dosya, kok)?),
                 satir: aday.konum.satir,
-            })
+            };
+            Some((konum, aday.metot.as_deref()))
         })
+}
+
+/// Yol uygulama kodundaysa köke göre hali, ayraçları logdaki gibi. Köke göre yolu "vendor/"
+/// ya da "storage/framework/views/" ile başlayan dosyalar ve giriş noktaları uygulama kodu
+/// değildir. Kök verildiyse onun dışındaki yollar (`strip_prefix` None verir) da değildir.
+fn uygulama_yolu<'b>(dosya: &'b str, kok: Option<&str>) -> Option<&'b str> {
+    let dosya = match kok {
+        Some(kok) => dosya.strip_prefix(kok)?,
+        None => dosya,
+    };
+    let yol = ayraci_duzelt(dosya);
+    let uygulamada = !UYGULAMA_DISI.iter().any(|klasor| yol.starts_with(klasor))
+        && !GIRIS_NOKTALARI.contains(&&*yol);
+    uygulamada.then_some(dosya)
+}
+
+/// Yolun vendor klasöründen önceki kısmı, sonundaki ayraçla:
+/// `/var/www/magaza/vendor/laravel/...` → `/var/www/magaza/`. Yol köke göre yazılmışsa
+/// (`vendor/laravel/...`) boş. Yolda vendor yoksa None.
+fn vendor_oneki(dosya: &str) -> Option<&str> {
+    if dosya.starts_with("vendor/") || dosya.starts_with("vendor\\") {
+        return Some("");
+    }
+    klasorden_kok(dosya, &VENDOR_KLASORLERI)
+}
+
+/// Yol bir vendor klasöründe mi? Proje kökü bilinmeden de söylenebilir: yolda `/vendor/`
+/// geçer ya da yol köke göre yazılmışsa (`vendor/laravel/...`) onunla başlar. Vendor'daki bir
+/// yer parmak izinin konumu olamaz; içinde bulunduğu fonksiyon da aranmaz.
+fn vendor_yolu_mu(dosya: &str) -> bool {
+    VENDOR_KLASORLERI
+        .iter()
+        .any(|(_, vendor)| dosya.contains(vendor))
+        || dosya.starts_with("vendor/")
+        || dosya.starts_with("vendor\\")
 }
 
 /// Şablonun köke göre yolu, satırsız. Kök bilinmiyorsa şablon klasöründen (`resources/views`)
 /// bulunur; o da yoksa yol olduğu gibi kalır. Şablon bir vendor klasöründeyse (bir paketin
 /// şablonu) uygulama kodu değildir: None.
 fn sablon_konumu<'b>(sablon: &'b str, kok: Option<&str>) -> Option<Konum<'b>> {
-    if VENDOR_KLASORLERI
-        .iter()
-        .any(|(_, vendor)| sablon.contains(vendor))
-    {
+    if vendor_yolu_mu(sablon) {
         return None;
     }
     let dosya = match kok {
@@ -513,27 +800,302 @@ fn firlatildigi_yer(satir: &str) -> Option<Konum<'_>> {
     })
 }
 
-/// Yığın izindeki bir çerçeveyi ayrıştırır:
-/// `#2 /yol/SepetController.php(41): App\\...->toplam(...)` → `/yol/SepetController.php`, 41
-///
-/// `kacisli`: satır bağlamın JSON'unda mı yazıldı (Laravel'in `[stacktrace]`'i)? Öyleyse
-/// yol çözülür; PHP'nin istisna metninde olduğu gibi alınır. Dosyası olmayan çerçeveler
-/// (`#5 [internal function]: ...`, `#9 {main}`) için None.
-fn cerceve_ayristir(satir: &str, kacisli: bool) -> Option<Aday<'_>> {
+/// Yığın izindeki bir satırı ayrıştırır:
+/// `#2 /yol/SepetController.php(41): App\\...->toplam(...)` → yer `/yol/SepetController.php:41`,
+/// çağrı `App\\...->toplam(...)`. Dosyası olmayan çerçevelerin (`#5 [internal function]: ...`,
+/// `#9 {main}`) yalnızca çağrısı vardır. Yol logdaki gibidir; çözülmesi `adaylari_kur`un
+/// işidir.
+fn cerceve_ayristir(satir: &str) -> Option<Cerceve<'_>> {
     let (_, geri) = satir.strip_prefix('#')?.split_once(' ')?; // "/yol/X.php(41): ..."
+    if let Some(cagri) = geri.strip_prefix("[internal function]: ") {
+        return Some(Cerceve { yer: None, cagri });
+    }
+    // Son satırın arkasında bağlam olabilir: `#3 {main} {"kullanici":5}`
+    if geri.starts_with("{main}") {
+        return Some(Cerceve {
+            yer: None,
+            cagri: "{main}",
+        });
+    }
     let (yer, cagri) = geri.split_once("): ")?; // "/yol/X.php(41" ve "App\\...->toplam(...)"
     let (dosya, satir_no) = yer.rsplit_once('(')?; // "/yol/X.php" ve "41"
-    Some(Aday {
-        konum: Konum {
-            dosya: if kacisli {
-                metni_coz(dosya)
-            } else {
-                Cow::Borrowed(dosya)
-            },
+    Some(Cerceve {
+        yer: Some(Konum {
+            dosya: Cow::Borrowed(dosya),
             satir: Some(satir_no.parse().ok()?),
-        },
-        iletici: iletici_mi(cagri),
+        }),
+        cagri,
     })
+}
+
+/// Fırlatıldığı yerden ve yığın izinin satırlarından konum adayları, içten dışa.
+///
+/// Bir yerin içinde bulunduğu fonksiyon, yığın izinde o yerden sonraki çerçevenin çağrısıdır
+/// (`kapsayan`). Fırlatıldığı yer çoğu zaman yığın izinde yoktur; o zaman ilk çerçevenin
+/// çağrısıdır. PHP'nin bir uyarısından doğan `ErrorException`'da ise yer bir çerçevenin yeridir
+/// (hata işleyicisi oradan çağrılmış gibi görünür): fonksiyonu da o çerçeveninkidir.
+///
+/// Fonksiyonlar dıştan içe bulunur: bir closure'ın sahibi daha dıştaki bir çerçeveden
+/// öğrenilir. Vendor'daki çerçevelerin fonksiyonu aranmaz; vendor'daki bir yer konum olamaz.
+///
+/// `kacisli`: satırlar bağlamın JSON'unda mı yazıldı (Laravel'in `[stacktrace]`'i)? Öyleyse
+/// yollar ve fonksiyon adları çözülür; PHP'nin istisna metninde olduğu gibi alınır.
+/// Fırlatıldığı yer zaten çözülmüş gelir.
+fn adaylari_kur<'k>(
+    firlatildigi: Option<Konum<'k>>,
+    cerceveler: &[Cerceve<'k>],
+    kacisli: bool,
+) -> Vec<Aday<'k>> {
+    let yerler: Vec<Option<Konum<'k>>> = cerceveler
+        .iter()
+        .map(|cerceve| {
+            cerceve.yer.as_ref().map(|yer| Konum {
+                dosya: match &yer.dosya {
+                    Cow::Borrowed(dosya) => cozulmus(dosya, kacisli),
+                    dosya => dosya.clone(),
+                },
+                satir: yer.satir,
+            })
+        })
+        .collect();
+
+    // Vendor'daki çerçevelerin fonksiyonu aranmaz. Yolların çoğu aynı kökten başlar: kök bir kez
+    // bulunur ve yollar önce onunla karşılaştırılır; her yolda alt dizgi aranmaz.
+    let onek = yerler
+        .iter()
+        .flatten()
+        .find_map(|yer| vendor_oneki(&yer.dosya));
+    let vendorda = |dosya: &str| match onek {
+        Some(onek) if dosya.starts_with(onek) => {
+            let kalan = &dosya[onek.len()..];
+            kalan.starts_with("vendor/") || kalan.starts_with("vendor\\")
+        }
+        _ => vendor_yolu_mu(dosya),
+    };
+
+    // `icinde[i]`: i. çerçevenin yerinin içinde bulunduğu fonksiyon
+    let mut icinde: Vec<Option<Cow<'k, str>>> = vec![None; cerceveler.len()];
+    // Dosya → o dosyadaki çerçevelerden şimdiye kadar bakılanların en içteki. Dıştan içe
+    // gidildiği için bir çerçeveye gelindiğinde, aynı dosyada dışa doğru ilk çerçevedir.
+    let mut disaridaki: Vec<(&str, usize)> = Vec::new();
+    for (sira, yer) in yerler.iter().enumerate().rev() {
+        let Some(yer) = yer else { continue };
+        if vendorda(&yer.dosya) {
+            continue;
+        }
+        let onceki = disaridaki.iter().position(|&(dosya, _)| dosya == yer.dosya);
+        // Dıştaki çerçevelerin fonksiyonları bulundu; `dis` (sira + 1). çerçeveden başlar
+        let (ic, dis) = icinde.split_at_mut(sira + 1);
+        let sahibi = onceki.and_then(|no| dis[disaridaki[no].1 - sira - 1].as_deref());
+        ic[sira] = kapsayan(cerceveler.get(sira + 1), sahibi, kacisli);
+        match onceki {
+            Some(no) => disaridaki[no].1 = sira,
+            None => disaridaki.push((&yer.dosya, sira)),
+        }
+    }
+
+    let mut adaylar = Vec::with_capacity(yerler.len() + 1);
+    if let Some(konum) = firlatildigi {
+        let metot = if vendorda(&konum.dosya) {
+            None
+        } else {
+            match yerler.iter().position(|yer| yer.as_ref() == Some(&konum)) {
+                Some(sira) => icinde[sira].clone(),
+                None => {
+                    let sahibi = yerler
+                        .iter()
+                        .position(|yer| yer.as_ref().is_some_and(|yer| yer.dosya == konum.dosya))
+                        .and_then(|sira| icinde[sira].as_deref());
+                    kapsayan(cerceveler.first(), sahibi, kacisli)
+                }
+            }
+        };
+        adaylar.push(Aday {
+            konum,
+            iletici: false,
+            metot,
+        });
+    }
+    for ((cerceve, yer), metot) in cerceveler.iter().zip(yerler).zip(icinde) {
+        if let Some(konum) = yer {
+            adaylar.push(Aday {
+                konum,
+                iletici: iletici_mi(cerceve.cagri),
+                metot,
+            });
+        }
+    }
+    adaylar
+}
+
+/// Logda yazıldığı gibi bir ad ya da yol, çözülmüş. `kacisli`: bağlamın JSON'unda mı yazıldı?
+fn cozulmus(metin: &str, kacisli: bool) -> Cow<'_, str> {
+    if kacisli {
+        metni_coz(metin)
+    } else {
+        Cow::Borrowed(metin)
+    }
+}
+
+/// Bir yerin içinde bulunduğu fonksiyonun tam adı. `cagiran`: yığın izinde yerden sonraki
+/// çerçeve; onun çağrısı yerin içinde bulunduğu fonksiyondur. Yer bir dosyanın en üst
+/// düzeyindeyse ya da yığın izi orada bittiyse None.
+///
+/// Fonksiyon bir closure'sa adına sahibi de katılır. PHP 8.4'te sahibi closure'ın adındadır;
+/// öncesinde `disaridaki`dir: aynı dosyada, yığın izinde dışa doğru ilk çerçevenin içinde
+/// bulunduğu fonksiyon.
+fn kapsayan<'k>(
+    cagiran: Option<&Cerceve<'k>>,
+    disaridaki: Option<&str>,
+    kacisli: bool,
+) -> Option<Cow<'k, str>> {
+    match fonksiyon(cagiran?.cagri, kacisli)? {
+        Fonksiyon::Adli(ad) => Some(ad),
+        Fonksiyon::EnUst => None,
+        Fonksiyon::Closure { sinif, sahibi } => {
+            let sahibi = sahibi.as_deref().or_else(|| disaridaki.and_then(sahip_adi));
+            Some(Cow::Owned(closure_adi(&sinif, sahibi)))
+        }
+    }
+}
+
+/// Bir çağrının fonksiyonu; argümanlar atılır.
+///
+/// - `App\Services\Sepet->toplam(Object(...))` → `App\Services\Sepet->toplam`
+/// - `App\Services\Siparis->App\Services\{closure}(...)` (PHP 8.3) ve
+///   `App\Services\Siparis->{closure:App\Services\Siparis::olustur():25}(...)` (PHP 8.4):
+///   sınıfı `App\Services\Siparis->` olan bir closure; 8.4'te sahibi de bilinir: `olustur`
+/// - `{main}`, `require('/var/www/...')` → en üst düzey
+///
+/// Ad, süslü parantezlerin dışındaki ilk `(`'e kadardır: PHP 8.4'te closure'ın adı parantez
+/// içerir. `kacisli`: çağrı bağlamın JSON'unda yazıldıysa ters bölüler çözülür.
+fn fonksiyon(cagri: &str, kacisli: bool) -> Option<Fonksiyon<'_>> {
+    let son = parantez_disinda(cagri, |kalan| kalan.starts_with('(')).unwrap_or(cagri.len());
+    let ad = cagri[..son].trim();
+    if ad.is_empty() {
+        return None;
+    }
+    if ad == "{main}" || DAHIL_ETMELER.contains(&ad) {
+        return Some(Fonksiyon::EnUst);
+    }
+    // Sınıf ile üyeyi ayıran `->` ya da `::`, süslü parantezlerin dışında
+    let ayrac = parantez_disinda(ad, |kalan| {
+        kalan.starts_with("->") || kalan.starts_with("::")
+    });
+    let (sinif, uye) = match ayrac {
+        Some(konum) => ad.split_at(konum + 2),
+        None => ("", ad),
+    };
+    Some(match closure_konumu(uye) {
+        Some(konum) => Fonksiyon::Closure {
+            sinif: cozulmus(sinif, kacisli),
+            sahibi: closure_sahibi(&uye[konum..]).map(|sahibi| cozulmus(sahibi, kacisli)),
+        },
+        None => Fonksiyon::Adli(cozulmus(ad, kacisli)),
+    })
+}
+
+/// PHP 8.4'ün closure adından closure'ın tanımlandığı fonksiyon:
+/// `{closure:App\X::olustur():25}` → `olustur`, `{closure:App\yardimci():5}` → `App\yardimci`.
+/// İç içe closure'da dıştakinin sahibi: `{closure:{closure:App\X::olustur():25}:26}` →
+/// `olustur`. Closure bir dosyanın en üst düzeyinde tanımlandıysa
+/// (`{closure:/var/www/magaza/routes/web.php:21}`) ya da ad PHP 8.4'ten eskiyse
+/// (`App\Services\{closure}`) None.
+fn closure_sahibi(uye: &str) -> Option<&str> {
+    let ic = uye.strip_prefix("{closure:")?.strip_suffix('}')?; // "App\X::olustur():25"
+    let (sahibi, satir) = ic.rsplit_once(':')?; // "App\X::olustur()" ve "25"
+    if satir.is_empty() || !satir.bytes().all(|bayt| bayt.is_ascii_digit()) {
+        return None;
+    }
+    if let Some(konum) = closure_konumu(sahibi) {
+        let distaki = &sahibi[konum..];
+        return closure_sahibi(distaki.strip_suffix("()").unwrap_or(distaki));
+    }
+    // En üst düzeydeki closure'da sahibin yerinde dosyanın yolu vardır, "()" yoktur
+    Some(uye_adi(sahibi.strip_suffix("()")?))
+}
+
+/// Bir closure'ın sahibi olarak, closure'ı tanımlayan satırın içinde bulunduğu fonksiyonun
+/// adı: `App\X->olustur` → `olustur`. O da bir closure'sa onun sahibi:
+/// `App\X->{closure:olustur()}` → `olustur`; sahibi bilinmeyen bir closure'da None.
+fn sahip_adi(ad: &str) -> Option<&str> {
+    match closure_konumu(ad) {
+        Some(konum) => ad[konum..].strip_prefix("{closure:")?.strip_suffix("()}"),
+        None => Some(uye_adi(ad)),
+    }
+}
+
+/// Tam addaki üyenin adı: `App\X->olustur` → `olustur`, `App\X::bul` → `bul`. Sınıfsız bir
+/// fonksiyonda adın tamamı: `App\yardimci`.
+fn uye_adi(ad: &str) -> &str {
+    ["->", "::"]
+        .into_iter()
+        .filter_map(|ayrac| ad.rfind(ayrac).map(|konum| konum + ayrac.len()))
+        .max()
+        .map_or(ad, |konum| &ad[konum..])
+}
+
+/// Metinde `{closure`'ın başladığı yer. Önce `{` karakteri aranır: alt dizgi aramaktan ucuzdur
+/// ve yığın izinin uygulama satırlarının her birinde çağrılır.
+fn closure_konumu(metin: &str) -> Option<usize> {
+    metin
+        .match_indices('{')
+        .map(|(konum, _)| konum)
+        .find(|&konum| metin[konum..].starts_with("{closure"))
+}
+
+/// Closure'ın tam adı: `App\X->{closure:olustur()}`; sahibi bilinmiyorsa `App\X->{closure}`.
+/// `sinif`: bağlı olduğu sınıf ve ayraç (`App\X->`), yoksa boş.
+fn closure_adi(sinif: &str, sahibi: Option<&str>) -> String {
+    match sahibi {
+        Some(sahibi) => format!("{sinif}{{closure:{sahibi}()}}"),
+        None => format!("{sinif}{{closure}}"),
+    }
+}
+
+/// Metinde süslü parantezlerin dışında, `kosul`un sağlandığı ilk konum. `kosul` o konumdan
+/// başlayan kalan metne bakar.
+fn parantez_disinda(metin: &str, kosul: impl Fn(&str) -> bool) -> Option<usize> {
+    let mut derinlik = 0usize;
+    for (konum, harf) in metin.char_indices() {
+        match harf {
+            '{' => derinlik += 1,
+            '}' => derinlik = derinlik.saturating_sub(1),
+            _ if derinlik == 0 && kosul(&metin[konum..]) => return Some(konum),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Fonksiyonun raporda gösterilen kısa adı. Sınıfın adı dosyanın adıyla aynıysa (PSR-4:
+/// `SepetHesaplayici.php`'de `SepetHesaplayici`) yalnızca metot: `toplam()`; değilse kısa sınıf
+/// adıyla: `Odeme->al()`, `Urun::bul()`. Anonim sınıfın (migration'lar) adı bir şey söylemez:
+/// `up()`. Closure'lar sınıfsız yazılır, `routes/web.php`'dekilerin sınıfı Laravel'in kendi
+/// sınıfıdır: `{closure:olustur()}`, `{closure}`.
+fn kisa_metot(metot: &str, dosya: &str) -> String {
+    if let Some(konum) = closure_konumu(metot) {
+        return metot[konum..].to_string();
+    }
+    let dosya_adi = dosya.rsplit('/').next().unwrap_or(dosya);
+    let dosya_koku = dosya_adi.split('.').next().unwrap_or(dosya_adi);
+    let ayrac = ["->", "::"]
+        .into_iter()
+        .filter_map(|ayrac| metot.rfind(ayrac).map(|konum| (konum, ayrac)))
+        .max();
+    match ayrac {
+        Some((konum, ayrac)) => {
+            let sinif = kisa_ad(&metot[..konum]);
+            let ad = &metot[konum + ayrac.len()..];
+            if sinif == dosya_koku || sinif.ends_with("@anonymous") {
+                format!("{ad}()")
+            } else {
+                format!("{sinif}{ayrac}{ad}()")
+            }
+        }
+        // Bir fonksiyon: ad alanı atılır
+        None => format!("{}()", kisa_ad(metot)),
+    }
 }
 
 /// Çağrı, Laravel'in Pipeline'ında bir sonraki adım mı? Middleware'deki `$next($request)`
@@ -628,17 +1190,36 @@ mod testler {
         }
     }
 
-    /// Metindeki kayıtların parmak izleri, kayıtlarla aynı sırada.
+    /// Metindeki kayıtların parmak izleri, kayıtlarla aynı sırada. Konum fonksiyonla
+    /// belirlenir; çağrıları bilinmeyen kayıtlar da özetteki gibi bütün yığın izlerinden
+    /// öğrenilenle tamamlanır.
     fn izler(metin: &str) -> Vec<Option<ParmakIzi>> {
+        izler_turle(metin, KonumTuru::Metot)
+    }
+
+    /// Metindeki kayıtların parmak izleri, konum verilen türle belirlenerek.
+    fn izler_turle(metin: &str, tur: KonumTuru) -> Vec<Option<ParmakIzi>> {
         let mut toplayan = Toplayan::default();
         okuyucu::oku(metin.as_bytes(), &SatirBicimi::default(), &mut toplayan).unwrap();
-        toplayan
+        let istisnalar: Vec<Option<Istisna<'_>>> = toplayan
             .taslaklar
             .iter()
-            .map(|taslak| {
-                taslak
-                    .as_ref()
-                    .map(|taslak| taslak.istisna().parmak_izi(&toplayan.kokler))
+            .map(|taslak| taslak.as_ref().map(IstisnaTaslagi::istisna))
+            .collect();
+        let mut harita = MetotHaritasi::default();
+        for istisna in istisnalar.iter().flatten() {
+            harita.ogren(istisna, istisna.cozulmus_kok(&toplayan.kokler));
+        }
+        istisnalar
+            .iter()
+            .map(|istisna| {
+                istisna.as_ref().map(|istisna| {
+                    let mut iz = istisna.parmak_izi(&toplayan.kokler, tur);
+                    if tur == KonumTuru::Metot {
+                        harita.tamamla(&mut iz);
+                    }
+                    iz
+                })
             })
             .collect()
     }
@@ -648,14 +1229,9 @@ mod testler {
         izler(metin).into_iter().next().flatten()
     }
 
-    /// Testlerde parmak izini kısaca yazmak için: (kısa sınıf, "dosya:satır")
+    /// Testlerde parmak izini kısaca yazmak için: (kısa sınıf, "dosya:satır, metot()")
     fn ozet(iz: &Option<ParmakIzi>) -> Option<(&str, Option<String>)> {
-        iz.as_ref().map(|iz| {
-            (
-                iz.kisa_sinif(),
-                iz.konum.as_ref().map(|konum| konum.to_string()),
-            )
-        })
+        iz.as_ref().map(|iz| (iz.kisa_sinif(), iz.konum_metni()))
     }
 
     const UYGULAMADA_FIRLATILAN: &str = r#"[2026-10-24 15:02:11] production.ERROR: Undefined array key "kargo_ucreti" {"userId":2210,"exception":"[object] (ErrorException(code: 0): Undefined array key \"kargo_ucreti\" at /var/www/magaza/app/Services/SepetHesaplayici.php:88)
@@ -671,8 +1247,9 @@ mod testler {
 #0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php(779): Illuminate\\Database\\Connection->runQueryCallback('insert into `ku...', Array, Object(Closure))
 #1 [internal function]: Illuminate\\Database\\Connection->insert('insert into `ku...', Array)
 #2 /var/www/magaza/app/Http/Controllers/KayitController.php(38): Illuminate\\Database\\Eloquent\\Model->save()
-#3 /var/www/magaza/public/index.php(17): Illuminate\\Foundation\\Application->handleRequest(Object(Illuminate\\Http\\Request))
-#4 {main}
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\KayitController->store(Object(Illuminate\\Http\\Request))
+#4 /var/www/magaza/public/index.php(17): Illuminate\\Foundation\\Application->handleRequest(Object(Illuminate\\Http\\Request))
+#5 {main}
 "} "#;
 
     #[test]
@@ -691,7 +1268,7 @@ mod testler {
             ozet(&iz(UYGULAMADA_FIRLATILAN)),
             Some((
                 "ErrorException",
-                Some("app/Services/SepetHesaplayici.php:88".to_string())
+                Some("app/Services/SepetHesaplayici.php:88, toplam()".to_string())
             ))
         );
     }
@@ -702,7 +1279,7 @@ mod testler {
             ozet(&iz(VENDORDA_FIRLATILAN)),
             Some((
                 "UniqueConstraintViolationException",
-                Some("app/Http/Controllers/KayitController.php:38".to_string())
+                Some("app/Http/Controllers/KayitController.php:38, store()".to_string())
             ))
         );
     }
@@ -768,7 +1345,7 @@ mod testler {
             ozet(&iz(metin)),
             Some((
                 "OdemeHatasi",
-                Some("app/Services/OdemeServisi.php:80".to_string())
+                Some("app/Services/OdemeServisi.php:80, tahsilEt()".to_string())
             ))
         );
     }
@@ -793,7 +1370,7 @@ mod testler {
             ozet(&iz(&metin)),
             Some((
                 "UniqueConstraintViolationException",
-                Some("app/Http/Controllers/KayitController.php:38".to_string())
+                Some("app/Http/Controllers/KayitController.php:38, store()".to_string())
             ))
         );
     }
@@ -813,36 +1390,60 @@ mod testler {
     }
 
     #[test]
-    fn cerceveler_dosya_ve_satira_ayrilir() {
+    fn cerceveler_yer_ve_cagriya_ayrilir() {
         assert_eq!(
-            cerceve_ayristir(
-                "#2 /var/www/app/Kod.php(41): App\\Sinif->metot('a): b')",
-                true
-            ),
-            Some(Aday {
-                konum: Konum {
+            cerceve_ayristir("#2 /var/www/app/Kod.php(41): App\\Sinif->metot('a): b')"),
+            Some(Cerceve {
+                yer: Some(Konum {
                     dosya: Cow::Borrowed("/var/www/app/Kod.php"),
                     satir: Some(41)
-                },
-                iletici: false
+                }),
+                cagri: "App\\Sinif->metot('a): b')",
             })
         );
+        // Dosyası olmayan çerçevelerin yalnızca çağrısı var; son satırın arkasında bağlam
+        // olabilir
         assert_eq!(
-            cerceve_ayristir("#1 [internal function]: App\\Sinif->metot()", true),
-            None
+            cerceve_ayristir("#1 [internal function]: App\\Sinif->metot()"),
+            Some(Cerceve {
+                yer: None,
+                cagri: "App\\Sinif->metot()"
+            })
         );
-        assert_eq!(cerceve_ayristir("#9 {main}", true), None);
-        assert_eq!(cerceve_ayristir("\"} ", true), None);
-        // Bağlamın JSON'undaki yol çözülür; PHP'nin istisna metnindeki olduğu gibi kalır
+        for satir in ["#9 {main}", r#"#3 {main} {"kullanici":5}"#] {
+            assert_eq!(
+                cerceve_ayristir(satir),
+                Some(Cerceve {
+                    yer: None,
+                    cagri: "{main}"
+                }),
+                "{satir}"
+            );
+        }
+        assert_eq!(cerceve_ayristir("\"} "), None);
+        assert_eq!(cerceve_ayristir("#2 /var/www/app/Kod.php(x): a()"), None);
+        assert_eq!(cerceve_ayristir("#2 /var/www/app/Kod.php: a()"), None);
+
+        // Yol logdaki gibi okunur; bağlamın JSON'undaysa adaylar kurulurken çözülür, PHP'nin
+        // istisna metnindeyse olduğu gibi kalır
         let kacisli = r"#0 C:\\Program Files (x86)\\magaza\\app\\A.php(7): App\\A->b()";
+        let cerceve = cerceve_ayristir(kacisli).unwrap();
         assert_eq!(
-            cerceve_ayristir(kacisli, true).unwrap().konum.dosya,
+            cerceve.yer.as_ref().unwrap().dosya,
+            r"C:\\Program Files (x86)\\magaza\\app\\A.php"
+        );
+        let adaylar = adaylari_kur(None, &[cerceve], true);
+        assert_eq!(
+            adaylar[0].konum.dosya,
             r"C:\Program Files (x86)\magaza\app\A.php"
         );
         let ham = r"#0 C:\Program Files (x86)\magaza\app\A.php(7): App\A->b()";
-        let aday = cerceve_ayristir(ham, false).unwrap();
-        assert_eq!(aday.konum.dosya, r"C:\Program Files (x86)\magaza\app\A.php");
-        assert!(matches!(aday.konum.dosya, Cow::Borrowed(_)));
+        let adaylar = adaylari_kur(None, &[cerceve_ayristir(ham).unwrap()], false);
+        assert_eq!(
+            adaylar[0].konum.dosya,
+            r"C:\Program Files (x86)\magaza\app\A.php"
+        );
+        assert!(matches!(adaylar[0].konum.dosya, Cow::Borrowed(_)));
     }
 
     #[test]
@@ -889,7 +1490,7 @@ mod testler {
         let parmak_izi = iz(WINDOWS_MIGRATION).unwrap();
         assert_eq!(
             parmak_izi.to_string(),
-            "database/migrations/2026_10_20_083604_create_urunler_table.php:11 (QueryException)"
+            "database/migrations/2026_10_20_083604_create_urunler_table.php:11, up() (QueryException)"
         );
         // Konum çözülmüş ve ayracı `/` olarak tutulur
         assert_eq!(
@@ -947,7 +1548,8 @@ mod testler {
         ));
         // JSON kaçışları okunurken çözülür: `\u00dc` Ü'dür
         assert_eq!(
-            json_yeri(r"C:\\app\\\u00dcr\u00fcn.php:3").map(|konum| konum.sahiplen().to_string()),
+            json_yeri(r"C:\\app\\\u00dcr\u00fcn.php:3")
+                .map(|konum| konum.sahiplen(None, KonumTuru::Metot).to_string()),
             Some("C:/app/Ürün.php:3".to_string())
         );
     }
@@ -1061,7 +1663,7 @@ mod testler {
             ozet(&iz(&kendi_hatasi)),
             Some((
                 "Error",
-                Some("app/Http/Middleware/YoneticiMi.php:13".to_string())
+                Some("app/Http/Middleware/YoneticiMi.php:13, handle()".to_string())
             ))
         );
     }
@@ -1211,7 +1813,7 @@ mod testler {
         };
         let beklenen = [
             "resources/views/vitrin.blade.php (ViewException)",
-            "app/Support/Fiyat.php:14 (RuntimeException)",
+            "app/Support/Fiyat.php:14, bul() (RuntimeException)",
         ];
         let izler = |metin: &str| -> Vec<String> {
             izler(metin)
@@ -1358,6 +1960,7 @@ mod testler {
                     satir: Some(3),
                 },
                 iletici: false,
+                metot: None,
             }],
             sablon: None,
         };
@@ -1380,6 +1983,7 @@ mod testler {
                         satir: Some(1),
                     },
                     iletici: false,
+                    metot: None,
                 },
                 Aday {
                     konum: Konum {
@@ -1387,6 +1991,7 @@ mod testler {
                         satir: Some(2),
                     },
                     iletici: false,
+                    metot: None,
                 },
             ],
             ..istisna
@@ -1432,7 +2037,7 @@ Stack trace:
 #2 {main}  ";
         assert_eq!(
             iz(rota).map(|iz| iz.to_string()),
-            Some("routes/web.php:24 (RuntimeException)".to_string())
+            Some("routes/web.php:24, {closure} (RuntimeException)".to_string())
         );
         // Yığın izindeki yollar da: istisna vendor'da fırlatıldı, uygulama kodu bir çerçevede
         let cercevede = r"[2026-10-25 17:38:17] local.ERROR: Illuminate\Database\QueryException: x in C:\Users\İrem\Herd\magaza\vendor\laravel\framework\src\Illuminate\Database\Connection.php:825
@@ -1492,7 +2097,422 @@ Stack trace:
         let parmak_izi = iz(UYGULAMADA_FIRLATILAN).unwrap();
         assert_eq!(
             parmak_izi.to_string(),
+            "app/Services/SepetHesaplayici.php:88, toplam() (ErrorException)"
+        );
+    }
+
+    #[test]
+    fn satir_kaysa_da_parmak_izi_ayni() {
+        // Dosyanın üstüne üç satır eklendi: hata aynı fonksiyonda, satırı 91 oldu
+        let kaymis = UYGULAMADA_FIRLATILAN
+            .replace("SepetHesaplayici.php:88", "SepetHesaplayici.php:91")
+            .replace("SepetHesaplayici.php(88)", "SepetHesaplayici.php(91)");
+        assert_ne!(kaymis, UYGULAMADA_FIRLATILAN);
+        let (once, sonra) = (iz(UYGULAMADA_FIRLATILAN).unwrap(), iz(&kaymis).unwrap());
+        assert_eq!(once, sonra);
+        // Gösterilen satır her kaydın kendi satırı; kimliğe katılmaz
+        assert_eq!(
+            sonra.to_string(),
+            "app/Services/SepetHesaplayici.php:91, toplam() (ErrorException)"
+        );
+        assert_eq!(once.gosterilen_satir(), Some(88));
+        assert_eq!(sonra.gosterilen_satir(), Some(91));
+        assert_eq!(once.metot(), Some(r"App\Services\SepetHesaplayici->toplam"));
+
+        // `--konum satir`: dosya ve satır, 0.1 sürümündeki gibi
+        let satirla = |metin: &str| izler_turle(metin, KonumTuru::Satir).remove(0).unwrap();
+        assert_ne!(satirla(UYGULAMADA_FIRLATILAN), satirla(&kaymis));
+        assert_eq!(
+            satirla(UYGULAMADA_FIRLATILAN).to_string(),
             "app/Services/SepetHesaplayici.php:88 (ErrorException)"
         );
+        assert_eq!(satirla(UYGULAMADA_FIRLATILAN).metot(), None);
+    }
+
+    #[test]
+    fn ayni_dosyada_baska_fonksiyon_baska_hatadir() {
+        let baska = UYGULAMADA_FIRLATILAN.replace(
+            r"App\\Services\\SepetHesaplayici->toplam(",
+            r"App\\Services\\SepetHesaplayici->kargoUcreti(",
+        );
+        assert_ne!(baska, UYGULAMADA_FIRLATILAN);
+        assert_ne!(iz(&baska), iz(UYGULAMADA_FIRLATILAN));
+        assert_eq!(
+            ozet(&iz(&baska)),
+            Some((
+                "ErrorException",
+                Some("app/Services/SepetHesaplayici.php:88, kargoUcreti()".to_string())
+            ))
+        );
+        // Başka bir istisna sınıfı da başka bir hatadır
+        let sinif = UYGULAMADA_FIRLATILAN.replace("(ErrorException(code", "(TypeError(code");
+        assert_ne!(iz(&sinif), iz(UYGULAMADA_FIRLATILAN));
+    }
+
+    /// Bir closure'da fırlatılan istisna (Laravel 13, PHP 8.3): `DB::transaction()`'a verilen
+    /// closure `SiparisServisi->olustur()`'da tanımlı.
+    const CLOSURE_ICINDE: &str = r#"[2026-10-26 23:37:06] local.ERROR: Sipariş işlenemedi {"exception":"[object] (RuntimeException(code: 0): Sipariş işlenemedi at /var/www/magaza/app/Services/SiparisServisi.php:15)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Concerns/ManagesTransactions.php(35): App\\Services\\SiparisServisi->App\\Services\\{closure}()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/DatabaseManager.php(502): Illuminate\\Database\\Connection->transaction()
+#2 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Support/Facades/Facade.php(364): Illuminate\\Database\\DatabaseManager->__call()
+#3 /var/www/magaza/app/Services/SiparisServisi.php(12): Illuminate\\Support\\Facades\\Facade::__callStatic()
+#4 /var/www/magaza/app/Http/Controllers/SiparisController.php(11): App\\Services\\SiparisServisi->olustur()
+#5 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\SiparisController->olustur()
+#6 /var/www/magaza/public/index.php(20): Illuminate\\Foundation\\Application->handleRequest()
+#7 {main}
+"} "#;
+
+    /// Aynı sınıfın başka bir metodundaki closure: `Collection->map()`'e verilmiş, PHP'nin
+    /// kendisi çağırıyor (`[internal function]`).
+    const BASKA_CLOSURE: &str = r#"[2026-10-26 23:37:10] local.ERROR: Sipariş işlenemedi {"exception":"[object] (RuntimeException(code: 0): Sipariş işlenemedi at /var/www/magaza/app/Services/SiparisServisi.php:25)
+[stacktrace]
+#0 [internal function]: App\\Services\\SiparisServisi->App\\Services\\{closure}()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Collections/Arr.php(868): array_map()
+#2 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Collections/Collection.php(844): Illuminate\\Support\\Arr::map()
+#3 /var/www/magaza/app/Services/SiparisServisi.php(23): Illuminate\\Support\\Collection->map()
+#4 /var/www/magaza/app/Http/Controllers/SiparisController.php(18): App\\Services\\SiparisServisi->iptalEt()
+#5 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\SiparisController->iptal()
+#6 {main}
+"} "#;
+
+    #[test]
+    fn closure_tanimlandigi_fonksiyonla_ayrilir() {
+        // İki closure da `App\Services\SiparisServisi->App\Services\{closure}` diye yazılıyor;
+        // tanımlandıkları fonksiyonlar yığın izinden bulunur
+        let olustur = iz(CLOSURE_ICINDE).unwrap();
+        let iptal = iz(BASKA_CLOSURE).unwrap();
+        assert_eq!(
+            olustur.to_string(),
+            "app/Services/SiparisServisi.php:15, {closure:olustur()} (RuntimeException)"
+        );
+        assert_eq!(
+            iptal.to_string(),
+            "app/Services/SiparisServisi.php:25, {closure:iptalEt()} (RuntimeException)"
+        );
+        assert_ne!(olustur, iptal);
+        assert_eq!(
+            olustur.metot(),
+            Some(r"App\Services\SiparisServisi->{closure:olustur()}")
+        );
+
+        // Closure'ı tanımlayan satır yığın izinde yoksa sahibi bilinmez
+        let sahipsiz = CLOSURE_ICINDE.replace(
+            r"#3 /var/www/magaza/app/Services/SiparisServisi.php(12): Illuminate\\Support\\Facades\\Facade::__callStatic()",
+            r"#3 /var/www/magaza/app/Services/Baska.php(12): Illuminate\\Support\\Facades\\Facade::__callStatic()",
+        );
+        assert_ne!(sahipsiz, CLOSURE_ICINDE);
+        assert_eq!(
+            ozet(&iz(&sahipsiz)),
+            Some((
+                "RuntimeException",
+                Some("app/Services/SiparisServisi.php:15, {closure}".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn vendorda_firlatilan_istisnada_closure_cagrisinin_sahibi() {
+        // Sorgu vendor'da hata veriyor; uygulama kodundaki ilk satır bir closure'ın içinde
+        // (`#1`). Closure, `iptalEt()`'in çağırdığı `durumGuncelle()`'de `map()`'e verilmiş:
+        // dışa doğru aynı dosyadaki ilk satır (`#5`) onu tanımlayan fonksiyonun içindedir.
+        let metin = r#"[2026-10-26 23:40:00] local.ERROR: SQLSTATE[HY000]: General error {"exception":"[object] (Illuminate\\Database\\QueryException(code: HY000): SQLSTATE[HY000]: General error at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php:824)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php(778): Illuminate\\Database\\Connection->runQueryCallback()
+#1 /var/www/magaza/app/Services/SiparisServisi.php(43): Illuminate\\Database\\Query\\Builder->update()
+#2 [internal function]: App\\Services\\SiparisServisi->App\\Services\\{closure}()
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Collections/Arr.php(868): array_map()
+#4 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Collections/Collection.php(844): Illuminate\\Support\\Arr::map()
+#5 /var/www/magaza/app/Services/SiparisServisi.php(40): Illuminate\\Support\\Collection->map()
+#6 /var/www/magaza/app/Services/SiparisServisi.php(23): App\\Services\\SiparisServisi->durumGuncelle()
+#7 /var/www/magaza/app/Http/Controllers/SiparisController.php(18): App\\Services\\SiparisServisi->iptalEt()
+#8 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\SiparisController->iptal()
+#9 {main}
+"} "#;
+        assert_eq!(
+            iz(metin).map(|iz| iz.to_string()),
+            Some(
+                "app/Services/SiparisServisi.php:43, {closure:durumGuncelle()} (QueryException)"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn php84_closure_adlari_ayni_parmak_izini_verir() {
+        // PHP 8.4 closure'ın adına tanımlandığı fonksiyonu ve satırı yazar; satır değişse de
+        // parmak izi değişmez, 8.3'teki gibidir
+        for (metin, sahibi) in [
+            (CLOSURE_ICINDE, "olustur():12"),
+            (BASKA_CLOSURE, "iptalEt():23"),
+        ] {
+            let php84 = metin.replace(
+                r"App\\Services\\SiparisServisi->App\\Services\\{closure}()",
+                &format!(r"App\\Services\\SiparisServisi->{{closure:App\\Services\\SiparisServisi::{sahibi}}}()"),
+            );
+            assert_ne!(php84, metin);
+            assert_eq!(iz(&php84), iz(metin), "{sahibi}");
+            assert_eq!(
+                iz(&php84).unwrap().metot(),
+                iz(metin).unwrap().metot(),
+                "{sahibi}"
+            );
+            // 8.4'te sahibi addan okunur: yığın izinde tanımlandığı satır olmasa da
+            let yalniz = php84.replace("/app/Services/SiparisServisi.php(", "/app/Baska.php(");
+            assert_eq!(iz(&yalniz), iz(metin), "{sahibi}");
+        }
+    }
+
+    /// Rota dosyasındaki bir closure (Laravel 13, PHP 8.3). Rota dosyası
+    /// `RouteFileRegistrar`'ın içinde dahil edilir: closure'larının sınıfı odur.
+    const ROTA_CLOSURE: &str = r#"[2026-10-26 23:37:10] local.ERROR: Kapanış rotasında hata {"exception":"[object] (RuntimeException(code: 0): Kapanış rotasında hata at /var/www/magaza/routes/web.php:22)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/CallableDispatcher.php(39): Illuminate\\Routing\\RouteFileRegistrar->{closure}()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/Route.php(254): Illuminate\\Routing\\CallableDispatcher->dispatch()
+#2 /var/www/magaza/public/index.php(20): Illuminate\\Foundation\\Application->handleRequest()
+#3 {main}
+"} "#;
+
+    #[test]
+    fn rota_closure_ve_en_ust_duzeydeki_kod() {
+        assert_eq!(
+            iz(ROTA_CLOSURE).map(|iz| iz.to_string()),
+            Some("routes/web.php:22, {closure} (RuntimeException)".to_string())
+        );
+        // PHP 8.4: rota dosyasının en üst düzeyinde tanımlanan closure'ın adında dosyanın yolu
+        // var; sahibi yok
+        let php84 = ROTA_CLOSURE.replace(
+            r"RouteFileRegistrar->{closure}()",
+            r"RouteFileRegistrar->{closure:/var/www/magaza/routes/web.php:21}()",
+        );
+        assert_ne!(php84, ROTA_CLOSURE);
+        assert_eq!(iz(&php84), iz(ROTA_CLOSURE));
+
+        // Rota dosyası yüklenirken en üst düzeyde oluşan hata: kod bir fonksiyonda değil,
+        // konum satırla belirlenir
+        let yuklenirken = r#"[2026-10-26 23:40:00] local.ERROR: Class "App\Http\Controllers\Yok" not found {"exception":"[object] (Error(code: 0): Class \"App\\Http\\Controllers\\Yok\" not found at /var/www/magaza/routes/web.php:30)
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/RouteFileRegistrar.php(35): require()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/Router.php(511): Illuminate\\Routing\\RouteFileRegistrar->register()
+#2 {main}
+"} "#;
+        assert_eq!(
+            iz(yuklenirken).map(|iz| iz.to_string()),
+            Some("routes/web.php:30 (Error)".to_string())
+        );
+        // Çalıştırılan bir betiğin en üst düzeyi: `{main}`
+        let betik = UYGULAMADA_FIRLATILAN.replace(
+            r"#2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam(Object(App\\Models\\Sepet))",
+            "#2 {main}",
+        );
+        assert_ne!(betik, UYGULAMADA_FIRLATILAN);
+        assert_eq!(
+            iz(&betik).map(|iz| iz.to_string()),
+            Some("app/Services/SepetHesaplayici.php:88 (ErrorException)".to_string())
+        );
+    }
+
+    #[test]
+    fn cagrilarin_fonksiyonu_ayristirilir() {
+        let adli = |ad: &'static str| Some(Fonksiyon::Adli(Cow::Borrowed(ad)));
+        let closure = |sinif: &'static str, sahibi: Option<&'static str>| {
+            Some(Fonksiyon::Closure {
+                sinif: Cow::Borrowed(sinif),
+                sahibi: sahibi.map(Cow::Borrowed),
+            })
+        };
+        assert_eq!(
+            fonksiyon(r"App\Sepet->toplam(Object(App\Models\Sepet), 'a(b')", false),
+            adli(r"App\Sepet->toplam")
+        );
+        assert_eq!(fonksiyon(r"App\Urun::bul()", false), adli(r"App\Urun::bul"));
+        assert_eq!(fonksiyon(r"App\yardimci()", false), adli(r"App\yardimci"));
+        assert_eq!(fonksiyon("array_map()", false), adli("array_map"));
+        // Bağlamın JSON'unda ters bölüler ikilenir
+        assert_eq!(
+            fonksiyon(r"App\\Sepet->toplam()", true),
+            adli(r"App\Sepet->toplam")
+        );
+        assert_eq!(
+            fonksiyon(r"App\\X->App\\{closure}()", true),
+            closure(r"App\X->", None)
+        );
+        assert_eq!(
+            fonksiyon(r"App\X::App\{closure}()", false),
+            closure(r"App\X::", None)
+        );
+        assert_eq!(fonksiyon("{closure}()", false), closure("", None));
+        assert_eq!(
+            fonksiyon(
+                r"App\X->{closure:App\X::olustur():25}(Object(Closure))",
+                false
+            ),
+            closure(r"App\X->", Some("olustur"))
+        );
+        assert_eq!(
+            fonksiyon(r"{closure:App\yardimci():5}()", false),
+            closure("", Some(r"App\yardimci"))
+        );
+        // İç içe closure: PHP dıştakinin adını yazar
+        assert_eq!(
+            fonksiyon(
+                r"App\X->{closure:{closure:App\X::olustur():25}:26}()",
+                false
+            ),
+            closure(r"App\X->", Some("olustur"))
+        );
+        assert_eq!(
+            fonksiyon(r"{closure:{closure:/var/www/routes/web.php:3}:4}()", false),
+            closure("", None)
+        );
+        // Windows yolu: sürücü harfinden sonraki `:` satır sanılmaz
+        assert_eq!(
+            fonksiyon(
+                r"{closure:C:\Users\İrem\Herd\magaza\routes\web.php:21}()",
+                false
+            ),
+            closure("", None)
+        );
+        for en_ust in [
+            "{main}",
+            "require('/var/www/x.php')",
+            "include_once()",
+            "require()",
+        ] {
+            assert_eq!(fonksiyon(en_ust, false), Some(Fonksiyon::EnUst), "{en_ust}");
+        }
+        assert_eq!(fonksiyon("", false), None);
+        assert_eq!(fonksiyon("(x)", false), None);
+
+        assert_eq!(closure_sahibi("{closure:App\\X::y():3"), None);
+        assert_eq!(closure_sahibi("{closure:App\\X::y():}"), None);
+        assert_eq!(closure_sahibi("{closure:App\\X::y():3a}"), None);
+        assert_eq!(closure_sahibi("{closure}"), None);
+        assert_eq!(sahip_adi(r"App\X->olustur"), Some("olustur"));
+        assert_eq!(sahip_adi(r"App\X::bul"), Some("bul"));
+        assert_eq!(sahip_adi(r"App\yardimci"), Some(r"App\yardimci"));
+        assert_eq!(sahip_adi(r"App\X->{closure:olustur()}"), Some("olustur"));
+        assert_eq!(sahip_adi(r"App\X->{closure}"), None);
+    }
+
+    #[test]
+    fn metodun_kisa_adi() {
+        let dosya = "app/Services/SepetHesaplayici.php";
+        assert_eq!(
+            kisa_metot(r"App\Services\SepetHesaplayici->toplam", dosya),
+            "toplam()"
+        );
+        assert_eq!(kisa_metot(r"App\Services\Odeme->al", dosya), "Odeme->al()");
+        assert_eq!(kisa_metot(r"App\Models\Urun::bul", dosya), "Urun::bul()");
+        assert_eq!(kisa_metot(r"App\Support\yardimci", dosya), "yardimci()");
+        assert_eq!(
+            kisa_metot(
+                r"Illuminate\Database\Migrations\Migration@anonymous->up",
+                dosya
+            ),
+            "up()"
+        );
+        assert_eq!(
+            kisa_metot(
+                r"Illuminate\Routing\RouteFileRegistrar->{closure}",
+                "routes/web.php"
+            ),
+            "{closure}"
+        );
+        assert_eq!(
+            kisa_metot(r"App\Services\SiparisServisi->{closure:olustur()}", dosya),
+            "{closure:olustur()}"
+        );
+    }
+
+    /// `UYGULAMADA_FIRLATILAN` ile aynı hata, Monolog'un JSON biçiminde: yığın izinde çağrılar
+    /// yok
+    const JSON_UYGULAMADA: &str = r#"{"message":"Undefined array key \"kargo_ucreti\"","context":{"exception":{"class":"ErrorException","message":"Undefined array key \"kargo_ucreti\"","code":0,"file":"/var/www/magaza/app/Services/SepetHesaplayici.php:88","trace":["/var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php:256","/var/www/magaza/app/Services/SepetHesaplayici.php:88","/var/www/magaza/app/Http/Controllers/SepetController.php:41"]}},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-24T15:05:00.000000+00:00","extra":{}}"#;
+
+    #[test]
+    fn cagrisiz_kayit_baska_kaydin_yigin_izinden_tamamlanir() {
+        // Tek başına: fonksiyon bilinmez, konum satırla belirlenir
+        assert_eq!(
+            ozet(&iz(JSON_UYGULAMADA)),
+            Some((
+                "ErrorException",
+                Some("app/Services/SepetHesaplayici.php:88".to_string())
+            ))
+        );
+        // Aynı logda metin biçiminde bir kayıt: satırın fonksiyonu ondan öğrenilir, iki kayıt
+        // aynı hatadır. Sıra önemli değil.
+        for log in [
+            format!("{UYGULAMADA_FIRLATILAN}\n{JSON_UYGULAMADA}"),
+            format!("{JSON_UYGULAMADA}\n{UYGULAMADA_FIRLATILAN}"),
+        ] {
+            let ikisi = izler(&log);
+            assert_eq!(ikisi[0], ikisi[1]);
+            assert_eq!(
+                ikisi[0].as_ref().unwrap().metot(),
+                Some(r"App\Services\SepetHesaplayici->toplam")
+            );
+        }
+        // Metin kaydı başka bir hatanın: satır onun yığın izindeki bir çerçeve olsa da öğrenilir
+        let cagiran = JSON_UYGULAMADA.replace(
+            r#""file":"/var/www/magaza/app/Services/SepetHesaplayici.php:88""#,
+            r#""file":"/var/www/magaza/app/Http/Controllers/SepetController.php:41""#,
+        );
+        let gecen = UYGULAMADA_FIRLATILAN.replace(
+            r"#2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam(Object(App\\Models\\Sepet))",
+            r"#2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam(Object(App\\Models\\Sepet))
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\SepetController->goster()",
+        );
+        let gecenle = izler(&format!("{gecen}\n{cagiran}"));
+        assert_eq!(
+            gecenle[1].as_ref().map(|iz| iz.to_string()),
+            Some(
+                "app/Http/Controllers/SepetController.php:41, goster() (ErrorException)"
+                    .to_string()
+            )
+        );
+
+        // Satır iki farklı fonksiyonda görüldüyse (log bir dağıtımı aşıyor) belirsizdir:
+        // kullanılmaz
+        let baska_fonksiyon = UYGULAMADA_FIRLATILAN.replace(
+            r"App\\Services\\SepetHesaplayici->toplam(",
+            r"App\\Services\\SepetHesaplayici->kargoUcreti(",
+        );
+        let belirsiz = izler(&format!(
+            "{UYGULAMADA_FIRLATILAN}\n{baska_fonksiyon}\n{JSON_UYGULAMADA}"
+        ));
+        assert_eq!(
+            ozet(&belirsiz[2]),
+            Some((
+                "ErrorException",
+                Some("app/Services/SepetHesaplayici.php:88".to_string())
+            ))
+        );
+        // Fonksiyonu bilinen kayıtlar haritaya bakmaz: 88. satır sonradan başka bir fonksiyona
+        // kaymış olsa da (belirsiz) `toplam()`'daki iki satır aynı hatadır
+        let kaymis = UYGULAMADA_FIRLATILAN
+            .replace("SepetHesaplayici.php:88", "SepetHesaplayici.php:91")
+            .replace("SepetHesaplayici.php(88)", "SepetHesaplayici.php(91)");
+        let ucu = izler(&format!(
+            "{UYGULAMADA_FIRLATILAN}\n{kaymis}\n{baska_fonksiyon}"
+        ));
+        assert_eq!(ucu[0], ucu[1]);
+        assert_ne!(ucu[0], ucu[2]);
+        // `--konum satir`: haritaya bakılmaz
+        let satirla = izler_turle(
+            &format!("{UYGULAMADA_FIRLATILAN}\n{JSON_UYGULAMADA}"),
+            KonumTuru::Satir,
+        );
+        assert_eq!(satirla[0], satirla[1]);
+        assert_eq!(satirla[1].as_ref().unwrap().metot(), None);
+    }
+
+    #[test]
+    fn konum_turleri() {
+        assert_eq!(KonumTuru::default(), KonumTuru::Metot);
+        for tur in KonumTuru::HEPSI {
+            assert_eq!(KonumTuru::ayristir(tur.ad()), Some(tur));
+            assert!(!tur.aciklama().is_empty());
+        }
+        assert_eq!(KonumTuru::ayristir("dosya"), None);
     }
 }

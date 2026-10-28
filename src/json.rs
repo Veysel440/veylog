@@ -176,6 +176,7 @@ fn ozet_json(ozet: &Ozet) -> Json {
                 ("kalip_sayisi", Json::Sayi(analiz.kalip_sayisi)),
                 ("grup_sayisi", Json::Sayi(analiz.satirlar.len())),
                 ("esik", Json::Ondalik(ozet.ayarlar.drain.benzerlik_esigi)),
+                ("konum", metin(ozet.ayarlar.konum_turu.ad())),
                 ("siralama", metin(ozet.ayarlar.siralama.ad())),
                 ("gosterilmeyen", Json::Sayi(ozet.gosterilmeyen())),
                 ("satirlar", Json::Dizi(satirlar)),
@@ -354,8 +355,9 @@ fn satir_json(satir: &KalipSatiri) -> Json {
 }
 
 /// Bir kalıp satırının alanları. İstisnası olmayan satırlarda "istisna" null'dır; istisnanın
-/// uygulama kodunda yeri bulunamadıysa "dosya" ve "satir" null'dır. View hatalarında konum bir
-/// şablondur; şablonun satırı bilinmediği için "satir" null'dır.
+/// uygulama kodunda yeri bulunamadıysa "dosya", "satir" ve "metot" null'dır. View hatalarında
+/// konum bir şablondur; şablonun satırı bilinmediği için "satir" null'dır. "metot" konumun
+/// içinde bulunduğu fonksiyondur; konum satırla belirlendiyse null'dır.
 fn satir_alanlari(satir: &KalipSatiri) -> Vec<(&'static str, Json)> {
     let istisna = match &satir.parmak_izi {
         Some(parmak_izi) => {
@@ -372,6 +374,7 @@ fn satir_alanlari(satir: &KalipSatiri) -> Vec<(&'static str, Json)> {
                 ("sinif", Json::Metin(parmak_izi.sinif())),
                 ("dosya", dosya),
                 ("satir", satir_no),
+                ("metot", parmak_izi.metot().map_or(Json::Yok, metin)),
             ])
         }
         None => Json::Yok,
@@ -401,6 +404,7 @@ fn zaman(zaman: Zaman) -> Json {
 mod testler {
     use super::*;
     use crate::ani_artis::{CARPAN, deneme_logu};
+    use crate::parmak_izi::KonumTuru;
     use crate::rapor::RaporAyarlari;
     use crate::zaman::ZamanNoktasi;
 
@@ -485,7 +489,7 @@ mod testler {
         let rapor = ornek_rapor(&RaporAyarlari::default());
 
         assert_eq!(rapor["dosya"], "ornekler/laravel.log");
-        assert_eq!(rapor["satir_sayisi"], 203);
+        assert_eq!(rapor["satir_sayisi"], 205);
         assert_eq!(rapor["zaman_araligi"]["en_eski"], "2026-10-24 08:59:58");
         assert_eq!(rapor["seviyeler"]["CRITICAL"], 2);
         assert_eq!(rapor["seviyeler"]["ERROR"], 16);
@@ -494,6 +498,7 @@ mod testler {
         assert_eq!(kaliplar["kalip_sayisi"], 23);
         assert_eq!(kaliplar["grup_sayisi"], 24);
         assert_eq!(kaliplar["esik"], 0.7);
+        assert_eq!(kaliplar["konum"], "metot");
         assert_eq!(kaliplar["siralama"], "onem");
         // Varsayılan --ilk 10: on satır yazılır, kalanlar sayılır
         assert_eq!(kaliplar["satirlar"].as_array().unwrap().len(), 10);
@@ -508,6 +513,11 @@ mod testler {
             "app/Http/Middleware/HizSiniri.php"
         );
         assert_eq!(redis["istisna"]["satir"], 22);
+        // Konumun içinde bulunduğu fonksiyon, tam adıyla
+        assert_eq!(
+            redis["istisna"]["metot"],
+            r"App\Http\Middleware\HizSiniri->handle"
+        );
 
         let kayit = &kaliplar["satirlar"][3];
         assert_eq!(
@@ -518,6 +528,19 @@ mod testler {
         let kalip = kayit["kalip"].as_str().unwrap();
         assert_eq!(kalip.chars().count(), 257);
         assert!(kalip.ends_with("values <*> <EPOSTA>, <ZAMAN>, <ZAMAN>))"));
+    }
+
+    #[test]
+    fn satirla_belirlenen_konumda_metot_yok() {
+        let ayarlar = RaporAyarlari {
+            konum_turu: KonumTuru::Satir,
+            ..RaporAyarlari::default()
+        };
+        let rapor = ornek_rapor(&ayarlar);
+        assert_eq!(rapor["kaliplar"]["konum"], "satir");
+        let redis = &rapor["kaliplar"]["satirlar"][0];
+        assert_eq!(redis["istisna"]["satir"], 22);
+        assert!(redis["istisna"]["metot"].is_null());
     }
 
     #[test]

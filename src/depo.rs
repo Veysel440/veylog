@@ -2,9 +2,10 @@
 //!
 //! Kayıtlar akış halinde, teker teker gelir; kendileri saklanmaz. Depoda kalanlar:
 //!
-//! - **Alt gruplar.** Maskeli mesajı, Drain kümesi, istisnası ve seviyesi aynı olan kayıtlar.
-//!   Her alt grubun kayıt sayısı, ilk kaydının mesajı (örnek), ilk ve son görüldüğü zaman.
-//!   Kalıp tablosunun satırları alt gruplardan kurulur.
+//! - **Alt gruplar.** Maskeli mesajı, Drain kümesi, istisnası (konumun gösterilen satırıyla) ve
+//!   seviyesi aynı olan kayıtlar. Her alt grubun kayıt sayısı, ilk kaydının mesajı (örnek), ilk
+//!   ve son görüldüğü zaman, en geç kaydının sırası. Kalıp tablosunun satırları alt
+//!   gruplardan kurulur; satırın konumu en geç kaydı olan alt grubunkidir.
 //! - **Maskeli mesajlar.** Her farklı maskeli mesaj bir kez, ilk görüldüğü sırayla.
 //! - **Drain.** Her kaydın maskeli mesajı, logdaki sırasıyla kümelenir (`drain::Kumeleyici`):
 //!   Drain sıraya bağlıdır, aynı mesaj logun farklı yerlerinde farklı kümelere katılabilir. Bir
@@ -14,7 +15,10 @@
 //! - **Seyrek dizin.** Her `DIZIN_ARALIGI` kayıtta bir kaydın girdideki konumu: bir kaydın
 //!   mesajı sonradan gerekirse girdinin yalnızca o kısmı yeniden okunur.
 //! - **İstisnalar.** Parmak izleri ve projelerin kökleri. Kökü kendi yollarında olmayan bir
-//!   kaydın istisnası taslak olarak saklanır; parmak izi okuma bitince çıkarılır.
+//!   kaydın istisnası taslak olarak saklanır; parmak izi okuma bitince çıkarılır. Konum
+//!   fonksiyonla belirleniyorsa yığın izlerinden hangi satırın hangi fonksiyonda olduğu da
+//!   öğrenilir (`MetotHaritasi`): çağrıları bilinmeyen kayıtların (JSON'un yığın izi)
+//!   konumları okuma bitince bununla tamamlanır.
 //! - **Sayılar.** Seviyeler, farklı ham mesajlar (`farkli_sayac` modülü), en eski ve en yeni
 //!   kayıt, kaç kaydın başka bir saat diliminden çevrildiği.
 //!
@@ -45,7 +49,7 @@ use crate::filtre::CozulmusFiltre;
 use crate::kayit::{Kayit, KayitAlici, KayitBilgisi, SatirSayilari, Seviye};
 use crate::maske::maskele;
 use crate::okuyucu::{self, DIZIN_ARALIGI, OkumaSonucu, OrnekIstegi, OrnekKaynagi};
-use crate::parmak_izi::{Istisna, IstisnaTaslagi, ParmakIzi};
+use crate::parmak_izi::{Istisna, IstisnaTaslagi, KonumTuru, MetotHaritasi, ParmakIzi};
 use crate::satir_bicimi::SatirBicimi;
 use crate::sutunlar::{KayitSutunlari, SutunOkuyucu};
 use crate::zaman::{DilimCevirici, KayitDilimi, SaatDilimi, Zaman};
@@ -59,17 +63,23 @@ enum IstisnaNo {
     Taslak(u32),
 }
 
-/// Alt grubu belirleyen dörtlü.
+/// Alt grubu belirleyenler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct AltGrupAnahtari {
     maskeli: u32,
     /// Drain kümesinin numarası.
     kume: u32,
     istisna: IstisnaNo,
+    /// Parmak izinin gösterilen satırı. Konum fonksiyonla belirleniyorsa aynı hatanın kayıtları
+    /// farklı satırlarda olabilir (kod değişmiş): her satır ayrı bir alt gruptur, özet en yeni
+    /// kaydınkini gösterir. Parmak izi okuma bitince çıkarılanlarda (taslaklar) None: taslağın
+    /// bütün kayıtlarının satırları aynıdır.
+    satir: Option<u32>,
     seviye: Seviye,
 }
 
-/// Maskeli mesajı, Drain kümesi, istisnası ve seviyesi aynı olan kayıtlar.
+/// Maskeli mesajı, Drain kümesi, istisnası (gösterilen satırıyla) ve seviyesi aynı olan
+/// kayıtlar.
 #[derive(Debug, Clone)]
 pub struct AltGrup {
     anahtar: AltGrupAnahtari,
@@ -85,6 +95,9 @@ pub struct AltGrup {
     /// En erken ve en geç kaydının zamanı.
     ilk: Zaman,
     son: Zaman,
+    /// En geç kaydının sıra numarası: zamanı `son` olanlardan logda en sonra geleni. Bir
+    /// tablo satırının alt gruplarından en yeni kaydı olanı bununla seçilir.
+    son_kayit: usize,
 }
 
 impl AltGrup {
@@ -128,6 +141,11 @@ impl AltGrup {
     pub fn son(&self) -> Zaman {
         self.son
     }
+
+    /// En geç kaydının sıra numarası: zamanı `son` olanlardan logda en sonra geleni.
+    pub fn son_kayit(&self) -> usize {
+        self.son_kayit
+    }
 }
 
 /// Kayıtların saat dilimleri: raporun dilimine nasıl alındıkları.
@@ -151,6 +169,8 @@ pub struct Depo {
     cevirici: DilimCevirici,
     /// Satırların biçimi; kayıtlar yeniden okunurken de gerekir.
     satir_bicimi: SatirBicimi,
+    /// Parmak izlerinin konumu neyle belirlenir (`--konum`).
+    konum_turu: KonumTuru,
     dilimler: DilimSayilari,
     sayilar: SatirSayilari,
     gecersiz_utf8: bool,
@@ -171,6 +191,9 @@ pub struct Depo {
     kokler: BTreeSet<String>,
     izler: Vec<ParmakIzi>,
     iz_sirasi: HashMap<ParmakIzi, u32>,
+    /// Yığın izlerinden öğrenilen: hangi satır hangi fonksiyonun içinde. Yalnızca konum
+    /// fonksiyonla belirleniyorsa doldurulur.
+    metot_haritasi: MetotHaritasi,
     taslaklar: Vec<IstisnaTaslagi>,
     taslak_sirasi: HashMap<IstisnaTaslagi, u32>,
     alt_gruplar: Vec<AltGrup>,
@@ -208,10 +231,12 @@ impl KayitAlici for Depo {
         let kume = self
             .kumeleyici
             .ekle(maskeli as usize, &self.maskeliler[maskeli as usize]);
+        let (istisna, satir) = self.istisna_no(kayit);
         let anahtar = AltGrupAnahtari {
             maskeli,
             kume: numara(kume),
-            istisna: self.istisna_no(kayit),
+            istisna,
+            satir,
             seviye,
         };
         let no = match self.alt_grup_sirasi.get(&anahtar) {
@@ -219,6 +244,10 @@ impl KayitAlici for Depo {
                 let alt = &mut self.alt_gruplar[no as usize];
                 alt.adet += 1;
                 alt.ilk = alt.ilk.min(zaman);
+                // Aynı andaki kayıtlardan logda sonra gelen daha yenidir
+                if zaman >= alt.son {
+                    alt.son_kayit = sira;
+                }
                 alt.son = alt.son.max(zaman);
                 no
             }
@@ -237,6 +266,7 @@ impl KayitAlici for Depo {
                     ornek_kesin: true,
                     ilk: zaman,
                     son: zaman,
+                    son_kayit: sira,
                 });
                 self.alt_grup_sirasi.insert(anahtar, no);
                 no
@@ -260,6 +290,8 @@ pub struct DepoAyarlari {
     pub saat_dilimi: Option<SaatDilimi>,
     /// Satırların biçimi (`--desen`, `--zaman-bicimi`); varsayılanı Laravel'inki.
     pub satir_bicimi: SatirBicimi,
+    /// Parmak izlerinin konumu neyle belirlenir (`--konum`).
+    pub konum_turu: KonumTuru,
 }
 
 impl Depo {
@@ -270,6 +302,7 @@ impl Depo {
             filtre: ayarlar.filtre,
             cevirici: DilimCevirici::new(ayarlar.saat_dilimi),
             satir_bicimi: ayarlar.satir_bicimi,
+            konum_turu: ayarlar.konum_turu,
             dilimler: DilimSayilari::default(),
             sayilar: SatirSayilari::default(),
             gecersiz_utf8: false,
@@ -284,6 +317,7 @@ impl Depo {
             kokler: BTreeSet::new(),
             izler: Vec::new(),
             iz_sirasi: HashMap::new(),
+            metot_haritasi: MetotHaritasi::default(),
             taslaklar: Vec::new(),
             taslak_sirasi: HashMap::new(),
             alt_gruplar: Vec::new(),
@@ -374,6 +408,9 @@ impl Depo {
                     let alt = &mut alt_gruplar[no as usize];
                     alt.adet += 1;
                     alt.ilk = alt.ilk.min(zaman);
+                    if zaman >= alt.son {
+                        alt.son_kayit = sira;
+                    }
                     alt.son = alt.son.max(zaman);
                     no
                 }
@@ -387,6 +424,7 @@ impl Depo {
                         ornek_kesin: eski.ornek_kesin && eski.ilk_kayit == sira,
                         ilk: zaman,
                         son: zaman,
+                        son_kayit: sira,
                     });
                     sirasi.insert(anahtar, no);
                     no
@@ -478,18 +516,42 @@ impl Depo {
     }
 
     /// Her alt grubun parmak izi, alt gruplarla aynı sırada. Taslakların parmak izi logun
-    /// bütün kökleriyle çıkarılır.
+    /// bütün kökleriyle çıkarılır. Konum fonksiyonla belirleniyorsa satırla kalmış konumlar
+    /// (çağrıları bilinmeyen kayıtlar) bütün yığın izlerinden öğrenilenle tamamlanır.
     pub fn parmak_izleri(&self) -> Vec<Option<ParmakIzi>> {
-        let taslak_izleri: Vec<ParmakIzi> = self
-            .taslaklar
+        let taslak_istisnalari: Vec<Istisna<'_>> =
+            self.taslaklar.iter().map(IstisnaTaslagi::istisna).collect();
+        let harita = match self.konum_turu {
+            KonumTuru::Metot => {
+                // Taslakların kökü artık bilinir: onların yığın izleri de katılır
+                let mut harita = self.metot_haritasi.clone();
+                for istisna in &taslak_istisnalari {
+                    harita.ogren(istisna, istisna.cozulmus_kok(&self.kokler));
+                }
+                Some(harita)
+            }
+            KonumTuru::Satir => None,
+        };
+        let tamamla = |mut iz: ParmakIzi| {
+            if let Some(harita) = &harita {
+                harita.tamamla(&mut iz);
+            }
+            iz
+        };
+        let izler: Vec<ParmakIzi> = self.izler.iter().cloned().map(tamamla).collect();
+        let taslak_izleri: Vec<ParmakIzi> = taslak_istisnalari
             .iter()
-            .map(|taslak| taslak.istisna().parmak_izi(&self.kokler))
+            .map(|istisna| tamamla(istisna.parmak_izi(&self.kokler, self.konum_turu)))
             .collect();
         self.alt_gruplar
             .iter()
             .map(|alt| match alt.anahtar.istisna {
                 IstisnaNo::Yok => None,
-                IstisnaNo::Iz(no) => Some(self.izler[no as usize].clone()),
+                IstisnaNo::Iz(no) => {
+                    let mut iz = izler[no as usize].clone();
+                    iz.satiri_goster(alt.anahtar.satir);
+                    Some(iz)
+                }
                 IstisnaNo::Taslak(no) => Some(taslak_izleri[no as usize].clone()),
             })
             .collect()
@@ -561,25 +623,34 @@ impl Depo {
         (no, maskelendi)
     }
 
-    /// Kaydın istisnası. Kökü kendi yollarındaysa parmak izi hemen çıkarılır; değilse istisna
-    /// taslak olarak saklanır. Kaydın kökü, başka kayıtlar için bilinen köklere eklenir.
-    fn istisna_no(&mut self, kayit: &Kayit<'_>) -> IstisnaNo {
+    /// Kaydın istisnası ve parmak izinde gösterilecek satırı. Kökü kendi yollarındaysa parmak
+    /// izi hemen çıkarılır; değilse istisna taslak olarak saklanır. Kaydın kökü, başka
+    /// kayıtlar için bilinen köklere eklenir.
+    fn istisna_no(&mut self, kayit: &Kayit<'_>) -> (IstisnaNo, Option<u32>) {
         let Some(istisna) = Istisna::kayittan(kayit) else {
-            return IstisnaNo::Yok;
+            return (IstisnaNo::Yok, None);
         };
         match istisna.kok() {
             Some(kok) => {
                 if !self.kokler.contains(kok) {
                     self.kokler.insert(kok.to_owned());
                 }
-                let iz = istisna.koke_gore(Some(kok));
-                IstisnaNo::Iz(numaralandir(&mut self.iz_sirasi, &mut self.izler, iz))
+                if self.konum_turu == KonumTuru::Metot {
+                    self.metot_haritasi.ogren(&istisna, Some(kok));
+                }
+                let iz = istisna.koke_gore(Some(kok), self.konum_turu);
+                let satir = iz.gosterilen_satir();
+                let no = numaralandir(&mut self.iz_sirasi, &mut self.izler, iz);
+                (IstisnaNo::Iz(no), satir)
             }
-            None => IstisnaNo::Taslak(numaralandir(
-                &mut self.taslak_sirasi,
-                &mut self.taslaklar,
-                istisna.taslak(),
-            )),
+            None => {
+                let no = numaralandir(
+                    &mut self.taslak_sirasi,
+                    &mut self.taslaklar,
+                    istisna.taslak(),
+                );
+                (IstisnaNo::Taslak(no), None)
+            }
         }
     }
 }
@@ -728,9 +799,9 @@ mod testler {
         assert_eq!(
             depo.sayilar(),
             SatirSayilari {
-                satir: 203,
+                satir: 205,
                 kayit: 59,
-                devam: 141,
+                devam: 143,
                 yetim: 3
             }
         );
@@ -791,6 +862,152 @@ mod testler {
             ]
         );
         assert_eq!(depo.alt_grup_seviyesi(1), Seviye::Error);
+    }
+
+    /// `SepetHesaplayici->toplam()`'da bir hata: verilen anda, verilen satırda
+    fn toplamda(zaman: &str, satir: u32) -> String {
+        format!(
+            r#"[2026-10-24 {zaman}] production.ERROR: Undefined array key "kargo_ucreti" {{"exception":"[object] (ErrorException(code: 0): Undefined array key \"kargo_ucreti\" at /var/www/magaza/app/Services/SepetHesaplayici.php:{satir})
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError()
+#1 /var/www/magaza/app/Services/SepetHesaplayici.php({satir}): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{{closure}}()
+#2 /var/www/magaza/app/Http/Controllers/SepetController.php(41): App\\Services\\SepetHesaplayici->toplam()
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\SepetController->goster()
+#4 {{main}}
+"}}"#
+        )
+    }
+
+    /// Aynı hata Monolog'un JSON biçiminde, yığın izi kapalı: yalnızca fırlatıldığı yer
+    fn json_toplamda(zaman: &str, satir: u32) -> String {
+        format!(
+            r#"{{"message":"Undefined array key \"kargo_ucreti\"","context":{{"exception":{{"class":"ErrorException","message":"Undefined array key \"kargo_ucreti\"","code":0,"file":"/var/www/magaza/app/Services/SepetHesaplayici.php:{satir}"}}}},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-24T{zaman}","extra":{{}}}}"#
+        )
+    }
+
+    #[test]
+    fn ayni_hatanin_her_satiri_ayri_alt_gruptur() {
+        // Dağıtımdan sonra hata 91. satırda. Log sıralı değil: en yeni kayıt ortada.
+        let log = [
+            toplamda("10:00:00", 88),
+            toplamda("12:00:00", 91),
+            toplamda("11:00:00", 88),
+        ]
+        .join("\n");
+        let depo = metinden(&log);
+        // Parmak izi aynı; her satır ayrı bir alt grup. Özet en yeni kaydınkini gösterir.
+        let izler: Vec<Option<String>> = depo
+            .parmak_izleri()
+            .iter()
+            .map(|iz| iz.as_ref().map(ToString::to_string))
+            .collect();
+        assert_eq!(
+            izler,
+            [
+                Some("app/Services/SepetHesaplayici.php:88, toplam() (ErrorException)".to_string()),
+                Some("app/Services/SepetHesaplayici.php:91, toplam() (ErrorException)".to_string()),
+            ]
+        );
+        assert_eq!(depo.parmak_izleri()[0], depo.parmak_izleri()[1]);
+        let alt = depo.alt_gruplar();
+        assert_eq!((alt[0].adet(), alt[0].son_kayit()), (2, 2));
+        assert_eq!((alt[1].adet(), alt[1].son_kayit()), (1, 1));
+        // Aynı andaki kayıtlardan en geç olanı logda sonra geleni
+        let depo = metinden(&[toplamda("10:00:00", 88), toplamda("10:00:00", 88)].join("\n"));
+        assert_eq!(depo.alt_gruplar()[0].son_kayit(), 1);
+
+        // `--konum satir`: iki ayrı hata
+        let satirla = DepoAyarlari {
+            konum_turu: KonumTuru::Satir,
+            ..DepoAyarlari::default()
+        };
+        let depo = Depo::doldur(satirla, log.as_bytes()).unwrap();
+        let izler = depo.parmak_izleri();
+        assert_eq!(izler.len(), 2);
+        assert_ne!(izler[0], izler[1]);
+        assert_eq!(
+            izler[1].as_ref().map(ToString::to_string),
+            Some("app/Services/SepetHesaplayici.php:91 (ErrorException)".to_string())
+        );
+    }
+
+    #[test]
+    fn cagrisiz_kaydin_fonksiyonu_okuma_bitince_bulunur() {
+        // JSON kaydı önce geliyor; fonksiyonu sonraki metin kaydının yığın izinden öğrenilir.
+        // Kökü de ondan bulunur: JSON kaydı bir taslaktır.
+        let log = [
+            json_toplamda("09:00:00+00:00", 88),
+            toplamda("10:00:00", 88),
+        ]
+        .join("\n");
+        let depo = metinden(&log);
+        let izler = depo.parmak_izleri();
+        assert_eq!(izler.len(), 2);
+        assert_eq!(izler[0], izler[1]);
+        assert_eq!(
+            izler[0].as_ref().and_then(ParmakIzi::metot),
+            Some(r"App\Services\SepetHesaplayici->toplam")
+        );
+        // Kökü kendi yollarında olan bir JSON kaydı (vendor'da fırlatılmış, uygulama satırı
+        // yığın izinde) da tamamlanır
+        let vendorlu = json_toplamda("09:00:00+00:00", 88).replace(
+            r#""file":"/var/www/magaza/app/Services/SepetHesaplayici.php:88""#,
+            r#""file":"/var/www/magaza/vendor/laravel/framework/src/Illuminate/Support/Arr.php:5","trace":["/var/www/magaza/app/Services/SepetHesaplayici.php:88"]"#,
+        );
+        let depo = metinden(&[vendorlu, toplamda("10:00:00", 88)].join("\n"));
+        let izler = depo.parmak_izleri();
+        assert_eq!(izler[0], izler[1]);
+
+        // `--konum satir`: hiçbir konum fonksiyonla belirlenmez
+        let satirla = DepoAyarlari {
+            konum_turu: KonumTuru::Satir,
+            ..DepoAyarlari::default()
+        };
+        let depo = Depo::doldur(satirla, log.as_bytes()).unwrap();
+        assert!(
+            depo.parmak_izleri()
+                .iter()
+                .all(|iz| iz.as_ref().unwrap().metot().is_none())
+        );
+    }
+
+    #[test]
+    fn koku_sonradan_bulunan_kaydin_yigin_izi_de_ogrenilir() {
+        // Metin kaydının yollarında vendor yok: kökü, dolayısıyla yığın izindeki satırların
+        // köke göre yolları okuma bitince bilinir. JSON kaydının fonksiyonu ondan öğrenilir.
+        let vendorsuz = r#"[2026-10-24 10:00:00] production.ERROR: Ödeme alınamadı {"exception":"[object] (RuntimeException(code: 0): Ödeme alınamadı at /var/www/magaza/app/Services/OdemeServisi.php:64)
+[stacktrace]
+#0 /var/www/magaza/app/Http/Controllers/OdemeController.php(31): App\\Services\\OdemeServisi->tahsilEt()
+#1 {main}
+"} "#;
+        let json = r#"{"message":"Ödeme alınamadı","context":{"exception":{"class":"RuntimeException","message":"Ödeme alınamadı","code":0,"file":"/var/www/magaza/app/Services/OdemeServisi.php:64"}},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-24T11:00:00+00:00","extra":{}}"#;
+        // İlk kayıt kökü verir
+        let log = [
+            toplamda("09:00:00", 88),
+            vendorsuz.to_string(),
+            json.to_string(),
+        ]
+        .join("\n");
+        let depo = metinden(&log);
+        let izler = depo.parmak_izleri();
+        assert_eq!(izler.len(), 3);
+        assert_eq!(izler[1], izler[2]);
+        assert_eq!(
+            izler[2].as_ref().map(ToString::to_string),
+            Some("app/Services/OdemeServisi.php:64, tahsilEt() (RuntimeException)".to_string())
+        );
+
+        // `--konum satir`: taslakların yığın izleri de konumu fonksiyonla belirlemez
+        let satirla = DepoAyarlari {
+            konum_turu: KonumTuru::Satir,
+            ..DepoAyarlari::default()
+        };
+        let depo = Depo::doldur(satirla, log.as_bytes()).unwrap();
+        assert!(
+            depo.parmak_izleri()
+                .iter()
+                .all(|iz| iz.as_ref().unwrap().metot().is_none())
+        );
     }
 
     #[test]

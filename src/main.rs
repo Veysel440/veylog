@@ -309,6 +309,7 @@ fn depoyu_doldur(
         filtre,
         saat_dilimi: rapor.saat_dilimi,
         satir_bicimi: rapor.satir_bicimi.clone(),
+        konum_turu: rapor.konum_turu,
     };
     Depo::doldur(ayarlar, girdi).map_err(Hata::Okuma)
 }

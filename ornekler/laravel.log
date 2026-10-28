@@ -177,13 +177,15 @@
 [stacktrace]
 #0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Redis/Connectors/PhpRedisConnector.php(173): Redis->connect('10.0.3.12', 6379, 0.0, NULL, 0, 0.0)
 #1 /var/www/magaza/app/Http/Middleware/HizSiniri.php(22): Illuminate\\Redis\\RedisManager->connection()
-#2 {main}
+#2 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Pipeline/Pipeline.php(219): App\\Http\\Middleware\\HizSiniri->handle(Object(Illuminate\\Http\\Request), Object(Closure))
+#3 {main}
 "} 
 [2026-10-24 17:06:45] production.CRITICAL: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379] {"exception":"[object] (RedisException(code: 0): Connection refused at /var/www/magaza/vendor/laravel/framework/src/Illuminate/Redis/Connectors/PhpRedisConnector.php:173)
 [stacktrace]
 #0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Redis/Connectors/PhpRedisConnector.php(173): Redis->connect('10.0.3.12', 6379, 0.0, NULL, 0, 0.0)
 #1 /var/www/magaza/app/Http/Middleware/HizSiniri.php(22): Illuminate\\Redis\\RedisManager->connection()
-#2 {main}
+#2 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Pipeline/Pipeline.php(219): App\\Http\\Middleware\\HizSiniri->handle(Object(Illuminate\\Http\\Request), Object(Closure))
+#3 {main}
 "} 
 [2026-10-24 17:07:30] production.INFO: Redis bağlantısı yeniden kuruldu {"deneme":4} 
 [2026-10-24 17:22:08] production.INFO: Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} 

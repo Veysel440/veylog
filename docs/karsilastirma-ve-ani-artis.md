@@ -30,10 +30,16 @@ Artanlar (sonra ≥ 2 kat sık, tesadüf ihtimali < %1): 1
      1      5  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
                                               artış: saatte 0,1 → 2,1 (15,4 kat)
                                               örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
-                                              konum: app/Services/OdemeServisi.php:64 (ConnectionException)
+                                              konum: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
 ```
 
 `--ilk` her bölüme ayrı uygulanır; `--siralama` bölümlerin içindeki sırayı belirler.
+
+Bir satır, kalıbı ve parmak izi aynı kayıtlardır. Parmak izi satır numarasıyla değil satırın
+içinde bulunduğu fonksiyonla belirlenir: dağıtım dosyanın üstüne satır eklediyse hata başka bir
+satırda görünür ama aynı tablo satırında kalır. Satırla belirlenseydi (`--konum satir`) aynı
+hata dağıtımdan önce "kaybolan", sonra "yeni çıkan" olurdu
+([satır değil fonksiyon](nasil-calisir.md#satır-değil-fonksiyon)).
 
 ### Sıklık saat başına sayılır
 
@@ -133,7 +139,7 @@ Ani artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1
       6       0   4,0  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
                                                       artış: 16:10–16:20 arası 6 kayıt
                                                       örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
-                                                      konum: app/Services/OdemeServisi.php:64 (ConnectionException)
+                                                      konum: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
 ```
 
 Ödeme zaman aşımı günün geri kalanında hiç görülmüyor, 16:10–16:20 diliminde ise 6 kez

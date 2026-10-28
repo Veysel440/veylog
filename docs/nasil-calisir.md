@@ -83,8 +83,10 @@ metin, yenileri JSON olarak kalır.
 - Mesajın kaçışları çözülür (`\"` → `"`, `\u00e7` → `ç`) ve metin biçimindeki gibi yalnızca
   ilk satırı alınır. Böylece aynı hata iki biçimde de aynı kalıba düşer.
 - İstisna bağlamda bir nesnedir: sınıfı `class`, fırlatıldığı yer `file` (`/yol/Dosya.php:26`),
-  çağrılar `trace` alanındadır ve parmak izi metin biçimindeki kuralla bulunur. `trace` yalnızca
-  `includeStacktraces` açıksa yazılır; kapalıysa yalnızca fırlatıldığı yer bilinir.
+  çağrıların yerleri `trace` alanındadır ve parmak izi metin biçimindeki kuralla bulunur.
+  `trace` yalnızca `includeStacktraces` açıksa yazılır; kapalıysa yalnızca fırlatıldığı yer
+  bilinir. Çağrılan fonksiyonlar hiç yazılmaz; satırın fonksiyonu logun başka kayıtlarından
+  öğrenilir ([satır değil fonksiyon](#satır-değil-fonksiyon)).
 - Kanal (`channel`) ve `extra` kullanılmaz.
 
 `ornekler/karisik.log` bu durumu anlatır: Windows'ta Herd ile çalışan uydurma bir mağazanın
@@ -97,14 +99,15 @@ ornekler/karisik.log: 683 satır
 ...
      2  ERROR      09:05:40  09:06:02  SQLSTATE[HY000] [<SAYI>] Connection refused (Connection: mysql_yok, Host: <IP>,…
                                        örnek: SQLSTATE[HY000] [2002] Connection refused (Connection: mysql_yok, Host: …
-                                       konum: database/migrations/2026_10_25_090000_create_kuponlar_table.php:11 (QueryException)
+                                       konum: database/migrations/2026_10_25_090000_create_kuponlar_table.php:11, up() (QueryException)
      2  ERROR      09:20:11  10:15:30  Undefined array key "kargo_ucreti"
-                                       konum: app/Services/SepetHesaplayici.php:10 (ErrorException)
+                                       konum: app/Services/SepetHesaplayici.php:10, kargoUcreti() (ErrorException)
   … 9 satır daha; tümünü görmek için --hepsi
 ```
 
 `kargo_ucreti` hatasının 09:20'deki kaydı metin, 10:15'teki kaydı JSON biçimindedir; ikisi aynı
-satırda birleşir. Migration hatasının konumu ise Windows yolundan bulunmuştur
+satırda birleşir. JSON kaydının yığın izinde çağrılar olmadığı için `kargoUcreti()` metin
+kaydının yığın izinden öğrenilir. Migration hatasının konumu ise Windows yolundan bulunmuştur
 ([aşağıda](#windows-yolları)).
 
 **Okuyucu.** JSON'u yazarken olduğu gibi okurken de kütüphane kullanılmadı. Okuyucu
@@ -394,7 +397,8 @@ hem kategori sayfasında hem ürün sayfasında oluşabilir. Drain yalnızca mes
 bunları tek kalıpta birleştirir, oysa bunlar iki ayrı hatadır.
 [Sentry](https://docs.sentry.io/concepts/data-management/event-grouping/) gibi hata takip
 araçları bu yüzden hataları mesajla değil, stack trace'in uygulamaya ait kısmıyla tanır.
-veylog bunun sade bir halini kullanır: istisna sınıfı ve uygulama kodundaki ilk satır.
+veylog bunun sade bir halini kullanır: istisna sınıfı, uygulama kodundaki ilk satır ve o
+satırın içinde bulunduğu fonksiyon.
 
 Laravel bir istisnayı loglarken bağlama sınıfını, fırlatıldığı yeri ve stack trace'i yazar
 (satırlar kısaltıldı):
@@ -431,9 +435,12 @@ Parmak izi şöyle çıkarılır:
    `storage/framework/views/` altında olmayan, giriş noktası da (`artisan`,
    `public/index.php`, eski Laravel'lerde `server.php`) olmayan ilk dosya seçilir.
    Middleware'in isteği bir sonraki adıma ilettiği satır atlanır.
+6. Seçilen satırın içinde bulunduğu fonksiyon, yığın izinde bir sonraki satırda çağrılan
+   fonksiyondur ([satır değil fonksiyon](#satır-değil-fonksiyon)).
 
-Örnekteki istisna vendor'da fırlatıldı; uygulama kodundaki ilk satır `#2`'dir:
-`app/Http/Controllers/KayitController.php:38 (UniqueConstraintViolationException)`. Hata
+Örnekteki istisna vendor'da fırlatıldı; uygulama kodundaki ilk satır `#2`'dir, `#3` onun
+`store()`'un içinde olduğunu söyler:
+`app/Http/Controllers/KayitController.php:38, store() (UniqueConstraintViolationException)`. Hata
 tamamen vendor içinde oluştuysa, örneğin bir kuyruk işinin deneme hakkı bittiyse, konum
 "uygulama kodunda bulunamadı" olarak gösterilir.
 
@@ -441,6 +448,87 @@ Parmak izi Drain'in kalıplarını yalnızca **böler**: aynı kalıptaki kayıt
 geliyorsa ayrı satırlarda görünür. Aynı yerden gelen farklı kalıplar ise birleştirilmez,
 çünkü bir yardımcı fonksiyondaki tek bir `throw` birbirinden bağımsız birçok hatanın ortak
 yeri olabilir.
+
+### Satır değil fonksiyon
+
+Satır numarası kodla birlikte değişir. Bir dağıtım `SiparisServisi.php`'nin başına dört satır
+eklerse dosyadaki her hata dört satır aşağı kayar: satırla tanınan bir hata dağıtımdan sonra
+başka bir hata gibi görünür ve `--karsilastir` onu hem "kaybolan" hem "yeni çıkan" sayar.
+Konum bu yüzden dosya ve satırın içinde bulunduğu fonksiyondur:
+`app/Services/SiparisServisi.php:38, kargoUcreti()`. Satır gösterilir ama kimliğe katılmaz;
+gösterilen, o hatanın en yeni kaydınınkidir: kod değiştiyse güncel satır.
+
+Yığın izinin her satırı bir yeri ve o yerde çağrılan fonksiyonu yazar. Bir yerin içinde
+bulunduğu fonksiyon, bir sonraki satırda çağrılan fonksiyondur (gerçek bir Laravel 13
+logundan, kısaltıldı):
+
+```text
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(265): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError()
+#1 /var/www/magaza/app/Services/SiparisServisi.php(34): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{closure}()
+#2 /var/www/magaza/app/Http/Controllers/SiparisController.php(23): App\\Services\\SiparisServisi->kargoUcreti()
+```
+
+`SiparisServisi.php:34`, `kargoUcreti()`'nin içindedir. İstisna çoğu zaman yığın izinde
+bulunmayan bir yerde fırlatılır; o yerin fonksiyonu ilk satırda çağrılan fonksiyondur. PHP'nin
+bir uyarısından doğan `ErrorException`'da (`Undefined array key`) ise fırlatıldığı yer yığın
+izinde de görünür: Laravel'in hata işleyicisi oradan çağrılmış gibidir (`#1`). Fonksiyonu da o
+satırınkidir.
+
+Gösterilen ad kısadır: sınıfın adı dosyanın adıyla aynıysa (PSR-4) yalnızca metot
+(`kargoUcreti()`), değilse sınıfıyla (`Urun::bul()`). Migration'ların anonim sınıfının adı bir
+şey söylemez, yazılmaz: `up()`. Tam ad JSON çıktısındadır:
+`App\Services\SiparisServisi->kargoUcreti`.
+
+**Closure'lar.** PHP 8.4'ten önce bir sınıftaki bütün closure'lar aynı adla yazılır:
+`App\Services\SiparisServisi->App\Services\{closure}`. İki metottaki iki closure'ı ayırmak için
+closure'ın tanımlandığı fonksiyon da bulunur. Closure çoğu zaman tanımlandığı yerden bir
+fonksiyona verilir, o fonksiyon da onu çağırır:
+
+```text
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Concerns/ManagesTransactions.php(35): App\\Services\\SiparisServisi->App\\Services\\{closure}()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/DatabaseManager.php(502): Illuminate\\Database\\Connection->transaction()
+#2 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Support/Facades/Facade.php(364): Illuminate\\Database\\DatabaseManager->__call()
+#3 /var/www/magaza/app/Services/SiparisServisi.php(12): Illuminate\\Support\\Facades\\Facade::__callStatic()
+#4 /var/www/magaza/app/Http/Controllers/SiparisController.php(11): App\\Services\\SiparisServisi->olustur()
+```
+
+Closure `DB::transaction()`'a 12. satırda verildi. Yığın izinde closure'dan dışa doğru aynı
+dosyadaki ilk satır (`#3`) onu tanımlayan fonksiyonun içindedir: `olustur()`. Konum
+`{closure:olustur()}` olur. PHP 8.4 bunu closure'ın adına kendisi yazar
+(`{closure:App\Services\SiparisServisi::olustur():12}`); o zaman addan okunur, sonuç aynıdır.
+Satır numarası addan atılır. Tanımlandığı satır yığın izinde yoksa (closure bir değişkende
+saklanıp başka bir yerden çağrıldıysa) yalnızca `{closure}` yazılır. Rota dosyalarındaki
+closure'ların sahibi yoktur: `routes/web.php` Laravel'in kendi sınıfının içinde yüklenir ve
+closure'ları onun adıyla yazılır; bu ad gösterilmez.
+
+**En üst düzey.** Rota dosyası yüklenirken oluşan bir hatada kod bir fonksiyonun içinde
+değildir: yığın izinde bir sonraki satır `require(...)`'dır. Çalıştırılan bir betiğin en üst
+düzeyinde de `{main}`'dir. Bu konumlar satırla belirlenir.
+
+**Çağrısız yığın izi.** Monolog'un JSON biçiminde yığın izinde yalnızca yerler yazılır
+(`"trace":["/var/www/magaza/app/Http/Controllers/KayitController.php:38", ...]`); yığın izi
+kapalıysa yalnızca fırlatıldığı yer bilinir. Böyle bir kaydın fonksiyonu logun başka
+kayıtlarından öğrenilir: okunan her yığın izinin uygulama kodundaki satırları bir haritaya
+yazılır (`dosya:satır` → fonksiyon). Okuma bitince satırla kalmış konumlar bu haritaya bakılarak
+fonksiyonla belirlenir; bir kanal JSON yazıyorsa ya da log biçimi değiştirildiyse aynı hatanın
+JSON ve metin kayıtları böyle birleşir. Harita yalnızca kesin bilgiyle çalışır: aynı satır iki
+farklı fonksiyonda görüldüyse (log bir dağıtımı aşıyor ve satır başka bir fonksiyona kaymış)
+o satır kullanılmaz. Logun hiçbir yığın izinde geçmeyen bir satır da satırla kalır.
+
+`--konum satir` 0.1'in davranışıdır: konum dosya ve satırdır. Aynı fonksiyonun iki satırında
+aynı istisna sınıfı ve aynı kalıpla oluşan iki hata fonksiyonla tek satır olur; satırla
+ayrılır.
+
+Gerçek Laravel 13 çıktısıyla sınandı. Dört hata (bir `DB::transaction()` closure'ında, bir
+`Collection::map()` closure'ında, bir PHP uyarısında ve bir rota closure'ında) hem Laravel'in
+metin biçiminde hem yığın izi kapalı JSON'da loglandı; sonra servisin başına dört satır eklenip
+aynı istekler tekrarlandı. Varsayılan konumla 16 kayıt 4 satırda kaldı, JSON kayıtları metin
+kayıtlarıyla birleşti ve `--karsilastir` dağıtımda hiçbir hatayı yeni saymadı. `--konum satir`
+ile 7 satır oldu; üç hata hem kaybolan hem yeni çıkan sayıldı. Kişisel bir projenin 13 MB'lık
+geliştirme logunda 169 satır 158'e indi: farklı sürümlerde başka satırlarda görünen aynı
+hatalar birleşti. Satır numarası ters yönde de yanıltıyordu: bir denetleyicinin 19. satırı bir
+sürümde `create()`'in, sonraki bir sürümde `show()`'un içindeydi. Satırla iki ayrı metodun
+hataları tek satırdı; fonksiyonla ayrıldılar.
 
 ### PHP istisna metni
 
@@ -478,7 +566,7 @@ loglansa da tek satırda birleşir:
 ```text
      2  ERROR      14:03:11  14:05:40  Ödeme alınamadı: sipariş <SAYI>
                                        örnek: Ödeme alınamadı: sipariş 1047
-                                       konum: app/Services/OdemeServisi.php:64 (RuntimeException)
+                                       konum: app/Services/OdemeServisi.php:64, tahsilEt() (RuntimeException)
 ```
 
 İstisnanın önüne bir açıklama da yazılabilir: `Log::error('Ödeme başarısız: ' . $e)`. PHP sınıf
@@ -566,7 +654,7 @@ sınırına takılan 9 ölümcül hata tek satırda toplanıyor.
 Herd ya da Laragon'da yolların ayracı `\`'dir ve bağlam JSON olduğu için logda `\\` diye
 yazılır: `C:\\Users\\İrem\\Herd\\magaza\\vendor\\...`. Yol okunurken kaçış çözülür, proje kökü
 `\vendor\`'dan da bulunur ve konum gösterilirken ayraç `/` olur:
-`database/migrations/2026_10_25_090000_create_kuponlar_table.php:11`. Giriş noktası da
+`database/migrations/2026_10_25_090000_create_kuponlar_table.php:11, up()`. Giriş noktası da
 (logda `public\\index.php`) aynı yolla tanınır. Gerçek bir geliştirme logunda migration hatalarının
 konumu böylece migration dosyası olarak bulundu; önceden vendor'daki `Connection.php:822`
 görünüyordu.
@@ -629,9 +717,9 @@ sayıları ise dosyanın tamamınındır; uyan kayıt sayısı `Filtre` satırı
 
 ```text
 $ veylog --seviye error --son 1sa30dk ornekler/laravel.log
-ornekler/laravel.log: 203 satır
+ornekler/laravel.log: 205 satır
   Kayıt         : 59
-  Devam satırı  : 141
+  Devam satırı  : 143
   Yetim satır   : 3
   Filtre        : ERROR ve üstü, 2026-10-24 17:01:07 ve sonrası (son 1 sa 30 dk): 3 kayıt
   Zaman aralığı : 2026-10-24 17:05:13 → 2026-10-24 17:55:03
@@ -675,9 +763,9 @@ Her satıra şu bilgiler eklenir:
   `2026-10-24T09:00:00+00:00`) doğru sıralanır.
 - **örnek:** satırdaki ilk kaydın maskelenmemiş mesajı; `<SAYI>` ve `<*>`'ın arkasındaki
   gerçek değerleri gösterir. Kalıp ham mesajla aynıysa gösterilmez.
-- **konum:** kayıtlar bir istisnadan geliyorsa uygulama kodundaki ilk satır ve istisna
-  sınıfı. Dosya yolu kısaltılmaz; birçok editörün terminalinde `dosya:satır` tıklanarak
-  açılabilir.
+- **konum:** kayıtlar bir istisnadan geliyorsa uygulama kodundaki ilk satır, içinde
+  bulunduğu fonksiyon ve istisna sınıfı. Satır, satırdaki kayıtların en yenisininkidir. Dosya
+  yolu kısaltılmaz; birçok editörün terminalinde `dosya:satır` tıklanarak açılabilir.
 
 Tablo varsayılan olarak önem sırasına göre dizilir: önce seviye, aynı seviyede adet. İlk 10
 satır gösterilir; gösterilmeyen satır sayısı tablonun altında (JSON'da `gosterilmeyen`
@@ -705,7 +793,7 @@ Her kayıttan özet için gerekenler bir depoya alınır:
 
 | Depoda | Ne kadar yer tutar | Ne için |
 |---|---|---|
-| Alt gruplar: maskeli mesajı, Drain kümesi, istisnası ve seviyesi aynı olan kayıtlar; her birinin kayıt sayısı, ilk kaydının mesajı, ilk ve son zamanı | farklı alt grup başına | Kalıp tablosu |
+| Alt gruplar: maskeli mesajı, Drain kümesi, istisnası (konumun gösterilen satırıyla) ve seviyesi aynı olan kayıtlar; her birinin kayıt sayısı, ilk kaydının mesajı, ilk ve son zamanı, en geç kaydının sırası | farklı alt grup başına | Kalıp tablosu |
 | Her farklı maskeli mesaj, bir kez; Drain'in o mesaj için son bulduğu küme | farklı mesaj başına | Drain |
 | Kayıt sütunları: her kaydın zamanı ve alt grubu | kayıt başına 2–3 bayt | Karşılaştırma, ani artışlar |
 | Seyrek dizin: her 1024 kayıtta bir kaydın dosyadaki yeri | 1024 kayıtta 8 bayt | Bir kaydın mesajını yeniden okumak |

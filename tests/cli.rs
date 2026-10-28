@@ -768,7 +768,7 @@ fn filtreler_raporu_daraltir() {
     // Dosyanın sayıları değişmez; seviyeler ve kalıplar yalnızca filtreye uyanlardan
     assert!(
         stdout.starts_with(
-            "ornekler/laravel.log: 203 satır\n  Kayıt         : 59\n  Devam satırı  : 141\n  Yetim satır   : 3\n  Filtre        : ERROR ve üstü: 18 kayıt\n"
+            "ornekler/laravel.log: 205 satır\n  Kayıt         : 59\n  Devam satırı  : 143\n  Yetim satır   : 3\n  Filtre        : ERROR ve üstü: 18 kayıt\n"
         ),
         "{stdout}"
     );
@@ -924,14 +924,15 @@ fn json_satirlari_ve_windows_yollari() {
     // Windows yolu: köke göre ve ayracı / olarak
     assert!(
         stdout.contains(
-            "konum: database/migrations/2026_10_25_090000_create_kuponlar_table.php:11 (QueryException)\n"
+            "konum: database/migrations/2026_10_25_090000_create_kuponlar_table.php:11, up() (QueryException)\n"
         ),
         "{stdout}"
     );
-    // Aynı hata biri metin, biri JSON biçiminde iki kez yazıldı: tek satırda birleşir
+    // Aynı hata biri metin, biri JSON biçiminde iki kez yazıldı: tek satırda birleşir. JSON'un
+    // yığın izinde çağrılar yok; satırın fonksiyonu metin kaydının yığın izinden öğrenilir.
     assert!(
         stdout.contains(
-            "     2  ERROR      09:20:11  10:15:30  Undefined array key \"kargo_ucreti\"\n"
+            "     2  ERROR      09:20:11  10:15:30  Undefined array key \"kargo_ucreti\"\n                                       konum: app/Services/SepetHesaplayici.php:10, kargoUcreti() (ErrorException)\n"
         ),
         "{stdout}"
     );
@@ -955,7 +956,8 @@ fn json_satirlari_ve_windows_yollari() {
         serde_json::json!({
             "sinif": r"Illuminate\Http\Client\ConnectionException",
             "dosya": "app/Services/OdemeServisi.php",
-            "satir": 22
+            "satir": 22,
+            "metot": null
         })
     );
 }
@@ -1010,7 +1012,8 @@ fn view_hatalari_middleware_ve_kok() {
         serde_json::json!({
             "sinif": r"Illuminate\View\ViewException",
             "dosya": "resources/views/panel/kampanyalar.blade.php",
-            "satir": null
+            "satir": null,
+            "metot": null
         })
     );
 
@@ -1050,7 +1053,7 @@ fn istisna_metni_baglamdaki_istisnayla_birlesir() {
     assert!(cikti.stderr.is_empty(), "{}", metin(&cikti.stderr));
     assert!(
         stdout.ends_with(
-            "  adet  seviye     ilk       son       kalıp\n     2  ERROR      14:03:11  14:05:40  Ödeme alınamadı: sipariş <SAYI>\n                                       örnek: Ödeme alınamadı: sipariş 1047\n                                       konum: app/Services/OdemeServisi.php:64 (RuntimeException)\n"
+            "  adet  seviye     ilk       son       kalıp\n     2  ERROR      14:03:11  14:05:40  Ödeme alınamadı: sipariş <SAYI>\n                                       örnek: Ödeme alınamadı: sipariş 1047\n                                       konum: app/Services/OdemeServisi.php:64, tahsilEt() (RuntimeException)\n"
         ),
         "{stdout}"
     );
@@ -1060,6 +1063,126 @@ fn istisna_metni_baglamdaki_istisnayla_birlesir() {
     assert_eq!(satir["istisna"]["sinif"], "RuntimeException");
     assert_eq!(satir["istisna"]["dosya"], "app/Services/OdemeServisi.php");
     assert_eq!(satir["istisna"]["satir"], 64);
+}
+
+/// Bir dağıtımı aşan log. Dağıtımdan sonra `SiparisServisi.php`'nin başına dört satır
+/// eklenmiş: aynı iki hata başka satırlarda. Biri `DB::transaction()`'a verilen bir closure'da.
+/// Bir JSON kanalı da hatalardan birini yığın izi olmadan yazıyor.
+fn dagitim_logu() -> String {
+    let kayitlar = |saat: &str, kayma: u32| {
+        format!(
+            r#"[2026-10-27 {saat}:00] production.ERROR: Sipariş işlenemedi {{"exception":"[object] (RuntimeException(code: 0): Sipariş işlenemedi at /var/www/magaza/app/Services/SiparisServisi.php:{closure_ici})
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Concerns/ManagesTransactions.php(35): App\\Services\\SiparisServisi->App\\Services\\{{closure}}()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Support/Facades/Facade.php(364): Illuminate\\Database\\DatabaseManager->__call()
+#2 /var/www/magaza/app/Services/SiparisServisi.php({closure_tanimi}): Illuminate\\Support\\Facades\\Facade::__callStatic()
+#3 /var/www/magaza/app/Http/Controllers/SiparisController.php(11): App\\Services\\SiparisServisi->olustur()
+#4 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\SiparisController->olustur()
+#5 {{main}}
+"}}
+[2026-10-27 {saat}:05] production.ERROR: Undefined array key "kargo_ucreti" {{"exception":"[object] (ErrorException(code: 0): Undefined array key \"kargo_ucreti\" at /var/www/magaza/app/Services/SiparisServisi.php:{kargo})
+[stacktrace]
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(265): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->handleError()
+#1 /var/www/magaza/app/Services/SiparisServisi.php({kargo}): Illuminate\\Foundation\\Bootstrap\\HandleExceptions->Illuminate\\Foundation\\Bootstrap\\{{closure}}()
+#2 /var/www/magaza/app/Http/Controllers/SiparisController.php(23): App\\Services\\SiparisServisi->kargoUcreti()
+#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): App\\Http\\Controllers\\SiparisController->kargo()
+#4 {{main}}
+"}}
+"#,
+            closure_ici = 15 + kayma,
+            closure_tanimi = 12 + kayma,
+            kargo = 34 + kayma,
+        )
+    };
+    let json = r#"{"message":"Undefined array key \"kargo_ucreti\"","context":{"exception":{"class":"ErrorException","message":"Undefined array key \"kargo_ucreti\"","code":0,"file":"/var/www/magaza/app/Services/SiparisServisi.php:38"}},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-27T11:00:10.000000+00:00","extra":{}}"#;
+    format!("{}{}{json}\n", kayitlar("10:00", 0), kayitlar("11:00", 4))
+}
+
+#[test]
+fn satirlar_kaysa_da_hata_ayni_kalir() {
+    let yol = gecici_dosya("dagitim.log", dagitim_logu().as_bytes());
+    let dosya = yol.to_str().unwrap();
+    let metot = veylog(&["--hepsi", "--karsilastir", "10:30", dosya]);
+    let satir = veylog(&[
+        "--hepsi",
+        "--karsilastir",
+        "10:30",
+        "--konum",
+        "satir",
+        dosya,
+    ]);
+    let json = veylog(&["-b", "json", dosya]);
+    let gecersiz = veylog(&["--konum", "dosya", dosya]);
+    fs::remove_file(&yol).ok();
+
+    // Varsayılan: konum fonksiyonla belirlenir. Dağıtımdan önceki ve sonraki kayıtlar aynı
+    // hatadır; gösterilen satır en yeni kaydınki. JSON kaydının fonksiyonu metin kayıtlarının
+    // yığın izinden bulunur.
+    assert!(metot.status.success());
+    let stdout = metin(&metot.stdout);
+    assert!(stdout.contains("→ parmak iziyle 2 grup\n"), "{stdout}");
+    assert!(
+        stdout.contains(
+            "     3  ERROR      10:00:05  11:00:10  Undefined array key \"kargo_ucreti\"\n                                       konum: app/Services/SiparisServisi.php:38, kargoUcreti() (ErrorException)\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "     2  ERROR      10:00:00  11:00:00  Sipariş işlenemedi\n                                       konum: app/Services/SiparisServisi.php:19, {closure:olustur()} (RuntimeException)\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .contains("Yeni çıkanlar (yalnızca sonra): yok\n\nKaybolanlar (yalnızca önce): yok\n"),
+        "{stdout}"
+    );
+
+    // `--konum satir`: dosya ve satır. Her hata dağıtımdan sonra yeniymiş gibi görünür.
+    assert!(satir.status.success());
+    let stdout = metin(&satir.stdout);
+    assert!(stdout.contains("→ parmak iziyle 4 grup\n"), "{stdout}");
+    assert!(
+        stdout.contains("Yeni çıkanlar (yalnızca sonra): 2\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Kaybolanlar (yalnızca önce): 2\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("konum: app/Services/SiparisServisi.php:15 (RuntimeException)\n"),
+        "{stdout}"
+    );
+
+    let rapor: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(rapor["kaliplar"]["konum"], "metot");
+    let kargo = &rapor["kaliplar"]["satirlar"][0];
+    assert_eq!(kargo["adet"], 3);
+    assert_eq!(
+        kargo["istisna"],
+        serde_json::json!({
+            "sinif": "ErrorException",
+            "dosya": "app/Services/SiparisServisi.php",
+            "satir": 38,
+            "metot": r"App\Services\SiparisServisi->kargoUcreti"
+        })
+    );
+    assert_eq!(
+        rapor["kaliplar"]["satirlar"][1]["istisna"]["metot"],
+        r"App\Services\SiparisServisi->{closure:olustur()}"
+    );
+
+    assert_eq!(gecersiz.status.code(), Some(2));
+    assert!(gecersiz.stdout.is_empty());
+    assert!(
+        metin(&gecersiz.stderr).contains(
+            "veylog: --konum için geçersiz değer \"dosya\": şunlardan biri olmalı: metot, satir"
+        ),
+        "{}",
+        metin(&gecersiz.stderr)
+    );
 }
 
 /// `kuyruk_artisi`nin başka bir satır ve zaman biçiminde yazılmış hali:

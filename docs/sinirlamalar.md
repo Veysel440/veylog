@@ -26,8 +26,22 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
 
 ## Parmak izi
 
-- Parmak izi satır numarasını içerir: bir dağıtımda dosyanın üst kısmı değişirse aynı hata
-  iki ayrı satırda görünebilir. Sentry gibi araçlar bu yüzden satır numarası kullanmaz.
+- Konum, satırın içinde bulunduğu fonksiyondur
+  ([satır değil fonksiyon](nasil-calisir.md#satır-değil-fonksiyon)): aynı fonksiyonda aynı
+  istisna sınıfı ve aynı kalıpla oluşan iki hata tek satırda birleşir; gösterilen satır en yeni
+  kaydınkidir. Satırları ayırmak için `--konum satir`.
+- PHP 8.4'ten önce closure'ın tanımlandığı fonksiyon yığın izinden tahmin edilir: closure'dan
+  dışa doğru aynı dosyadaki ilk satırın fonksiyonu. Closure bir değişkende saklanıp aynı
+  dosyanın başka bir fonksiyonundan çağrıldıysa tahmin yanlış olabilir. Tanımlandığı satır
+  yığın izinde hiç yoksa (ör. bir service provider'ın `boot()`'unda kaydedilip sonra çağrılan
+  bir dinleyici) sahibi bilinmez. PHP 8.4 sahibi closure'ın adına yazdığı için bu ikisinde
+  sürüm yükseltilince sahip değişir; hata bir kez yeni bir hata gibi görünür.
+- Sahibi bilinmeyen closure'lar ve rota dosyalarındaki closure'lar
+  (`Route::get('/x', function () {...})`) sınıf ve dosya başına tek bir `{closure}` sayılır:
+  aynı istisna sınıfı ve aynı kalıpla oluşan hataları birleşir.
+- Bir dosyanın en üst düzeyindeki kod (rota dosyası yüklenirken, çalıştırılan bir betikte)
+  bir fonksiyonun içinde değildir; konumu satırla belirlenir ve dağıtımda satırı kayarsa
+  başka bir hata gibi görünür.
 - İstisna üç yazılışla tanınır: bağlamda (yakalanmayan istisnalar, `report($e)`,
   `Log::error('...', ['exception' => $e])`), JSON satırlarında bağlamın `exception` alanında
   ve PHP'nin istisna metninde (`Log::error($e)`;
@@ -43,8 +57,13 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
 - Derlenmiş şablonlar Laravel'in varsayılan klasöründe (`storage/framework/views`) aranır;
   `VIEW_COMPILED_PATH` başka bir klasörü gösteriyorsa o klasördeki dosyalar uygulama kodu
   sayılabilir.
-- JSON satırlarının yığın izinde çağrılar yazılmaz; middleware'in `$next($request)` satırı
-  orada ayırt edilemez ve konum olarak seçilebilir.
+- JSON satırlarının yığın izinde çağrılar yazılmaz: middleware'in `$next($request)` satırı
+  ayırt edilemez ve konum olarak seçilebilir. Satırın fonksiyonu da ancak logun başka bir
+  kaydının yığın izinde geçiyorsa bilinir; geçmiyorsa konum satırla belirlenir ve bir
+  dağıtımda satırı kayan hata başka bir hata gibi görünür.
+- Filtre verildiyse (`--seviye`, `--son`...) proje kökleri ve satırların fonksiyonları
+  yalnızca filtreye uyan kayıtlardan öğrenilir: filtrenin dışında kalan bir metin kaydı,
+  filtreye uyan bir JSON kaydının fonksiyonunu bildiremez.
 - `JsonFormatter` yığın izini varsayılan olarak yazmaz. O zaman vendor'da fırlatılan
   istisnaların konumu bulunamaz. Uygulamada fırlatılanların kökü de ancak logun başka bir
   kaydında vendor yolu geçiyorsa bulunur; geçmiyorsa yol tam yazılır
