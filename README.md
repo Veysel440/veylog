@@ -683,7 +683,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Release notes are in [CHANGELOG.md](CHANGELOG.md) (in Turkish).
+Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

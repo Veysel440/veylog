@@ -623,7 +623,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md).
+Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md) (İngilizce).
 
 ## Lisans
 

@@ -4,12 +4,12 @@ version = "0.2.0"
 edition = "2024"
 # En düşük Rust sürümü: `if let ... && ...` zincirleri 1.88'de kararlı hale geldi
 rust-version = "1.88"
-description = "Laravel log dosyalarını okunabilir bir özete çeviren komut satırı aracı: kalıplar, hata parmak izleri, karşılaştırma, ani artışlar ve canlı izleme"
+description = "Summarizes Laravel log files into recurring error patterns, with exception fingerprints, deploy comparisons, spike detection and live watching"
 authors = ["Veysel Tulu"]
 license = "MIT"
 repository = "https://github.com/Veysel440/veylog"
 readme = "README.md"
-keywords = ["laravel", "log", "drain", "cli", "php"]
+keywords = ["laravel", "log", "log-analysis", "monolog", "php"]
 categories = ["command-line-utilities", "development-tools::debugging"]
 # crates.io'ya yüklenecek dosyalar; CI ayarları ve depo dosyaları pakete girmez
 include = ["src/", "tests/", "ornekler/", "docs/", "README.md", "CHANGELOG.md", "LICENSE"]

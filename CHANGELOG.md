@@ -1,304 +1,337 @@
-# Değişiklikler
+# Changelog
 
-Bu dosya [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) biçimini izler; sürüm
-numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uyar.
+All notable changes to this project are documented in this file. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Yayımlanmamış]
+## [Unreleased]
 
-### Düzeltmeler
+### Fixes
 
-- Windows'ta borudan gelen standart girdi (`type laravel.log | veylog --son 1sa -`) düz bir
-  dosya sanılıyor, yeniden okunamıyordu: `--son` ve yalnızca saat verilmiş sınırlarla rapor
-  boş çıkıyor, `--ani-artis` örnekleri alt grubun ilk kaydından seçiliyordu. Standart girdinin
-  türüne Windows'ta `GetFileType` ile bakılır.
-- Windows'ta `--izle`, yeniden adlandırılarak döndürülen bir logun yerine açılan yeni dosyayı
-  eskisinden kısa değilse fark etmiyordu: NTFS, aynı adla 15 saniye içinde açılan dosyaya
-  eskisinin oluşturulma zamanını verir (dosya adı tünellemesi). Dosyalar artık birimin seri
-  numarası ve dosya numarasıyla karşılaştırılır.
+- On Windows, standard input from a pipe (`type laravel.log | veylog --last 1h -`) was taken
+  for a regular file and could not be read again: with `--last` and time-only bounds the
+  report came out empty, and `--spikes` samples fell back to the first record of the
+  subgroup. The type of standard input is now checked with `GetFileType` on Windows.
+- On Windows, `--watch` did not notice a log rotated by renaming when the new file was not
+  shorter than the old one: NTFS gives a file created under the same name within 15 seconds
+  the creation time of the old one (file name tunneling). Files are now compared by volume
+  serial number and file ID.
+
+### Other
+
+- The README and this changelog are now in English; the Turkish README is `README.tr.md`.
+  The package description on crates.io is in English, and its keywords include
+  `log-analysis` and `monolog`.
 
 ## [0.2.0] - 2026-10-28
 
-### Bellek ve hız
+### Memory and speed
 
-- Log satır satır, akış halinde okunur; dosyanın tamamı belleğe alınmaz. Bellek dosyanın
-  boyuyla değil farklı mesajların sayısı ve uzunluğuyla büyür: 2 GB'lık bir log 4 GB yerine
-  27 MB ile, 500 MB'lık bir log 976 MB yerine 16 MB ile özetlenir.
-- Okuma hızlandı: 2 GB'lık log 36 yerine 15 saniyede, 500 MB'lık log 8 yerine 3,8 saniyede
-  özetlenir. Geçerli UTF-8 satırlar hızlı yoldan denetlenir; maskeleme ve Drain aşağıdaki
-  değişikliklerle hızlandı.
-- Kayıtların zamanları ve alt grupları sıkıştırılmış sütunlarda tutulur (delta, zigzag ve
-  LEB128 kodlaması): kayıt başına 2–3 bayt.
-- Kayıtlar okunurken, logdaki sırasıyla kümelenir. Bir mesajın tekrarında ağacın o uzunluktaki
-  kısmı değişmediyse Drain'in önceki sonucu kullanılır (sürümlü önbellek); sonuç her kaydı
-  aramayla kümelemekle aynıdır. Drain ikinci tura girerse kayıtlar sütunlardan yeniden
-  kümelenir; girdi yeniden okunmaz.
-- Drain'in kalıpları belirteçlerini ayrı ayrı saklamaz: kümeyi açan maskeli mesaj depoyla
-  paylaşılır, belirteç başına 8 bayt tutulur. Her biri başka bir toplu SQL sorgusu taşıyan
-  1 500 istisnalık 34 MB'lık bir log 421 MB yerine 208 MB ile okunur.
-- Ani artışın örneği gerekirse kayıt dosyadan yeniden okunur (seyrek dizin). Okunan kaydın
-  maskeli mesajı ve seviyesi denetlenir: dosya bu arada döndürüldüyse yanlış bir kayıt örnek
-  olmaz, uyarı yazılır.
-- Borudan gelen standart girdi, yeniden okunması gerekiyorsa (`--ani-artis`, logun sonuna göre
-  çözülen bir filtre) okunurken geçici bir dosyaya kopyalanır; dosya hemen silinir, diskte
-  kalmaz, Unix'te yalnızca sahibi okuyabilir. Dosyaya yönlendirilmiş standart girdi
-  (`veylog - < laravel.log`) kopyalanmaz, dosyanın kendisi yeniden okunur. Kopya yalnızca ani
-  artışların örnekleri içinse ve oluşturulamaz ya da yazılamazsa (disk dolu) bir uyarı
-  yazılır, rapor yine çıkar.
-- 262 144'ten fazla farklı ham mesaj varsa sayısı HyperLogLog ile tahmin edilir (64 KB,
-  ±%0,4, Ertl'in sapmasız tahmincisi). Metinde sayının önünde `≈` yazar; JSON'a
-  `ham_mesaj_yaklasik` alanı eklendi. Tahmin, tam sayımın bıraktığı sayının altına inmez.
-- Dev satırlara ve kayıtlara karşı sınırlar: bir satırın en fazla 256 MB'ı okunur; bir başlık
-  satırının ve bir JSON kaydının mesajının ilk 1 MB'ı, bir mesajın ilk 64 KB'ı kullanılır;
-  bir kaydın devam satırlarının en fazla 256 MB'ı ve bir milyon satırı saklanır. JSON
-  satırlarında yalnızca kaydın gerektirdiği alanlar (`message`, `level_name`, `datetime`,
-  bağlamdaki `exception`) kurulur. Satır sonu olmayan 300 MB'lık bir dosya 262 MB, 100 MB'lık
-  tek bir başlık satırı 102 MB, bağlamında dev bir dizi taşıyan 50 MB'lık bir JSON satırı
-  52 MB bellekle okunur.
+- The log is streamed line by line; the file is never loaded into memory as a whole. Memory
+  grows with the number and length of distinct messages rather than with the file size: a
+  2 GB log is summarized with 27 MB instead of 4 GB, a 500 MB log with 16 MB instead of
+  976 MB.
+- Faster reading: the 2 GB log is summarized in 15 seconds instead of 36, the 500 MB log in
+  3.8 seconds instead of 8. Valid UTF-8 lines take a fast path; masking and Drain got faster
+  with the changes below.
+- Record times and subgroups are kept in compressed columns (delta, zigzag and LEB128
+  encoding): 2–3 bytes per record.
+- Records are clustered while they are read, in log order. When a message repeats and the
+  part of the tree for its length has not changed, Drain's previous result is reused
+  (versioned cache); the result is the same as clustering every record with a search. If
+  Drain needs a second round, records are re-clustered from the columns; the input is not
+  read again.
+- Drain's patterns no longer store their tokens separately: the masked message that opened a
+  cluster is shared with the store, and 8 bytes are kept per token. A 34 MB log of 1,500
+  exceptions, each carrying a different batch SQL query, is read with 208 MB instead of
+  421 MB.
+- When a spike needs a sample, the record is read again from the file (sparse index). The
+  masked message and the level of the record read are checked: if the file was rotated in the
+  meantime, a wrong record does not become the sample, and a warning is written.
+- Standard input from a pipe is copied to a temporary file while it is read, if it has to be
+  read again (`--spikes`, a filter resolved relative to the end of the log); the file is
+  deleted right away, does not stay on disk, and on Unix only its owner can read it.
+  Standard input redirected from a file (`veylog - < laravel.log`) is not copied; the file
+  itself is read again. If the copy is only needed for spike samples and cannot be created or
+  written (disk full), a warning is written and the report is still produced.
+- Beyond 262,144 distinct raw messages, their number is estimated with HyperLogLog (64 KB,
+  ±0.4%, Ertl's unbiased estimator). The text output prefixes the number with `≈`; JSON has a
+  new `ham_mesaj_yaklasik` field. The estimate never drops below the exact count reached
+  before it.
+- Limits against huge lines and records: at most 256 MB of a line is read; the first 1 MB of
+  a header line and of a JSON record's message, and the first 64 KB of a message, are used;
+  at most 256 MB and one million continuation lines of a record are kept. In JSON lines, only
+  the fields a record needs (`message`, `level_name`, `datetime`, the context's `exception`)
+  are built. A 300 MB file without line breaks is read with 262 MB, a single 100 MB header
+  line with 102 MB, and a 50 MB JSON line carrying a huge array in its context with 52 MB.
 
-### Filtreler
+### Filters
 
-- `--seviye warning`: yalnızca bu seviye ve üstündeki kayıtlar.
-- `--baslangic` ve `--bitis`: yalnızca bir zaman aralığındaki kayıtlar (başlangıç dahil, bitiş
-  hariç). Yalnızca saat verilirse logun son günü.
-- `--son 2sa`: logun son kısmı, en yeni kayıttan geriye. Süre birimleri: `sn`, `dk`, `sa`,
-  `g` (ya da `s`, `m`, `h`, `d`); birleştirilebilir: `1sa30dk`.
-- Filtreler kalıpları, seviyeleri, zaman aralığını, karşılaştırmayı ve ani artışları süzer;
-  dosyanın satır ve kayıt sayıları değişmez. Metin ve Markdown'da `Filtre` satırı, JSON'da
-  `filtre` nesnesi yalnızca filtre verilince yazılır. Filtreye uymayan kayıtlar maskelenmez ve
-  kümelenmez: 500 MB'lık bir logun son iki saati 1,8 saniyede özetlenir.
-- `--son` ve yalnızca saat verilmiş sınırlar logun sonunu bilmeyi gerektirir: log önce bir
-  kez taranır, borudan gelen standart girdi taranırken geçici bir dosyaya kopyalanır. Logda
-  hiç kayıt yoksa bu sınırlar çözülmez; JSON'da çözülmeyen sınır `null`dur.
-- Başlangıç bitişten önce değilse filtrenin aralığı boştur: kullanım hatası, çıkış kodu 2.
+- `--level warning`: only records at this level and above.
+- `--since` and `--until`: only records in a time range (start inclusive, end exclusive). A
+  time of day alone means the log's last day.
+- `--last 2h`: the end of the log, going back from the newest record. Duration units: `s`,
+  `m`, `h`, `d` (or `sn`, `dk`, `sa`, `g`); they can be combined: `1h30m`.
+- Filters narrow the patterns, levels, time range, comparison and spikes; the file's line and
+  record counts do not change. The `Filter` line in text and Markdown, and the `filtre` object
+  in JSON, are written only when a filter is given. Records outside the filter are neither
+  masked nor clustered: the last two hours of a 500 MB log are summarized in 1.8 seconds.
+- `--last` and time-only bounds require knowing where the log ends: the log is scanned once
+  beforehand, and standard input from a pipe is copied to a temporary file during that scan.
+  If the log has no records, these bounds are not resolved; an unresolved bound is `null` in
+  JSON.
+- If the start is not before the end, the filter's range is empty: a usage error, exit
+  code 2.
 
-### Saat dilimleri
+### Time zones
 
-- Kayıt zamanlarındaki saat dilimi (`+03:00`, `Z`) hesaba katılır: bütün zamanlar tek bir
-  dilimde, raporun saat diliminde karşılaştırılır ve gösterilir. Yaz saatine geçişi kapsayan ya
-  da saat dilimi değiştirilmiş bir uygulamanın logu doğru sıralanır; süreler, karşılaştırma ve
-  ani artışlar kaymaz.
-- `--saat-dilimi +03:00`: raporun saat dilimi. Verilmezse logda saat dilimi yazılı ilk
-  kaydınkidir; saat dilimi yazılmamış kayıtlar bu dilimde sayılır. Filtrelerin ve
-  `--karsilastir`'ın zamanları da bu dilimdedir.
-- Metin ve Markdown çıktısında `Saat dilimi` satırı: raporun dilimi, kaç kaydın başka bir
-  dilimden çevrildiği, kaçında dilim yazılmadığı. JSON'da `saat_dilimi` nesnesi; logda dilim
-  yazılmamışsa ve verilmediyse `null`.
-- Zamanlar her yerde tek biçimde yazılır: `2026-10-24 14:03:11`. 0.1.0 zaman aralığını ve
-  JSON'daki kalıp zamanlarını logdaki yazılışıyla veriyordu (`2026-10-24T14:03:11.123456+03:00`).
-- Takvimde olmayan bir saat dilimi (`+25:00`) taşıyan satır kayıt başlığı sayılmaz.
+- Time zones in record timestamps (`+03:00`, `Z`) are taken into account: all times are
+  compared and shown in a single zone, the report's time zone. The log of an application that
+  crossed a daylight saving change, or whose time zone was changed, sorts correctly;
+  durations, comparisons and spikes do not shift.
+- `--timezone +03:00`: the report's time zone. By default it is the zone of the first record
+  that has one; records without a time zone are counted in it. Times given to the filters and
+  to `--compare` are in this zone too.
+- A `Time zone` line in text and Markdown output: the report's zone, how many records were
+  converted from another zone, and how many had no zone. In JSON, a `saat_dilimi` object;
+  `null` if the log has no zones and none was given.
+- Times are written in one format everywhere: `2026-10-24 14:03:11`. 0.1.0 showed the time
+  range and the pattern times in JSON as written in the log
+  (`2026-10-24T14:03:11.123456+03:00`).
+- A line with a time zone that does not exist (`+25:00`) is not a record header.
 
-### Log biçimleri
+### Log formats
 
-- `Log::error($e)` ile metne çevrilmiş istisnalar okunur: PHP'nin istisna metninden
-  (`RuntimeException: ... in dosya:satır`, `Stack trace:`, `Next`) sınıf, fırlatıldığı yer ve
-  yığın izi. Kaydın mesajı istisnanın mesajıdır; aynı hata `report($e)` ile loglanmış olsa da
-  aynı satırda birleşir. Önceki istisnalar `Next` ile yazıldığında logu yazdıran, en dıştaki
-  istisna alınır. Açıklamalı yazılış da tanınır: `Log::error('Ödeme başarısız: ' . $e)`.
-- `--desen`: kendi satır biçimi. Monolog'un biçim dizgesi (`config/logging.php`'deki
-  `format`) düzenli ifadeye çevrilir; adlandırılmış gruplu bir düzenli ifade de verilebilir
-  (`zaman`, `mesaj`; isteğe bağlı `seviye`, `baglam`, `kanal`). JSON satırları her biçimde
-  okunur.
-- Desenle okunan seviyelerde başka araçların adları ve kısaltmaları da tanınır: `WARN`, `ERR`,
-  `FATAL`, `TRACE`; Serilog'un `VRB`, `DBG`, `INF`, `WRN`, `FTL`'si; .NET'in `fail`, `dbug`'ı;
-  Java'nın `SEVERE`, `FINE`'ı. Bu adların en az üç harflik tek anlamlı başları (Monolog'un
-  `setMaxLevelNameLength` ile kısalttığı `ERRO`, `NOTI`) ve Monolog'un sayıları (`%level%`)
-  da okunur. Desene ve zamana uyduğu halde seviyesi tanınmayan satırlar sayılır ve uyarılır.
-- `--zaman-bicimi`: zamanın biçimi, PHP'nin `date()` dizgesiyle (Monolog'un `dateFormat`'ı):
-  `d.m.Y H:i:s`, `d/M/Y:H:i:s O`, `U`. Laravel'in satır biçiminde de geçerlidir.
-- Satırlardan hiçbiri bir kayıt başlatmıyorsa bir uyarı yazılır.
-- Sınıf adları ve yollar okunurken JSON kaçışlarından çözülür: Windows'ta aynı hatanın
-  bağlamdaki (`\\`) ve istisna metnindeki (`\`) yazılışı aynı parmak izini verir.
-- Ani artışın örneği yeniden okunurken kayıt devam satırlarıyla birlikte toplanır: istisna
-  metninin mesajı devam satırlarındadır.
+- Exceptions turned into text by `Log::error($e)` are read: the class, the location where it
+  was thrown and the stack trace come from PHP's exception text
+  (`RuntimeException: ... in file:line`, `Stack trace:`, `Next`). The record's message is the
+  exception's message; the same error logged with `report($e)` lands on the same row. When
+  previous exceptions are written with `Next`, the outermost exception, the one that was
+  logged, is used. Text with a description is recognized too:
+  `Log::error('Payment failed: ' . $e)`.
+- `--pattern`: a custom line format. A Monolog format string (`format` in
+  `config/logging.php`) is turned into a regular expression; a regular expression with named
+  groups can be given as well (`time`, `message`; optionally `level`, `context`, `channel`).
+  JSON lines are read with any format.
+- Levels read with a pattern also accept other tools' names and abbreviations: `WARN`, `ERR`,
+  `FATAL`, `TRACE`; Serilog's `VRB`, `DBG`, `INF`, `WRN`, `FTL`; .NET's `fail`, `dbug`;
+  Java's `SEVERE`, `FINE`. Unambiguous prefixes of at least three letters of these names
+  (`ERRO`, `NOTI`, as shortened by Monolog's `setMaxLevelNameLength`) and Monolog's numbers
+  (`%level%`) are read too. Lines that match the pattern and the time but have an
+  unrecognized level are counted and reported in a warning.
+- `--time-format`: the timestamp's format as a PHP `date()` string (Monolog's
+  `dateFormat`): `d.m.Y H:i:s`, `d/M/Y:H:i:s O`, `U`. It also works with Laravel's line
+  format.
+- A warning is written if no line starts a record.
+- Class names and paths are unescaped from JSON while reading: on Windows, the same error
+  written in the context (`\\`) and in exception text (`\`) gets the same fingerprint.
+- When a spike's sample is read again, the record is gathered with its continuation lines:
+  the message of exception text is in the continuation lines.
 
-### Satır numarasından bağımsız parmak izi
+### Line-independent fingerprints
 
-- Bir hatanın yeri dosya ve satırın içinde bulunduğu fonksiyondur:
-  `app/Services/SepetHesaplayici.php:88, toplam()`. Bir dağıtım dosyanın üstüne satır eklese
-  de aynı hata tablonun aynı satırında kalır; `--karsilastir` onu kaybolan ve yeni çıkan
-  saymaz. Fonksiyon, yığın izinde bir sonraki satırda çağrılan fonksiyondur. PHP'nin bir
-  uyarısından doğan `ErrorException`'da fırlatıldığı yer yığın izinde de görünür; fonksiyonu o
-  satırınkidir.
-- Kimliğe fonksiyonun sınıfsız adı katılır; dosya zaten kimliktedir. PHP trait'teki bir
-  metodu onu kullanan sınıfın adıyla yazar (`App\Models\Urun->kaydet()`,
-  `App\Models\Siparis->kaydet()`): trait'teki bir hata yine tek satırdır.
-- Gösterilen satır o hatanın en yeni kaydınınkidir: kod değiştiyse güncel satır.
-- Closure'lar tanımlandıkları fonksiyonla ayrılır: `{closure:olustur()}`. Fonksiyon PHP
-  8.4'ün closure adından (`{closure:App\Services\SiparisServisi::olustur():12}`) okunur,
-  öncesinde yığın izinden bulunur: closure'dan dışa doğru aynı dosyadaki ilk satırın
-  fonksiyonu. Rota dosyalarındaki closure'lar `{closure}` diye yazılır.
-- Bir dosyanın en üst düzeyindeki kod (dahil edilen dosya, çalıştırılan betik) bir
-  fonksiyonun içinde değildir; konumu satırla belirlenir.
-- Çağrıları yazılmayan kayıtların (Monolog'un JSON yığın izi, kapalı yığın izi) fonksiyonu
-  logun öteki yığın izlerinden öğrenilir: aynı hatanın JSON ve metin kayıtları birleşir. İki
-  farklı fonksiyonda görülen satır kullanılmaz.
-- `--konum satir`: dosya ve satır, 0.1'deki gibi.
-- JSON çıktısında `istisna.metot` (fonksiyonun tam adı) ve `kaliplar.konum` alanları;
-  Markdown'ın konum hücresinde fonksiyon.
+- An error's location is the file and the function that encloses the line:
+  `app/Services/SepetHesaplayici.php:88, toplam()`. If a deploy adds lines at the top of the
+  file, the same error stays on the same row of the table, and `--compare` does not count it
+  as gone and new. The function is the one called on the next line of the stack trace. For
+  an `ErrorException` raised from a PHP warning, the location where it was thrown also
+  appears in the stack trace; its function is that line's.
+- The identity uses the function's name without its class; the file is already part of it.
+  PHP writes a trait method with the name of the class that uses it
+  (`App\Models\Product->save()`, `App\Models\Order->save()`): an error in a trait is still a
+  single row.
+- The line shown is that of the error's newest record: the current line if the code changed.
+- Closures are told apart by the function that defines them: `{closure:store()}`. The
+  function is read from the closure's name in PHP 8.4
+  (`{closure:App\Services\OrderService::store():12}`); for earlier versions it is taken from
+  the stack trace: the function of the first frame further out in the same file. Closures in
+  route files are written as `{closure}`.
+- Code at the top level of a file (an included file, a script) is not inside a function; its
+  location is identified by its line.
+- Records whose stack traces carry no calls (Monolog's JSON stack trace, a collapsed stack
+  trace) learn their function from the other stack traces in the log: JSON and text records
+  of the same error merge. A line seen in two different functions is not used.
+- `--location line`: file and line, as in 0.1.
+- In JSON output, the `istisna.metot` (full name of the function) and `kaliplar.konum`
+  fields; in Markdown, the function in the location cell.
 
-### Kategorik konumlar
+### Categorical positions
 
-- Koddan gelen değerler biçimlerinden tanınır: ad alanlı sınıf adları
-  (`App\Jobs\FaturaGonder`), büyük harfli sabitler (`ORDER_CREATED`), deveAdı ve yilan_adi
-  tanımlayıcılar, PHP değişkenleri (`$urun`), noktalı ya da iki noktalı adlar
-  (`odeme.basarisiz`, `kurlar:guncelle`), tek ya da çift tırnaklı tek kelimeler (`'fiyat'`).
-  İki mesaj yalnızca aynı biçimdeki iki kodsal değerde ayrılıyorsa fark, rakamlı farklar gibi
-  eşiği gevşetir: `İş tamamlandı: App\Jobs\FaturaGonder` ile `İş tamamlandı:
-  App\Jobs\EpostaGonder` 100 farklı iş beklenmeden tek kalıpta birleşir. Sıradan kelimeler
-  (`Ödeme alındı`, `Ödeme reddedildi`; kuyruk adları, durum kelimeleri) eskisi gibi ayrı
-  kalır, 100 farklı değer sınırı onlar için sürer. Kodsal biçimli baş belirteçler, rakamlılar
-  gibi ağacın ortak `<*>` dalına gider.
-- Raporda her `<*>` konumunun en sık beş değeri adetleriyle yazılır, kalanı `+N başka`:
-  metinde kalıbın altındaki `değerler:` satırı (sığmayan değerler alt satırlara taşar),
-  Markdown'da `Değerler` sütunu, JSON'da her satırın `degiskenler` dizisi (`konum`,
-  `degerler`, `baska`). Değerler rapor zamanında depodaki maskeli mesajlardan sayılır; ek
-  bellek gerekmez. `Kullanıcı <SAYI> <*> yaptı` gibi sözdiziminden birleşen kalıpların
-  değerleri de böylece görünür.
-- Yeni örnek log `ornekler/kuyruk.log`: iş sınıfları, olay adları ve durum sabitleri.
+- Code-like values are recognized by their shape: namespaced class names
+  (`App\Jobs\SendInvoice`), upper-case constants (`ORDER_CREATED`), camelCase and snake_case
+  identifiers, PHP variables (`$product`), dotted or colon-separated names
+  (`payment.failed`, `rates:update`), and single words in single or double quotes
+  (`'price'`). When two messages differ only in two code-like values of the same shape, the
+  difference relaxes the threshold the way differences with digits do:
+  `Job completed: App\Jobs\SendInvoice` and `Job completed: App\Jobs\SendEmail` merge into one
+  pattern without waiting for 100 different jobs. Ordinary words (`Payment received`,
+  `Payment declined`; queue names, status words) stay apart as before, and the limit of 100
+  distinct values still applies to them. Code-like leading tokens go to the tree's shared
+  `<*>` branch, like tokens with digits.
+- The report lists the five most frequent values of every `<*>` position with their counts,
+  and the rest as `+N more`: the `values:` line under the pattern in text (values that do not
+  fit wrap to the following lines), the `Values` column in Markdown, and the `degiskenler`
+  array of each row in JSON (`konum`, `degerler`, `baska`). Values are counted at report time
+  from the masked messages in the store, so no extra memory is needed. The values of patterns
+  merged by syntax, such as `User <NUM> logged <*>`, become visible too.
+- A new sample log, `ornekler/kuyruk.log`: job classes, event names and status constants.
 
-### Canlı izleme
+### Live watching
 
-- `--izle`: log sonuna kadar okunur ve rapor yazılır; sonra eklenen kayıtlar okunmaya devam
-  eder, yeni kayıt geldikçe rapor yeniden çizilir. Girdi yeniden okunmaz: depo okuma
-  durumunu korur, her çizim yalnızca yeni baytları işler; Drain değişken bir konum bulursa
-  kayıtlar o çizimde yeniden kümelenir. Bir durum satırı vardır: dosya, aralık, kayıt sayısı,
-  en yeni kaydın zamanı.
-- Terminalde her çizimde ekran ve kaydırma geçmişi temizlenir; durum satırı ve uyarılar
-  raporun altındadır, rapor ekrandan uzun olsa da görünür. Windows'un eski konsolunda ekranı
-  temizleyen kaçış dizileri program tarafından açılır. Bir dosyaya ya da boruya yazılıyorsa
-  çizimler bir ayırıcı satırla art arda yazılır.
-- `--aralik 500ms`: girdiye ne sıklıkla bakılacağı ve raporun en sık ne kadarda bir
-  çizileceği (varsayılan 2 sn; 100 ms ile 1 sa arası). Süre sözdizimine `ms` birimi eklendi.
-- Okunan son kayıt, ondan sonra bir kayıt başlığı gelince ya da girdi bir aralık boyunca sessiz
-  kalınca depoya alınır: yığın izi birkaç yazma işlemiyle gelen bir kayıt bölünmez. Satır
-  ortasında kesilen okumalar da bekletilir; sessizlikte satır sonu gelmemiş satır da okunur.
-  Böylece sessiz bir anda çizilen rapor, o ana kadar gelen baytların bir kerede
-  özetlenmesiyle aynıdır (değişken konumu çok olan loglarda kalıplar nadiren farklı olabilir:
-  konumlar parça parça öğrenilir). Bir süredir değişmeyen bir dosyanın son kaydı ilk çizimde
-  görünür.
-- Döndürülen log (logrotate, `copytruncate`) fark edilir ve baştan okunur; önceki kayıtlar
-  raporda kalır, durum satırına `döndürüldü` yazılır. Eski dosya önce sonuna kadar okunur:
-  döndürülmeden hemen önce yazılan kayıtlar kaybolmaz. Seyrek dizin kayıtların sıra
-  numaralarını da tutar; yeni dosyanın kayıtları yeni dosyadaki konumlarıyla yeniden okunur.
-- Zaman filtreleri izlemede kayan penceredir: `--son 1sa` her çizimde o ana kadar okunan en
-  yeni kayda göre uygulanır; en yeni kayıt, toplu okumadaki gibi seviye filtresine uymayanlarla
-  birlikte bulunur. Log ilerledikçe aralık boşalırsa pencerede kayıt kalmaz, izleme sürer.
-  Pencerenin dışında ilk kaydı kalan alt grupların örnekleri çizimler arasında saklanır.
-- Standart girdi izlenebilir (`tail -f laravel.log | veylog --izle -`): girdi bitince son
-  rapor yazılır ve çıkılır. `--ani-artis` örnekleri için tutulan geçici kopya 256 MB'ı aşınca
-  bırakılır.
-- `--izle` yalnızca metin biçimindedir; `--bicim json`, `--bicim markdown` ve `--karsilastir`
-  ile kullanım hatası verir.
+- `--watch`: the log is read to the end and the report is written; then appended records
+  keep being read and the report is redrawn as new records arrive. The input is not read
+  again: the store keeps its reading state and each redraw processes only the new bytes; if
+  Drain finds a variable position, the records are re-clustered for that redraw. A status
+  line shows the file, the interval, the number of records and the time of the newest one.
+- In a terminal, the screen and the scrollback are cleared at every redraw; the status line
+  and warnings are below the report, so they stay visible even when the report is longer than
+  the screen. On the legacy Windows console, the escape sequences that clear the screen are
+  enabled by the program. When the output goes to a file or a pipe, redraws are written one
+  after another, separated by a divider line.
+- `--interval 500ms`: how often the input is checked, and the shortest time between two
+  redraws (2 s by default; between 100 ms and 1 h). Durations gained the `ms` unit.
+- The last record read is committed when the next record header arrives or when the input
+  stays quiet for one interval: a record whose stack trace arrives in several writes is not
+  split. Reads cut in the middle of a line are held back too; when the input is quiet, a line
+  without a line break is read as well. A report drawn at a quiet moment is therefore the
+  same as summarizing all the bytes received so far in one go (in logs with many variable
+  positions, patterns can rarely differ, because positions are learned piece by piece). The
+  last record of a file that has not changed for a while appears in the first redraw.
+- Rotated logs (logrotate, `copytruncate`) are detected and read from the start; earlier
+  records stay in the report, and the status line says `rotated`. The old file is first read
+  to its end, so records written just before the rotation are not lost. The sparse index
+  also keeps the records' sequence numbers; records of the new file are read again at their
+  positions in the new file.
+- In watch mode, time filters are a sliding window: `--last 1h` is applied at every redraw
+  relative to the newest record read so far; as in a one-off run, the newest record is found
+  among the records that do not match the level filter too. If the range becomes empty as
+  the log moves on, the window has no records and watching continues. Samples of subgroups
+  whose first record is outside the window are kept between redraws.
+- Standard input can be watched (`tail -f laravel.log | veylog --watch -`): when the input
+  ends, the final report is written and the program exits. The temporary copy kept for
+  `--spikes` samples is dropped when it exceeds 256 MB.
+- `--watch` works with the text format only; with `--format json`, `--format markdown` or
+  `--compare` it is a usage error.
 
-### Arayüz dili
+### Interface language
 
-- `--dil en` (`--lang en`) ya da `VEYLOG_DIL=en`: yardım, metin raporu, Markdown, uyarılar
-  ve hata mesajları İngilizce. İngilizcede ondalık ayracı nokta (`0.7`), yüzde işareti sonda
-  (`1%`), süreler `2 h 30 min`; sayıya göre tekil ya da çoğul (`1 record`, `3 records`).
-  Kalıplardaki yer tutucular İngilizce gösterilir: `<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>`.
-- Her uzun seçeneğin İngilizce adı her dilde geçerli: `--threshold`, `--location`, `--top`,
-  `--all`, `--sort`, `--format`, `--compare`, `--spikes`, `--level`, `--since`, `--until`,
-  `--last`, `--timezone`, `--pattern`, `--time-format`, `--watch`, `--interval`, `--lang`.
-  Değerlerin de: `severity`, `count`, `newest`, `text`, `method`, `line`. Yazım hatası
-  önerileri iki dilin adlarından seçilir.
-- Dil argümanlar ayrıştırılmadan önce seçilir: `--lang`'dan önce gelen bir yanlışlığın mesajı
-  da seçilen dildedir. Tanınmayan bir `VEYLOG_DIL` değeri iki dilde uyarılır.
-- JSON çıktısı her dilde bayt bayt aynıdır: alan adları, değerler ve yer tutucular değişmez;
-  standart girdiden okunduysa `dosya` her dilde `<standart girdi>`dir.
-- Türkçe yardım metninin başında İngilizce yardımın nasıl açılacağı yazar.
+- `--lang en` (`--dil en`) or `VEYLOG_DIL=en`: the help, the text report, Markdown, warnings
+  and error messages are in English. In English, the decimal separator is a dot (`0.7`), the
+  percent sign comes last (`1%`), durations read `2 h 30 min`, and nouns are singular or
+  plural by count (`1 record`, `3 records`). Placeholders in patterns are shown in English:
+  `<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>`.
+- Every long option has an English name that works in either language: `--threshold`,
+  `--location`, `--top`, `--all`, `--sort`, `--format`, `--compare`, `--spikes`, `--level`,
+  `--since`, `--until`, `--last`, `--timezone`, `--pattern`, `--time-format`, `--watch`,
+  `--interval`, `--lang`. So do the values: `severity`, `count`, `newest`, `text`, `method`,
+  `line`. Typo suggestions are drawn from the names in both languages.
+- The language is chosen before the arguments are parsed: the message for a mistake that
+  comes before `--lang` is in the chosen language too. An unrecognized `VEYLOG_DIL` value is
+  reported in both languages.
+- JSON output is identical byte for byte in both languages: field names, values and
+  placeholders do not change; when reading from standard input, `dosya` is
+  `<standart girdi>` in both.
+- The Turkish help text starts by saying how to get the English help.
 
-### Komut satırı
+### Command line
 
-- Değerlerde büyük ve küçük harf fark etmez: `--bicim JSON`, `--siralama ADET`,
-  `--sıralama ÖNEM`, `--konum SATIR`.
-- Kısa seçeneklerin değeri `=` ile de verilebilir: `-n=20`.
-- Tek tireyle yazılan uzun seçeneklere (`-hepsi`) ve büyük-küçük harfi karışan kısa
-  seçeneklere (`-v`) öneri verilir: `--hepsi`, `-V`.
+- Values are case-insensitive: `--format JSON`, `--sort COUNT`, `--location LINE`, and in
+  Turkish `--sıralama ÖNEM`.
+- Short options also take their value after `=`: `-n=20`.
+- Long options written with a single dash (`-all`) and short options with the wrong case
+  (`-v`) get a suggestion: `--all`, `-V`.
 
-### Düzeltmeler
+### Fixes
 
-- Mesaj bağlamdan, bağlamın geçerli bir JSON olarak başladığı yerden ayrılır: mesajın
-  içindeki satır içi bir JSON (`Ödeme {"tutar":50} onaylandı`) mesajda kalır. 0.1.0 mesajı ilk
-  ` {"`'de keserdi: JSON'dan sonraki kısım bağlama gider, farklı olaylar tek kalıpta
-  birleşirdi.
-- Mesajın sonundaki boş bağlam ve ek (`Kuyruk dolu [] []`; `formatter_with` ile kurulan
-  Monolog biçimi yazar) mesaja katılmaz: aynı mesaj bağlamlı ve bağlamsız haliyle aynı
-  kalıptadır.
-- Maskeleme: URL'nin ardındaki ters tırnak URL'ye katılmaz (Guzzle'ın
-  `` `POST https://...` resulted in ``'i); uzantıdan sonra süren bir yol (`/api/v1.2/urunler`)
-  dosya yolu sayılmaz; alan adı harfle başlayan bir parçayla bitmeyen `ad@sürüm`
-  (`laravel/framework@11.9.2`) e-posta sayılmaz.
-- Maskelemenin kelime sınırları ve rakamları ASCII'dir: Türkçe mesajlı 400 bin kayıtlık bir
-  log 1,7 yerine 0,7 saniyede okunur. Fark yalnızca ASCII olmayan bir harfe yapışık
-  rakamlardadır: `Sipariş5`'teki rakam artık maskelenir.
-- Drain'de bir yaprak 1 000 kümeye ulaşınca hiçbir kümeye benzemeyen yeni mesajlar yaprağın
-  taşma kümesinde toplanır. Her konumu az değer alan ama birleşimleri sayısız olan mesajlar
-  (`<ad> <eylem> <nesne>`) her yeni mesajı bütün kümelerle karşılaştırtır, süre mesaj
-  sayısının karesiyle artardı: 40 000 böyle satır 33 yerine 1,7 saniyede okunur.
-- Fırlatıldığı yer, yolunda parantez (`C:\Program Files (x86)\...`) ya da ` at ` olan
-  projelerde de doğru okunur; 0.1.0 ilk `)`'de keser, konumu çağıran satıra kaydırırdı.
-- Proje `vendor` adlı bir klasörün altındaysa (`/home/ali/vendor/magaza`) kök doğru bulunur:
-  yollardaki her vendor bir aday sayılır, kök altında giriş noktası ya da uygulama kodu olan
-  adaydır. 0.1.0 ilk vendor'dan önceki kısmı kök sayar, hiçbir hatanın konumunu bulamazdı.
-- Kökü kendi yollarında olmayan istisnaların kökü, logun bütün köklerini dolaşmadan bulunur:
-  binlerce kökü (sıfır kesintili dağıtımların klasörleri) ve binlerce böyle istisnası olan
-  bir log 15 saniye yerine 0,3 saniyede okunur.
-- Karşılaştırmada logun ilk ve son kaydı teste katılmaz: yarıların sınırını onlar belirler,
-  rastgele düşmezler. Son kaydı taşıyan bir kalıp, sıklığı değişmediği halde %1 yerine
-  %2–%9 ihtimalle artan sayılabiliyordu.
+- The message is separated from the context where the context starts as valid JSON: inline
+  JSON inside a message (`Payment {"amount":50} approved`) stays in the message. 0.1.0 cut the
+  message at the first ` {"`: the part after the JSON went to the context, and different
+  events merged into one pattern.
+- An empty context and extra at the end of a message (`Queue full [] []`, written by a
+  Monolog format set up with `formatter_with`) are not part of the message: the same message
+  with and without context lands in the same pattern.
+- Masking: a backtick after a URL is not part of the URL (Guzzle's
+  `` `POST https://...` resulted in ``); a path that continues after an extension
+  (`/api/v1.2/products`) is not a file path; a `name@version` whose domain does not end in a
+  part starting with a letter (`laravel/framework@11.9.2`) is not an e-mail address.
+- Word boundaries and digits in masking are ASCII: a log of 400,000 records with Turkish
+  messages is read in 0.7 seconds instead of 1.7. The only difference is for digits attached
+  to a non-ASCII letter: the digit in `Sipariş5` is now masked.
+- In Drain, once a leaf reaches 1,000 clusters, new messages that resemble no cluster are
+  gathered in the leaf's overflow cluster. Messages whose positions each take few values but
+  whose combinations are countless (`<name> <action> <object>`) made every new message be
+  compared with all clusters, so the time grew with the square of the number of messages:
+  40,000 such lines are read in 1.7 seconds instead of 33.
+- The location where an exception was thrown is read correctly in projects whose path
+  contains parentheses (`C:\Program Files (x86)\...`) or ` at `; 0.1.0 cut at the first `)`
+  and moved the location to the calling line.
+- If the project is under a directory named `vendor` (`/home/ali/vendor/shop`), the root is
+  found correctly: every `vendor` in the paths is a candidate, and the root is the candidate
+  that has an entry point or application code under it. 0.1.0 took the part before the first
+  `vendor` as the root and found the location of no error.
+- The root of exceptions whose own paths do not contain it is found without walking all the
+  roots in the log: a log with thousands of roots (the directories of zero-downtime
+  deployments) and thousands of such exceptions is read in 0.3 seconds instead of 15.
+- In comparisons, the first and the last record of the log are left out of the test: they
+  define the boundary of the halves and do not fall at random. A pattern carrying the last
+  record could be reported as increased with a 2–9% chance instead of 1% while its frequency
+  did not change.
 
-### Diğer
+### Other
 
-- Örnek logdaki Redis hatasının yığın izine middleware'i çağıran satır eklendi.
-- Yardım metninde 92 karakteri aşan satırlar bölündü.
-- README'ye Windows PowerShell 5.1'in yönlendirilen çıktıdaki Türkçe harfleri bozduğu notu
-  eklendi.
+- The stack trace of the Redis error in the sample log gained the line that calls the
+  middleware.
+- Lines longer than 92 characters in the help text are wrapped.
+- The README notes that Windows PowerShell 5.1 garbles non-ASCII characters in redirected
+  output.
 
 ## [0.1.0] - 2026-10-26
 
-İlk sürüm.
+First release.
 
-### Okuma
+### Reading
 
-- Laravel'in metin biçimindeki kayıtları ve Monolog'un JSON satırları; iki biçim aynı
-  dosyada karışık olabilir.
-- Laravel'in zaman biçimi ve ISO 8601 (kesir ve saat dilimiyle). Takvimde olmayan zamanlar
-  (`2026-02-30`) kayıt başlığı sayılmaz.
-- Stack trace gibi devam satırları, dosyanın başındaki yetim satırlar, geçersiz UTF-8 baytları
-  ve CRLF satır sonları. UTF-8 BOM her satırın başında atılır; birleştirilmiş dosyalarda
-  (`cat a.log b.log | veylog -`) da kayıt kaybolmaz.
-- `-` ile standart girdi: `zcat laravel-2026-10-24.log.gz | veylog -`
+- Records in Laravel's text format and Monolog's JSON lines; both formats can be mixed in one
+  file.
+- Laravel's time format and ISO 8601 (with fractions and time zones). Times that do not exist
+  in the calendar (`2026-02-30`) are not record headers.
+- Continuation lines such as stack traces, orphan lines at the start of the file, invalid
+  UTF-8 bytes and CRLF line endings. A UTF-8 BOM is dropped at the start of every line, so no
+  record is lost in concatenated files (`cat a.log b.log | veylog -`) either.
+- Standard input with `-`: `zcat laravel-2026-10-24.log.gz | veylog -`
 
-### Kalıplar
+### Patterns
 
-- Değişken kısımların maskelenmesi: URL, dosya yolu, e-posta, UUID, zaman, IP, sayı.
-- Drain algoritmasıyla kalıp çıkarma; eşik, iki tarafında da rakam olan farklılıklarda ve
-  100'den fazla değer almış konumlarda gevşer. Hiçbir belirteci tutmayan ve tek kelimelik
-  mesajları birbirine katan birleşmeler yapılmaz; mesajda yazılı `<*>` sıradan bir kelimedir.
-  Esnek eşik kapalıyken sonuç Drain3 ile aynıdır.
-- Hata parmak izi: istisna sınıfı ve uygulama kodundaki ilk satır. Vendor, giriş
-  noktaları, derlenmiş şablonlar ve middleware'in `$next($request)` satırı atlanır; Blade
-  hatalarında konum şablonun kendisidir. Proje kökü sıfır kesintili dağıtımlarda (paylaşılan
-  `storage`) ve Vapor'da da doğru bulunur. Linux, macOS ve Windows (Herd, Laragon) yolları.
-- Önem, adet ya da ilk görülme zamanına göre sıralanan rapor.
+- Masking of variable parts: URLs, file paths, e-mail addresses, UUIDs, times, IP addresses,
+  numbers.
+- Pattern extraction with the Drain algorithm; the threshold relaxes for differences with
+  digits on both sides and for positions that have taken more than 100 values. Merges that
+  keep no token or join one-word messages are not made; a `<*>` written in a message is an
+  ordinary word. With the flexible threshold off, the result is the same as Drain3's.
+- Error fingerprints: the exception class and the first frame in application code. Vendor
+  code, entry points, compiled templates and the middleware `$next($request)` frame are
+  skipped; for Blade errors the location is the template itself. The project root is found
+  correctly for zero-downtime deployments (shared `storage`) and on Vapor too. Linux, macOS
+  and Windows (Herd, Laragon) paths.
+- A report sorted by severity, count or first appearance.
 
-### Analiz
+### Analysis
 
-- `--karsilastir`: logu bir anda ikiye bölüp yeni çıkan, kaybolan ve artan kalıpları bulur;
-  artış koşullu binom testiyle sınanır.
-- `--ani-artis`: kalıpların WARNING ve üstündeki kayıtlarının olağan seviyesinden sıçradığı
-  anları medyan, MAD ve değiştirilmiş z puanıyla bulur. Artışın seviyesi, örneği, ilk ve son
-  zamanı artışın kendi kayıtlarındandır.
+- `--karsilastir` (now also `--compare`): splits the log at a moment and finds new, gone and
+  increased patterns; an increase is tested with a conditional binomial test.
+- `--ani-artis` (now also `--spikes`): finds the moments when a pattern's WARNING and above
+  records jump above their usual level, using the median, the MAD and the modified z-score.
+  The level, the sample and the first and last times of a spike come from its own records.
 
-### Çıktı
+### Output
 
-- Terminal için tablo, betikler için JSON, GitHub için Markdown.
-- Linux (statik), macOS ve Windows için derlenmiş programlar; Windows'ta ek bir çalışma zamanı
-  gerekmez. Rust kuruluysa crates.io'dan: `cargo install veylog`.
-- Logdaki kontrol karakterleri terminale ulaşmaz.
-- Türkçe komut satırı: virgüllü ondalık sayılar, Türkçe karakterli seçenek adları, yazım
-  hatalarına öneri, ayırt edilebilir çıkış kodları.
+- A table for the terminal, JSON for scripts, Markdown for GitHub.
+- Prebuilt binaries for Linux (static), macOS and Windows; no extra runtime is needed on
+  Windows. With Rust installed, from crates.io: `cargo install veylog`.
+- Control characters in the log never reach the terminal.
+- A Turkish command line: decimal commas, option names with Turkish characters, typo
+  suggestions, distinct exit codes.
 
-[Yayımlanmamış]: https://github.com/Veysel440/veylog/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Veysel440/veylog/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/Veysel440/veylog/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Veysel440/veylog/releases/tag/v0.1.0
