@@ -160,6 +160,15 @@ Expand-Archive veylog.zip -DestinationPath veylog
 `veylog.exe` tek başına çalışır; Visual C++ çalışma zamanı gibi ek bir kurulum gerekmez. Her
 klasörden çalıştırmak için `veylog` klasörünü `PATH`'e ekleyin.
 
+Ekranda Türkçe harfler doğru görünür. Windows'la gelen Windows PowerShell 5.1 ise bir dosyaya
+ya da başka bir programa yönlendirilen çıktıyı (`> rapor.md`, `| jq`) yeniden kodlar ve
+Türkçe harfleri bozar; PowerShell 7.4 ve sonrası (`winget install Microsoft.PowerShell`)
+baytları olduğu gibi aktarır. 5.1'de yönlendirme `cmd` ile yapılabilir:
+
+```powershell
+cmd /c "veylog --bicim markdown storage\logs\laravel.log > rapor.md"
+```
+
 ### Cargo ile
 
 [Rust](https://rustup.rs) 1.88 ya da daha yenisi kuruluysa
@@ -203,9 +212,9 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `--son <süre>` | Yalnızca logun son kısmı: en yeni kayıttan bu kadar öncesinden bu yana. Süre: `30dk`, `2sa`, `1g`, `1sa30dk`. | |
 | `--saat-dilimi <dilim>` | Zamanları bu saat diliminde göster: `+03:00`, `-05:30`, `Z` (UTC). Saat dilimi yazılı kayıtlar bu dilime çevrilir. | logda yazılı ilk dilim |
 | `--desen <desen>` | Bir kaydı başlatan satırın biçimi: Monolog'un biçim dizgesi (`"%datetime% [%level_name%] %message% %context%"`) ya da adlandırılmış gruplu bir düzenli ifade. | Laravel'in biçimi |
-| `--zaman-bicimi <biçim>` | Zamanın biçimi, PHP'nin `date()` dizgesiyle: `"d.m.Y H:i:s"`, `"d/M/Y:H:i:s O"`, `"U"`. | ISO 8601 |
+| `--zaman-bicimi <biçim>` | Zamanın biçimi, PHP'nin `date()` dizgesiyle: `"d.m.Y H:i:s"`, `"d/M/Y:H:i:s O"`, `"U"`. | `2026-10-24 14:03:11` ya da ISO 8601 |
 | `--izle` | Logu canlı izle: sonuna kadar oku, raporu yaz, eklenen kayıtlar geldikçe yeniden çiz. Yalnızca metin biçiminde; `--karsilastir` ile kullanılamaz. | |
-| `--aralik <süre>` | İzlemede girdiye bu sıklıkla bak; raporu en sık bu kadarda bir çiz. Süre `--son` gibi, `ms` de olur (`500ms`); en az 100 ms. | `2sn` |
+| `--aralik <süre>` | İzlemede girdiye bu sıklıkla bak; raporu en sık bu kadarda bir çiz. Süre `--son` gibi, `ms` de olur (`500ms`); 100 ms ile 1 sa arası. | `2sn` |
 | `--dil <dil>` | Arayüzün dili: `tr` ya da `en`. `VEYLOG_DIL` ortam değişkeniyle de seçilir. | `tr` |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
@@ -249,8 +258,9 @@ veylog /mnt/c/Users/Ad/Herd/proje/storage/logs/laravel.log
 ```
 
 Seçenekler dosya adından önce ya da sonra yazılabilir; değer boşlukla, `=` ile ya da kısa
-seçeneklerde bitişik verilir (`--esik 0,8`, `--esik=0,8`, `-n20`). Ondalık ayracı virgül de
-olabilir, nokta da. Türkçe karakterli yazımlar da geçerlidir (`--eşik`, `--sıralama önem`).
+seçeneklerde bitişik verilir (`--esik 0,8`, `--esik=0,8`, `-n20`, `-n=20`). Ondalık ayracı
+virgül de olabilir, nokta da; değerlerde büyük ve küçük harf fark etmez (`--bicim JSON`).
+Türkçe karakterli yazımlar da geçerlidir (`--eşik`, `--sıralama önem`).
 Her uzun seçeneğin ve her değerin İngilizce adı da her dilde geçerlidir; yardım ve mesajlar
 seçili dildeki adları gösterir:
 
@@ -280,9 +290,10 @@ Filtreler (`--seviye`, `--baslangic`, `--bitis`, `--son`) raporu yalnızca uyan 
 Dosyanın satır ve kayıt sayıları dosyanın tamamınındır; uyan kayıt sayısı `Filtre` satırında
 yazar. Yalnızca saat verilmiş bir sınır (`--baslangic 15:00`) `--karsilastir` gibi logun son
 gününe uygulanır. `--son` ve yalnızca saat verilmiş sınırlar logun sonunu bilmeyi gerektirir:
-log önce bir kez taranır (standart girdi o sırada geçici bir dosyaya kopyalanır). Filtreye
+log önce bir kez taranır (standart girdi bir borudan geliyorsa o sırada geçici bir dosyaya
+kopyalanır). Filtreye
 uymayan kayıtlar maskelenmediği ve kümelenmediği için filtreli bir rapor daha hızlı çıkar:
-500 MB'lık bir logun son iki saati 2,5 saniyede özetlenir.
+500 MB'lık bir logun son iki saati 1,8 saniyede özetlenir.
 
 `--izle` logu canlı izler: sonuna kadar okur, raporu yazar, sonra eklenen kayıtları okumaya
 devam eder ve yeni kayıt geldikçe raporu yeniden çizer (terminalde ekranı temizleyerek; bir
@@ -488,7 +499,7 @@ Her adımın ayrıntısı, gerekçesi ve gerçek loglarda nasıl sınandığı
 
 | Karar | Neden |
 |---|---|
-| Akışlı okuma | Dosya satır satır okunur, kayıtlar saklanmaz; özet için gerekenler sıkıştırılmış olarak birikir. 2 GB'lık bir log 30 MB bellekle özetlenir ([ayrıntılar](docs/nasil-calisir.md#akışlı-okuma-ve-bellek)). |
+| Akışlı okuma | Dosya satır satır okunur, kayıtlar saklanmaz; özet için gerekenler sıkıştırılmış olarak birikir. 2 GB'lık bir log 27 MB bellekle özetlenir ([ayrıntılar](docs/nasil-calisir.md#akışlı-okuma-ve-bellek)). |
 | Tek bağımlılık: `regex` | serde ile JSON yazmak bağımlılıkları 5 paketten 15'e, clap ile argüman ayrıştırmak 22'ye çıkarırdı. JSON yalnızca okunuyor ve yazılıyor, kuralları kısa ([RFC 8259](https://www.rfc-editor.org/rfc/rfc8259)); clap'in mesajları İngilizce ve virgüllü ondalığı tanımıyor. |
 | Elle yazılan parçalar referansla sınanır | JSON okuyucu serde_json ile (2 000 rastgele değer, gerçek loglardan 17 944 satır), binom kuyruğu scipy ile, medyan ve MAD numpy ile, tarih hesabı Python'un `datetime`'ı ile, kümeleme Drain3 ile karşılaştırılır. |
 | Ortalama yerine medyan ve MAD | Ortalama ve standart sapma tek bir patlamayla kayar; medyan ve MAD dilimlerin yarısına kadarı patlama olsa bile yerinde kalır. |
@@ -499,21 +510,23 @@ Her adımın ayrıntısı, gerekçesi ve gerçek loglarda nasıl sınandığı
 
 ## Performans
 
-İki çekirdekli bir bulut sanal makinesinde, `--release` derlemesiyle. Dosya satır satır
-okunur; bellek dosyanın boyuyla değil, farklı mesajların sayısıyla büyür:
+İki çekirdekli bir bulut sanal makinesinde, `--release` derlemesiyle; süre birkaç
+çalıştırmanın en kısası, bellek en yüksek yerleşik bellektir (GNU `time`). Dosya satır satır
+okunur; bellek dosyanın boyuyla değil, farklı mesajların sayısı ve uzunluğuyla büyür:
 
 | Log | Boyut | Süre | Bellek |
 |---|---|---|---|
-| Örnek log | 205 satır | 0,01 sn | 9 MB |
-| Gerçek bir geliştirme logu | 13 MB, 64 931 satır | 0,04 sn | 9 MB |
-| Sentetik 426 bin satır | 55 MB | 0,6 sn | 9 MB |
-| 30 günlük log, `--ani-artis 1` (43 195 dilim) | 92 MB, 524 bin satır | 0,6 sn | 9 MB |
-| Sentetik üretim logu | 500 MB, 1,5 milyon kayıt | 8 sn | 17 MB |
-| Aynısı, biçimi `--desen` ile tarif edilerek | 500 MB | 10 sn | 17 MB |
-| Aynısı, dört kat büyük | 2 GB, 6,3 milyon kayıt | 33 sn | 30 MB |
-| Her satırda başka bir kullanıcı adı | 40 bin satır | 0,3 sn | 24 MB |
+| Örnek log | 205 satır | < 0,01 sn | 5 MB |
+| Gerçek bir geliştirme logu | 13 MB, 64 931 satır | 0,04 sn | 5 MB |
+| Sentetik 426 bin satır | 55 MB | 0,9 sn | 12 MB |
+| 30 günlük log, `--ani-artis 1` (43 195 dilim) | 92 MB, 524 bin satır | 0,4 sn | 7 MB |
+| Sentetik üretim logu | 500 MB, 1,5 milyon kayıt | 3,8 sn | 16 MB |
+| Aynısı, biçimi `--desen` ile tarif edilerek | 500 MB | 6,4 sn | 16 MB |
+| Aynısı, dört kat büyük | 2 GB, 6,3 milyon kayıt | 15 sn | 27 MB |
+| Her satırda başka bir kullanıcı adı | 40 bin satır | 0,2 sn | 23 MB |
 
-0.1.0 dosyanın tamamını belleğe okuyordu: 2 GB'lık log 4 GB bellek istiyordu.
+0.1.0 dosyanın tamamını belleğe okuyordu: 2 GB'lık log 4 GB bellek istiyor ve 36 saniye
+sürüyordu.
 
 Son satır klasik Drain için en kötü durumdur: kısa bir mesajdaki rakamsız bir değer
 birleşmez, her değer ayrı bir küme açar. [Değişken konumlar](docs/nasil-calisir.md#değişken-konumlar)
@@ -522,7 +535,7 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
 
 ## Kalite
 
-- **Testler:** 322 birim testi her modülü ayrı ayrı, 45 uçtan uca test derlenmiş programı
+- **Testler:** 385 birim testi her modülü ayrı ayrı, 53 uçtan uca test derlenmiş programı
   çalıştırıp kullanıcının gördüğünü sınar: çıktı metinleri karakter karakter, JSON
   serde_json ile ayrıştırılarak, Markdown tablosu satır satır.
 - **Referans karşılaştırmaları:** yukarıdaki tabloda. Kümeleme gerçek ve sentetik loglarda
@@ -531,8 +544,8 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
   ([ayrıntılar](docs/nasil-calisir.md#değişken-konumlar)).
 - **Mutasyon testleri:** koda bilerek küçük hatalar yerleştirilip (bir karşılaştırmayı
   çevirmek, bir sınırı kaydırmak, bir kuralı silmek) testlerin yakaladığı denetlendi;
-  geliştirme adımlarında denenen 322 mutasyonun 321'i yakalandı. Kalan biri sonucu hiç
-  değiştirmeyen (eşdeğer) bir mutasyondu.
+  geliştirme adımlarında ve son incelemede denenen 464 mutasyonun 463'ü yakalandı. Kalan
+  biri sonucu hiç değiştirmeyen (eşdeğer) bir mutasyondu.
 - **CI/CD:** `main` dalına her gönderimde ve her PR'da Linux, macOS ve Windows'ta testler;
   `rustfmt`, `clippy -D warnings` ve en düşük Rust sürümü (1.88). Her sürüm etiketinde dört
   sistem için programlar derlenir ve SHA-256 özetleriyle otomatik yayımlanır.
@@ -541,8 +554,9 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
   `Log::error($e)` ile metin olarak; Laravel'in biçiminde, JSON'da ve özel bir satır ve tarih
   biçiminde. Üç biçimde de kalıp tablosu aynıdır. Bir dağıtım da taklit edildi: servisin
   başına satırlar eklenip aynı istekler tekrarlandı; her hata tablonun aynı satırında kaldı.
-  Örnek loglar (`ornekler/`) kurgusaldır; IP adresleri dokümantasyon aralıklarından,
-  e-postalar `.test` uzantılıdır.
+  Örnek loglar (`ornekler/`) kurgusaldır; IP adresleri dokümantasyon aralıklarından
+  ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)) ya da yerel ve özel ağdandır
+  (`127.0.0.1`, `10.0.3.12`), e-postalar `.test` uzantılıdır.
 
 ```bash
 cargo test
@@ -573,6 +587,7 @@ src/
 ├── dil.rs           arayüzün dili (--dil): seçili dildeki metin, sayıların ve listelerin yazılışı
 ├── okuyucu.rs       girdiyi satır satır okur; bir kaydı yeniden okumak için seyrek dizin
 ├── izle.rs          --izle: eklenen baytları satırlara ayırır, döndürmeyi algılar, raporu yeniden çizer
+├── filtre.rs        --seviye, --baslangic, --bitis, --son: sınırların logun sonuna göre çözülmesi
 ├── kayit.rs         satırları kayıtlara toplar: başlık ya da JSON satırı, seviye, mesaj
 ├── satir_bicimi.rs  başlık satırının biçimi: Laravel'inki ya da --desen (Monolog dizgesi, düzenli ifade)
 ├── zaman_bicimi.rs  --zaman-bicimi: PHP'nin date() dizgesiyle yazılmış zamanları okur
@@ -643,14 +658,14 @@ lines, handles Windows paths, and writes text, JSON or Markdown. Timestamps with
 are converted to a single report time zone, so logs that span a daylight saving change sort
 correctly. Exceptions logged as strings (`Log::error($e)`) are parsed from PHP's own text
 and grouped with the same exception logged through the context; custom line formats are
-given as a Monolog format string or a regex with named groups (`--pattern`), and custom
-date formats as a PHP `date()` format (`--time-format`). The file is streamed line by line
-into a compact store, so a 2 GB log is summarized with 30 MB of memory. `--watch` follows a
-log live, like `tail -f`: new records are fed into the same store, the report is redrawn as
-they arrive, time filters become a sliding window and rotated files are picked up. Its only
-dependency is `regex`; the JSON reader and writer, statistics and argument parser are
-hand-written and tested against serde_json, scipy and Drain3. Prebuilt binaries for Linux
-(static), macOS and Windows are on the
+given as a Monolog format string or a regex with named groups (`--pattern`), and custom date
+formats as a PHP `date()` format (`--time-format`). The file is streamed line by line into a
+compact store, so a 2 GB log is summarized in 15 seconds with 27 MB of memory. `--watch`
+follows a log live, like `tail -f`: new records are fed into the same store, the report is
+redrawn as they arrive, time filters become a sliding window and rotated files are picked
+up. Its only dependency is `regex`; the JSON reader and writer, statistics and argument
+parser are hand-written and tested against serde_json, scipy and Drain3. Prebuilt binaries
+for Linux (static), macOS and Windows are on the
 [Releases](https://github.com/Veysel440/veylog/releases/latest) page; `cargo install veylog`
 also works.
 

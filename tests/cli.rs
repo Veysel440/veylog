@@ -757,9 +757,45 @@ fn gecici_dosya_olusturulamazsa_rapor_yine_cikar() {
     let (stdout, stderr) = (metin(&cikti.stdout), metin(&cikti.stderr));
     assert!(cikti.status.success(), "{stderr}");
     assert!(
-        stderr.starts_with("Uyarı: girdinin geçici kopyası oluşturulamadı ("),
+        stderr.starts_with("Uyarı: girdinin geçici kopyası tutulamadı ("),
         "geçici klasör: {}\nstderr: {stderr}\nstdout: {stdout}",
         gecici_klasor.display()
+    );
+    let (_, artislar) = stdout.split_once("\nAni artışlar").unwrap();
+    assert!(artislar.contains("örnek: Kuyruk 1000 dolu\n"), "{stdout}");
+}
+
+/// Geçici kopya oluşturulup da yazılamazsa (disk dolu) da rapor çıkar. Disk doluluğu dosya
+/// boyu sınırıyla taklit edilir: `ulimit -f 0` ile dosya oluşturulur ama ona yazılamaz;
+/// sinyali yok sayılınca sınırı aşan yazma hata verir (`EFBIG`). Standart çıktı bir borudur,
+/// sınırdan etkilenmez.
+#[cfg(target_os = "linux")]
+#[test]
+fn gecici_kopya_yazilamazsa_rapor_yine_cikar() {
+    let mut surec = Command::new("sh")
+        .args([
+            "-c",
+            "ulimit -f 0 && trap '' XFSZ && exec \"$0\" -a 1 -",
+            env!("CARGO_BIN_EXE_veylog"),
+        ])
+        .env_remove("VEYLOG_DIL")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("sh çalıştırılamadı");
+    surec
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(kuyruk_artisi().as_bytes())
+        .unwrap();
+    let cikti = surec.wait_with_output().unwrap();
+    let (stdout, stderr) = (metin(&cikti.stdout), metin(&cikti.stderr));
+    assert!(cikti.status.success(), "{stderr}");
+    assert!(
+        stderr.starts_with("Uyarı: girdinin geçici kopyası tutulamadı ("),
+        "stderr: {stderr}\nstdout: {stdout}"
     );
     let (_, artislar) = stdout.split_once("\nAni artışlar").unwrap();
     assert!(artislar.contains("örnek: Kuyruk 1000 dolu\n"), "{stdout}");
@@ -1312,6 +1348,48 @@ fn desen_ve_zaman_bicimi_hatalari_kullanim_hatasidir() {
 }
 
 #[test]
+fn kayitsiz_logda_filtre_sinirlari_1970_olmaz() {
+    // Boş bir logda (döndürmeden hemen sonra) sona göre verilen sınırlar çözülemez: 1970'e
+    // göre bir tarih yazılmaz, aralık boş sayılmaz
+    let bos = gecici_dosya("bos-filtreli.log", b"");
+    let yol = bos.to_str().unwrap();
+    for (secenekler, filtre) in [
+        (
+            &["--son", "1sa"][..],
+            "  Filtre        : son 1 sa: 0 kayıt\n",
+        ),
+        (
+            &["--baslangic", "2026-10-24", "--bitis", "18:00"],
+            "  Filtre        : 2026-10-24 00:00:00 ve sonrası: 0 kayıt\n",
+        ),
+        (
+            &["--seviye", "error", "--baslangic", "15:00"],
+            "  Filtre        : ERROR ve üstü: 0 kayıt\n",
+        ),
+        // Çözülen hiçbir sınır yok: yalnızca kayıt sayısı
+        (&["--baslangic", "15:00"], "  Filtre        : 0 kayıt\n"),
+    ] {
+        let cikti = veylog(&[secenekler, &[yol]].concat());
+        let stdout = metin(&cikti.stdout);
+        assert!(
+            cikti.status.success(),
+            "{secenekler:?}: {}",
+            metin(&cikti.stderr)
+        );
+        assert!(stdout.contains(filtre), "{secenekler:?}: {stdout}");
+        assert!(
+            !stdout.contains("1969") && !stdout.contains("1970"),
+            "{stdout}"
+        );
+    }
+    let cikti = veylog(&["-b", "json", "--son", "1sa", yol]);
+    let json: serde_json::Value = serde_json::from_slice(&cikti.stdout).unwrap();
+    assert_eq!(json["filtre"]["baslangic"], serde_json::Value::Null);
+    assert_eq!(json["filtre"]["son_saniye"], 3600);
+    fs::remove_file(&bos).ok();
+}
+
+#[test]
 fn kayit_bulunamazsa_uyarilir() {
     let yol = gecici_dosya("bicimsiz.log", ozel_bicimde(&kuyruk_artisi()).as_bytes());
     let yol_metni = yol.to_str().unwrap();
@@ -1344,6 +1422,44 @@ fn kayit_bulunamazsa_uyarilir() {
     let cikti = veylog(&[bos.to_str().unwrap()]);
     fs::remove_file(&bos).ok();
     assert!(cikti.stderr.is_empty(), "{}", metin(&cikti.stderr));
+}
+
+#[test]
+fn seviyesi_taninmayan_satirlar_uyarilir() {
+    let log = "\
+2026-10-24 10:00:00 [INF] Başladı
+2026-10-24 10:00:01 [ONEMLI] Kuyruk dolu
+2026-10-24 10:00:02 [ONEMLI] Kuyruk dolu
+2026-10-24 10:00:03 [WRN] Disk dolmak üzere
+";
+    let yol = gecici_dosya("seviyesi-taninmayan.log", log.as_bytes());
+    let yol_metni = yol.to_str().unwrap();
+    let cikti = veylog(&["--desen", "%datetime% [%level_name%] %message%", yol_metni]);
+    assert!(cikti.status.success());
+    assert_eq!(
+        metin(&cikti.stderr),
+        format!(
+            "Uyarı: {yol_metni} içinde --desen'e uyan 2 satırın seviyesi tanınmadı; bu satırlar kayıt sayılmadı. Seviye grubu DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY ya da bunların bilinen kısaltmalarından birini (WARN, ERR, FATAL...) yakalamalı.\n"
+        )
+    );
+    let stdout = metin(&cikti.stdout);
+    assert!(stdout.contains("  Kayıt         : 2\n"), "{stdout}");
+    assert!(stdout.contains("  Devam satırı  : 2\n"), "{stdout}");
+    let cikti = veylog(&[
+        "--lang",
+        "en",
+        "--pattern",
+        "%datetime% [%level_name%] %message%",
+        yol_metni,
+    ]);
+    assert!(
+        metin(&cikti.stderr).starts_with(&format!(
+            "Warning: the level of 2 lines in {yol_metni} matching --pattern was not recognized; they were not counted as records."
+        )),
+        "{}",
+        metin(&cikti.stderr)
+    );
+    fs::remove_file(&yol).ok();
 }
 
 #[test]
@@ -1521,6 +1637,14 @@ impl Izlenen {
     }
 }
 
+/// Test bir beklentide durursa (panik) izleyen süreç açık kalmasın.
+impl Drop for Izlenen {
+    fn drop(&mut self) {
+        self.surec.kill().ok();
+        self.surec.wait().ok();
+    }
+}
+
 /// Son çizim: ayırıcıdan sonraki kısım.
 fn son_cizim(cikti: &str) -> &str {
     cikti
@@ -1585,7 +1709,9 @@ fn izleme_standart_girdide_girdi_bitince_son_raporu_yazip_cikar() {
     // Son satırın sonu yazılmaz: girdi bitince bekleyen satır da okunmalı
     assert_eq!(log.last(), Some(&b'\n'));
     let log = &log[..log.len() - 1];
-    let mut izlenen = Izlenen::baslat(&["--izle", "--aralik", "200ms", "-"]);
+    // Parçaların arası bir aralıktan kısa olmalı: yoksa satır ortasında kalan parça sessizlikte
+    // bitmiş sayılır. Ağır yükte de: aralık uzun, son çizimi zaten girdinin sonu tetikler.
+    let mut izlenen = Izlenen::baslat(&["--izle", "--aralik", "5sn", "-"]);
     for parca in &parcalar {
         izlenen.yaz(&log[parca.start..parca.end.min(log.len())]);
         thread::sleep(Duration::from_millis(50));
@@ -1610,7 +1736,7 @@ fn izleme_standart_girdide_girdi_bitince_son_raporu_yazip_cikar() {
     );
     let son = son_cizim(&stdout);
     assert!(
-        son.starts_with("İzleniyor: <standart girdi> · her 200 ms · "),
+        son.starts_with("İzleniyor: <standart girdi> · her 5 sn · "),
         "{son}"
     );
     assert_eq!(rapor_kismi(son), normal);
@@ -1650,7 +1776,7 @@ fn izleme_standart_girdide_ani_artisin_ornegi_kopyadan_okunur() {
     assert!(log.len() > 128 * 1024, "{}", log.len());
     let bolme = log.find("[2026-10-13 00:00:30]").unwrap() + 7;
     assert!(bolme > 64 * 1024, "{bolme}");
-    let mut izlenen = Izlenen::baslat(&["--izle", "--aralik", "200ms", "-a", "1", "-"]);
+    let mut izlenen = Izlenen::baslat(&["--izle", "--aralik", "1sn", "-a", "1", "-"]);
     izlenen.yaz(&log.as_bytes()[..bolme]);
     // İlk parçanın tamamı okunup çizilsin: çizim ilk artışın örneğini kopyadan okur
     let ilk_parca = log[..bolme].matches('\n').count();
@@ -1767,7 +1893,7 @@ fn izleme_secenekleri_denetlenir() {
         ),
         (
             &["--izle", "--aralik", "50ms", "ornekler/laravel.log"][..],
-            "--aralik için geçersiz değer \"50ms\": en az 100 ms olan bir süre olmalı",
+            "--aralik için geçersiz değer \"50ms\": 100 ms ile 1 sa arasında bir süre olmalı",
         ),
         (
             &["--izle=evet", "ornekler/laravel.log"][..],
@@ -1842,12 +1968,11 @@ fn girdiyle(argumanlar: &[&str], girdi: &str, ortam: &[(&str, &str)]) -> Output 
         .stderr(Stdio::piped())
         .spawn()
         .expect("veylog çalıştırılamadı");
-    surec
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(girdi.as_bytes())
-        .unwrap();
+    // veylog girdiyi okumadan çıkabilir (kullanım hatası, --yardim): yazmak o zaman
+    // BrokenPipe verir (Windows'ta da)
+    if let Err(hata) = surec.stdin.take().unwrap().write_all(girdi.as_bytes()) {
+        assert_eq!(hata.kind(), std::io::ErrorKind::BrokenPipe, "{hata}");
+    }
     surec.wait_with_output().unwrap()
 }
 
@@ -2101,4 +2226,37 @@ fn json_her_dilde_ayni() {
             "{argumanlar:?}"
         );
     }
+    // Standart girdinin adı da: metinde dile göre, JSON'da hep aynı
+    let log = fs::read_to_string("ornekler/laravel.log").unwrap();
+    let turkce = girdiyle(&["-b", "json", "-"], &log, &[]);
+    let ingilizce = girdiyle(&["--lang", "en", "-b", "json", "-"], &log, &[]);
+    assert_eq!(metin(&ingilizce.stdout), metin(&turkce.stdout));
+    assert!(metin(&turkce.stdout).contains("\"dosya\": \"<standart girdi>\""));
+    let metin_raporu = girdiyle(&["--lang", "en", "-"], &log, &[]);
+    assert!(metin(&metin_raporu.stdout).starts_with("<standard input>: 205 lines\n"));
+}
+
+#[test]
+fn dosya_olan_standart_girdi_kopyalanmaz() {
+    // `veylog - < laravel.log`: standart girdi düz bir dosya. Ön tarama ve örnekler için
+    // geçici bir kopya gerekmez: geçici klasör kullanılamasa da rapor çıkar
+    let dosya = gecici_dosya("klasor-degil-girdi", b"");
+    let gecici_klasor = dosya.join("alt");
+    let cikti = komut()
+        .args(["--son", "2sa", "-a", "10", "-"])
+        .env("TMPDIR", &gecici_klasor)
+        .env("TMP", &gecici_klasor)
+        .env("TEMP", &gecici_klasor)
+        .stdin(fs::File::open("ornekler/laravel.log").unwrap())
+        .output()
+        .unwrap();
+    fs::remove_file(&dosya).ok();
+    let (stdout, stderr) = (metin(&cikti.stdout), metin(&cikti.stderr));
+    assert!(cikti.status.success(), "{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let beklenen = veylog(&["--son", "2sa", "-a", "10", "ornekler/laravel.log"]);
+    assert_eq!(
+        stdout.split_once(": ").unwrap().1,
+        metin(&beklenen.stdout).split_once(": ").unwrap().1
+    );
 }

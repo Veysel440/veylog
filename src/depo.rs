@@ -38,7 +38,7 @@
 //! kayıt sayısıyla yalnızca sütunlar büyür.
 
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 use std::io::{self, BufRead};
 use std::rc::Rc;
@@ -184,6 +184,12 @@ pub struct Depo {
     /// Logun en eski ve en yeni kaydının zamanı.
     en_eski: Option<Zaman>,
     en_yeni: Option<Zaman>,
+    /// Okunan en yeni kaydın zamanı, filtreye uymasa da. Canlı izlemede kayan pencere ona göre
+    /// çözülür: seviye filtresine uymayan kayıtlar da logun sonunu ilerletir.
+    okunan_en_yeni: Option<Zaman>,
+    /// Saat dilimi sayılarının kaç kayıttan sayıldığı; None ise depodaki kayıtlardan. Zaman
+    /// penceresinde (`pencere`) dilim sayıları okunan bütün kayıtlarındır.
+    dilim_kapsami: Option<usize>,
     ham_mesajlar: FarkliSayaci,
     /// Maskeli mesajlar, ilk görülme sırasıyla; numaraları bu listedeki sıralarıdır. Metinler
     /// `Rc` ile paylaşılır: liste ile sözlük aynı metni gösterir.
@@ -209,6 +215,10 @@ impl KayitAlici for Depo {
         // kayıtlarla da belirlenir; ön tarama ve yeniden okuma da her kayda bakar.
         let (zaman, dilim) = self.cevirici.cevir(kayit.zaman());
         let seviye = kayit.seviye();
+        self.okunan_en_yeni = Some(
+            self.okunan_en_yeni
+                .map_or(zaman, |en_yeni| en_yeni.max(zaman)),
+        );
         if let Some(filtre) = &self.filtre
             && !filtre.gecer(zaman.saniye(), seviye)
         {
@@ -315,6 +325,8 @@ impl Depo {
             seviye_sayilari: [0; 8],
             en_eski: None,
             en_yeni: None,
+            okunan_en_yeni: None,
+            dilim_kapsami: None,
             ham_mesajlar: FarkliSayaci::default(),
             maskeliler: Vec::new(),
             maskeli_sirasi: HashMap::new(),
@@ -454,6 +466,8 @@ impl Depo {
             seviye_sayilari,
             en_eski,
             en_yeni,
+            okunan_en_yeni: self.okunan_en_yeni,
+            dilim_kapsami: Some(self.dilim_kapsami()),
             ham_mesajlar: self.ham_mesajlar.clone(),
             maskeliler: self.maskeliler.clone(),
             maskeli_sirasi: HashMap::new(),
@@ -475,7 +489,9 @@ impl Depo {
     ///
     /// Her alt grubun bütün kayıtları ikinci turda da aynı kümeye düşüyorsa (neredeyse her
     /// zaman) yalnızca alt grupların küme numaraları değişir. Değilse alt gruplar bölünür
-    /// (`bolerek_kur`).
+    /// (`bolerek_kur`). İki alt grubun anahtarı aynı olursa da alt gruplar yeniden kurulur, bu
+    /// kez birleşerek: Drain sıraya bağlı olduğu için aynı maskeli mesaj ilk turda iki kümeye
+    /// düşmüş, ikinci turda aynı kümeye düşmüş olabilir.
     fn ikinci_tur(&mut self) {
         let mut kumeleyici = self.kumeleyici.ikinci_tur();
         let mut kumeler: Vec<Option<u32>> = vec![None; self.alt_gruplar.len()];
@@ -490,14 +506,27 @@ impl Depo {
                 Some(_) => return self.bolerek_kur(),
             }
         }
-        for (alt, kume) in self.alt_gruplar.iter_mut().zip(kumeler) {
-            alt.anahtar.kume = kume.expect("her alt grubun en az bir kaydı var");
+        let anahtarlar: Vec<AltGrupAnahtari> = self
+            .alt_gruplar
+            .iter()
+            .zip(&kumeler)
+            .map(|(alt, kume)| AltGrupAnahtari {
+                kume: kume.expect("her alt grubun en az bir kaydı var"),
+                ..alt.anahtar
+            })
+            .collect();
+        let mut gorulen = HashSet::with_capacity(anahtarlar.len());
+        if !anahtarlar.iter().all(|anahtar| gorulen.insert(*anahtar)) {
+            return self.bolerek_kur();
+        }
+        for (alt, anahtar) in self.alt_gruplar.iter_mut().zip(anahtarlar) {
+            alt.anahtar = anahtar;
         }
         self.kumeleyici = kumeleyici;
     }
 
-    /// Bölünen alt gruplarla ikinci tur: alt gruplar yeni kümeleriyle, ilk kayıtlarının
-    /// sırasıyla yeniden kurulur; sütunlar yeni numaralarla yeniden yazılır.
+    /// Bölünen ya da birleşen alt gruplarla ikinci tur: alt gruplar yeni kümeleriyle, ilk
+    /// kayıtlarının sırasıyla yeniden kurulur; sütunlar yeni numaralarla yeniden yazılır.
     ///
     /// Bölünen bir alt grubun parçası: ilk kaydı alt grubun ilk kaydı değilse mesajı depoda
     /// yoktur; örneği şimdilik alt grubunkidir (`ornek_kesin` false).
@@ -633,12 +662,17 @@ impl Depo {
     pub fn parmak_izleri(&self) -> Vec<Option<ParmakIzi>> {
         let taslak_istisnalari: Vec<Istisna<'_>> =
             self.taslaklar.iter().map(IstisnaTaslagi::istisna).collect();
+        // Taslakların kökü artık bilinir; her birininki bir kez bulunur
+        let taslak_kokleri: Vec<Option<&str>> = taslak_istisnalari
+            .iter()
+            .map(|istisna| istisna.cozulmus_kok(&self.kokler))
+            .collect();
         let harita = match self.konum_turu {
             KonumTuru::Metot => {
-                // Taslakların kökü artık bilinir: onların yığın izleri de katılır
+                // Taslakların yığın izleri de katılır
                 let mut harita = self.metot_haritasi.clone();
-                for istisna in &taslak_istisnalari {
-                    harita.ogren(istisna, istisna.cozulmus_kok(&self.kokler));
+                for (istisna, &kok) in taslak_istisnalari.iter().zip(&taslak_kokleri) {
+                    harita.ogren(istisna, kok);
                 }
                 Some(harita)
             }
@@ -653,7 +687,8 @@ impl Depo {
         let izler: Vec<ParmakIzi> = self.izler.iter().cloned().map(tamamla).collect();
         let taslak_izleri: Vec<ParmakIzi> = taslak_istisnalari
             .iter()
-            .map(|istisna| tamamla(istisna.parmak_izi(&self.kokler, self.konum_turu)))
+            .zip(&taslak_kokleri)
+            .map(|(istisna, &kok)| tamamla(istisna.koke_gore(kok, self.konum_turu)))
             .collect();
         self.alt_gruplar
             .iter()
@@ -699,6 +734,11 @@ impl Depo {
         self.en_yeni
     }
 
+    /// Okunan en yeni kaydın zamanı, filtreye uymasa da.
+    pub fn okunan_en_yeni(&self) -> Option<Zaman> {
+        self.okunan_en_yeni
+    }
+
     /// Raporun saat dilimi: verildiyse o, verilmediyse logda saat dilimi yazılı ilk kaydınki.
     /// İkisi de yoksa None: zamanlar logda yazıldığı gibidir.
     pub fn saat_dilimi(&self) -> Option<SaatDilimi> {
@@ -711,8 +751,14 @@ impl Depo {
     }
 
     /// Depodaki kayıtların saat dilimleri: kaçının çevrildiği, kaçında dilim yazılmadığı.
+    /// Zaman penceresinde okunan bütün kayıtlarınkiler (`dilim_kapsami`).
     pub fn dilim_sayilari(&self) -> &DilimSayilari {
         &self.dilimler
+    }
+
+    /// Saat dilimi sayılarının kaç kayıttan sayıldığı.
+    pub fn dilim_kapsami(&self) -> usize {
+        self.dilim_kapsami.unwrap_or_else(|| self.kayit_sayisi())
     }
 
     /// Seyrek dizin: her `DIZIN_ARALIGI` kayıtta bir kaydın girdideki konumu.
@@ -922,7 +968,8 @@ mod testler {
                 satir: 205,
                 kayit: 59,
                 devam: 143,
-                yetim: 3
+                yetim: 3,
+                taninmayan_seviye: 0,
             }
         );
         let seviyeler = depo.seviye_sayilari();
@@ -1330,6 +1377,69 @@ mod testler {
         let (pencere, tam_sira) = depo.pencere(hepsi);
         assert_eq!(tam_sira, vec![0, 1, 2, 3, 4]);
         assert!(pencere.alt_gruplar().iter().all(AltGrup::ornek_kesin));
+    }
+
+    #[test]
+    fn ikinci_turdan_sonra_alt_gruplarin_anahtarlari_tekildir() {
+        // Drain sıraya bağlıdır: aynı maskeli mesaj ilk turda iki kümeye düşebilir (arada
+        // kalıplar değişti). İkinci turda ikisi aynı kümeye düşerse iki alt grubun anahtarı
+        // aynı olur; alt gruplar o zaman birleştirilmelidir.
+        let mut tohum: u64 = 0x1234_5678_9ABC_DEF1;
+        let mut sayi = |ust: usize| {
+            tohum ^= tohum >> 12;
+            tohum ^= tohum << 25;
+            tohum ^= tohum >> 27;
+            (tohum.wrapping_mul(0x2545_F491_4F6C_DD1D) % ust as u64) as usize
+        };
+        let ad = |sira: usize| -> String {
+            [sira / 676, sira / 26, sira]
+                .iter()
+                .map(|basamak| char::from(b'a' + (basamak % 26) as u8))
+                .collect()
+        };
+        let kucuk = ["sepet", "ödeme", "kargo", "web"];
+        let mut birlesen = 0;
+        for deneme in 0..10 {
+            let uzunluk = 4 + sayi(3);
+            let buyuk_konum: Vec<usize> = (1..uzunluk).filter(|_| sayi(2) == 0).collect();
+            let ad_sayisi = 100 + sayi(300);
+            let mut metin = String::new();
+            for _ in 0..300 + sayi(1500) {
+                let mut parcalar = vec!["X".to_string()];
+                for konum in 1..uzunluk {
+                    if buyuk_konum.contains(&konum) && sayi(3) != 0 {
+                        parcalar.push(ad(sayi(ad_sayisi)));
+                    } else {
+                        parcalar.push(kucuk[sayi(kucuk.len())].to_string());
+                    }
+                }
+                let saniye = sayi(86_400);
+                metin.push_str(&format!(
+                    "[2026-10-24 {:02}:{:02}:{:02}] production.{}: {}\n",
+                    saniye / 3600,
+                    saniye / 60 % 60,
+                    saniye % 60,
+                    ["INFO", "WARNING"][sayi(2)],
+                    parcalar.join(" ")
+                ));
+            }
+            let mut depo = Depo::new(DepoAyarlari::default());
+            let sonuc = okuyucu::oku(metin.as_bytes(), &SatirBicimi::default(), &mut depo).unwrap();
+            let ilk_tur = depo.alt_gruplar.len();
+            depo.ara_durum(sonuc);
+            let anahtarlar: HashSet<AltGrupAnahtari> =
+                depo.alt_gruplar.iter().map(|alt| alt.anahtar).collect();
+            assert_eq!(anahtarlar.len(), depo.alt_gruplar.len(), "deneme {deneme}");
+            // Okuma durumu da tutarlı: her anahtar kendi alt grubunu gösterir
+            for (no, alt) in depo.alt_gruplar.iter().enumerate() {
+                assert_eq!(depo.alt_grup_sirasi.get(&alt.anahtar), Some(&numara(no)));
+            }
+            let toplam: usize = depo.alt_gruplar.iter().map(AltGrup::adet).sum();
+            assert_eq!(toplam, depo.kayit_sayisi(), "deneme {deneme}");
+            birlesen += usize::from(depo.alt_gruplar.len() < ilk_tur);
+        }
+        // Senaryo gerçekten sınandı
+        assert!(birlesen > 0);
     }
 
     #[test]

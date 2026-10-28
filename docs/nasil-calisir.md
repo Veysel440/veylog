@@ -53,6 +53,13 @@ gider: başlık, devam ya da yetim.
   kayıt başlatmıyorsa bir uyarı yazılır.
 - Mesaj PHP'nin istisna metniyse (`Log::error($e)`) kaydın mesajı istisnanın mesajıdır
   ([PHP istisna metni](#php-istisna-metni)).
+- Laravel bağlamı mesajın arkasına JSON olarak yazar: `Mesaj {"bağlam":"..."}`. Bağlam ` {"`
+  ile başlayan geçerli bir JSON nesnesidir; bağlamdaki istisnanın yığın izi sonraki satırlara
+  uzandığı için satır sonunda yarım kalan bir JSON da bağlamdır. Mesajın kendisi de JSON
+  içerebilir (`Ödeme {"tutar":50} onaylandı {"siparis":5}`): ardından bir kelime gelen JSON
+  mesajın parçasıdır, bağlam sondaki nesnedir. Monolog boş bağlamı ve eki `[]` diye yazıyorsa
+  (`ignoreEmptyContextAndExtra` kapalıyken) mesajın sonundaki `[]`'lar atılır; yoksa aynı mesaj
+  bağlamlı ve bağlamsız haliyle iki kalıba bölünürdü.
 
 ## JSON satırları
 
@@ -146,6 +153,7 @@ Monolog'a başka bir satır biçimi verdiyse veylog'a da aynısı verilir:
         'format' => "%datetime% [%level_name%] %channel%: %message% %context% %extra%\n",
         'dateFormat' => 'd.m.Y H:i:s',
         'allowInlineLineBreaks' => true,
+        'ignoreEmptyContextAndExtra' => true,
         'includeStacktraces' => true,
     ],
 ],
@@ -177,11 +185,16 @@ veylog --desen '(?P<zaman>\S+ \S+) (?P<seviye>\w+) +(?P<mesaj>.*)' app.log
 
 - İfade satırın başına bağlanır. Uymayan satırlar bir önceki kaydın devamıdır (stack trace, çok
   satırlı mesajlar), Laravel'in biçimindeki gibi. JSON satırları her biçimde tanınır.
-- Seviye büyük küçük harf ayrımı olmadan okunur; `WARN`, `ERR`, `CRIT`, `EMERG`, `FATAL`
-  (CRITICAL sayılır) ve `TRACE` (DEBUG) kısaltmaları ve Monolog'un sayıları (100 DEBUG …
-  600 EMERGENCY) da olur. Bilinmeyen bir seviye yakalayan satır kayıt sayılmaz. Seviye grubu
-  yoksa her kayıt INFO'dur.
-- Bağlam grubu yoksa bağlam mesajın sonundan ` {"` ile ayrılır.
+- Seviye büyük küçük harf ayrımı olmadan okunur. Laravel'in adlarından başka şunlar da olur:
+  başka araçların adları ve kısaltmaları (`WARN`, `WRN`; `ERR`, `FAIL`, `SEVERE`; `CRIT`,
+  `FATAL`, `FTL`, `PANIC` CRITICAL; `EMERG`; `INFORMATION`, `CONFIG` INFO; `TRACE`,
+  `VERBOSE`, `VRB`, `DBG`, `FINE` DEBUG), bütün bu adların en az üç harflik başları (`INF`,
+  `ERRO`, `WARNI`: Monolog'un `setMaxLevelNameLength`'i ve logrus böyle yazar) ve Monolog'un
+  sayıları (100 DEBUG … 600 EMERGENCY). Desene ve zamana uyup bilinmeyen bir seviye yakalayan
+  satır kayıt sayılmaz; kaç satır olduğu bir uyarıyla söylenir. Seviye grubu yoksa her kayıt
+  INFO'dur.
+- Bağlam grubu yoksa bağlam mesajın sonundan Laravel'in biçimindeki kuralla ayrılır
+  ([kayıtlara ayırma](#kayıtlara-ayırma)).
 - Derlenemeyen bir ifade, eksik ya da bilinmeyen bir grup adı (`(?P<mesage>...)`) kullanım
   hatasıdır.
 
@@ -233,8 +246,16 @@ Laravel'in biçimini tarif eden bir desenle okununca da varsayılanla aynı rapo
 Değişken kısımlar düzenli ifadelerle şu sırayla yer tutuculara çevrilir: URL, dosya yolu,
 e-posta, UUID, zaman, IP, sayı. Sıra önemlidir: geniş yapılar önce, tek tek sayılar en son
 yakalanır. Yoksa `10.0.3.12` bir IP olarak değil, sayılara bölünmüş olarak maskelenirdi. URL
-boşlukta, kapanan parantezde, tırnakta ve açılı ayraçta biter: `value "https://..." is
-invalid` içindeki kapanış tırnağı maskeye katılmaz.
+boşlukta, kapanan parantezde, tırnakta, ters tırnakta ve açılı ayraçta biter: `value
+"https://..." is invalid` içindeki kapanış tırnağı ve Guzzle'ın `` `POST https://...` ``
+yazdığı ters tırnak maskeye katılmaz. E-posta adresinin alan adı harfle başlayan bir parçayla
+biter: `laravel/framework@11.9.2` bir paket sürümüdür, e-posta değildir.
+
+Sayı, IP, UUID ve zaman bir kelimenin parçası değilse maskelenir: `oauth2` olduğu gibi kalır.
+Kelime sınırları ASCII'dir: ASCII olmayan bir harfe yapışık rakam (`Sipariş5`, `4üncü`)
+maskelenir. Unicode kelime sınırı daha doğru olurdu ama düzenli ifade kütüphanesinin hızlı
+motoru onu ASCII olmayan her baytta çok daha yavaş bir motora devreder: Türkçe mesajlı 400 bin
+kayıtlık bir log 0,7 yerine 1,7 saniyede okunurdu.
 
 Dosya yolları `<YOL>` olur. Laravel bir Blade hatasının mesajının sonuna şablonun tam yolunu
 ekler:
@@ -252,6 +273,7 @@ bittiği için boşluk içerse de (`C:\Users\Ali Veli\Herd\...`) tamamı maskele
 Öteki yollar: Windows'ta bir yol sürücü harfiyle başlar (`C:\`, `C:/`). Linux ve macOS'ta `/`
 ile başlayan bir yol ancak bir dosya uzantısıyla bitiyorsa maskelenir
 (`/var/www/magaza/app/X.php`): böylece `GET /api/urunler/15` gibi URL yolları kalıpta kalır.
+Uzantıdan sonra yol sürmemelidir: `GET /api/v1.2/urunler` de bir URL yoludur.
 
 ## Drain
 
@@ -375,6 +397,13 @@ aynı konumda yüz farklı kelime almaz. Sayım da ancak bir yaprakta 100'den fa
 başlar; yaprakların çoğunda hiç yapılmaz. Değerlerin kendisi değil 64 bitlik özetleri
 saklanır: yalnızca kaç farklı değer görüldüğü önemlidir.
 
+Her konumu 100'den az değer alan ama değerlerinin birleşimleri sayısız olan mesajlar (üç
+konumda yüzer ad: `<ad> <eylem> <nesne>`) hiçbir konumu değişken yapmaz; yaprak yine büyür.
+Bir yaprakta 1 000 küme olunca (en fazla çocuk × 10) hiçbir kümeye benzemeyen yeni mesajlar
+yaprağın tek bir taşma kümesinde toplanır; kalıbında yalnızca onlarda ortak olan belirteçler
+kalır. Bir mesaj böylece en fazla 1 000 kümeyle karşılaştırılır: 40 bin böyle mesaj 33 yerine
+1,7 saniyede kümelenir. Gerçek loglarda yapraklar bunun çok altındadır.
+
 İlk belirteci rakamlı mesajların ortak `<*>` dalında birbiriyle ilgisiz mesajlar yan yana
 durur. Orada bir mesaj ailesinden öğrenilen değişken konum, başka bir mesajı ancak öteki
 konumları da tutuyorsa birleştirir: 101 farklı adla `Kod7 dosyası <*>` kalıbı oluşsa da
@@ -418,14 +447,15 @@ biçimi şunlardan biridir:
 | sözcük | `Ödeme`, `alındı`, `GET`, `SQLSTATE` | Yalnızca harfler; kısa büyük harfli kelimeler de |
 | diğer | `<SAYI>`, `oauth2`, `->`, `` `urunler` `` | Geri kalan her şey |
 
-İlk beşi **kodsal** biçimlerdir. İki belirteç farklı ama ikisi de aynı kodsal biçimdeyse fark,
-iki tarafında da rakam olan bir fark gibi [eşiği gevşetir](#esnek-eşik):
-`İş tamamlandı: App\Jobs\FaturaGonder` ile `İş tamamlandı: App\Jobs\EpostaGonder` 2 belirtecin
-1'inde aynıdır (0,5), eşik 0,7 × 1/2 = 0,35'e iner ve ikisi `İş tamamlandı: <*>` olur. Konum
-**kategoriktir**: değerleri bir kümeden gelir. `Ödeme alındı` ile `Ödeme reddedildi` iki
-sıradan kelimede ayrılır, eşik gevşemez ve iki olay ayrı kalır. Kodsal bir değerle sıradan bir
-kelime (`Durum: ORDER_FAILED`, `Durum: hazır`) ya da iki ayrı kodsal biçim (`ORDER_FAILED`,
-`odeme.bekliyor`) de birleşmez. Karar anlıktır, [ikinci tur](#değişken-konumlar) gerekmez.
+İlk beşi **kodsal** biçimlerdir. İki belirteç farklı ama ikisi de aynı kodsal biçimdeyse
+fark, iki tarafında da rakam olan bir fark gibi [eşiği gevşetir](#esnek-eşik):
+`İş tamamlandı: App\Jobs\FaturaGonder` ile `İş tamamlandı: App\Jobs\EpostaGonder` 3 belirtecin
+2'sinde aynıdır (0,67 < 0,7); eşik 0,7 × 2/3 ≈ 0,47'ye iner ve ikisi `İş tamamlandı: <*>`
+olur. Konum **kategoriktir**: değerleri bir kümeden gelir. `Ödeme alındı` ile
+`Ödeme reddedildi` iki sıradan kelimede ayrılır, eşik gevşemez ve iki olay ayrı kalır. Kodsal
+bir değerle sıradan bir kelime (`Durum: ORDER_FAILED`, `Durum: hazır`) ya da iki ayrı kodsal
+biçim (`ORDER_FAILED`, `odeme.bekliyor`) de birleşmez. Karar anlıktır,
+[ikinci tur](#değişken-konumlar) gerekmez.
 
 Ağacın [ilk belirteç dalı](#drain) da bunu bilir: kodsal biçimli bir baş belirteç, rakamlı
 belirteçler gibi ortak `<*>` dalına gider. Yoksa `ORDER_CREATED olayı işlendi` ile
@@ -484,11 +514,16 @@ Parmak izi şöyle çıkarılır:
 1. Bağlamda `[object] (Sınıf(code: ...` başlığı aranır; buradan istisna sınıfı alınır.
    Mesaj çok satırlıysa bağlam bir sonraki satırlardan birinde başlar.
 2. Başlık `[stacktrace]` satırına kadar sürer, çünkü istisna mesajı da çok satırlı olabilir.
-   Son satırının sonundaki `at dosya:satır` istisnanın fırlatıldığı yerdir.
+   Son satırının sonundaki `at dosya:satır` istisnanın fırlatıldığı yerdir. Yol parantez
+   (`C:\Program Files (x86)\...`) ya da ` at ` içerebilir: ardından `:satır)` gelen ve mutlak
+   olan yol seçilir.
 3. Stack trace'in çerçeveleri (`#2 dosya(satır): çağrı`) okunur. `[previous exception]` ile
    başlayan kısım bu istisnaya yol açan önceki istisnadır; okunmaz.
-4. Proje kökü, `/vendor/` içeren ilk yoldan bulunur (`/var/www/magaza/`) ve yollardan
-   silinir; hiçbir yolda vendor yoksa `/storage/framework/views/` içeren ilk yoldan. Böylece
+4. Proje kökü vendor klasöründen önceki kısımdır (`/var/www/magaza/`) ve yollardan silinir;
+   hiçbir yolda vendor yoksa `/storage/framework/views/` içeren ilk yoldan bulunur. Yollarda
+   birden çok vendor geçiyorsa (proje `vendor` adlı bir klasörde, `/home/ali/vendor/magaza/`;
+   ya da bir paket kendi vendor klasörünü taşıyor) kök, hemen altında bir giriş noktası
+   (`public/index.php`, `artisan`) ya da uygulama kodu olan vendor'dan bulunur. Böylece
    her dağıtımda klasör adı değişse de (`releases/20261024/`) konum aynı kalır. Sıra
    önemlidir: sıfır kesintili dağıtımlarda (Forge, Envoyer, Deployer) `storage` bütün
    dağıtımların paylaştığı bir klasördür ve derlenmiş şablonun yolu dağıtımın klasörünün
@@ -538,10 +573,12 @@ bir uyarısından doğan `ErrorException`'da (`Undefined array key`) ise fırlat
 izinde de görünür: Laravel'in hata işleyicisi oradan çağrılmış gibidir (`#1`). Fonksiyonu da o
 satırınkidir.
 
-Gösterilen ad kısadır: sınıfın adı dosyanın adıyla aynıysa (PSR-4) yalnızca metot
-(`kargoUcreti()`), değilse sınıfıyla (`Urun::bul()`). Migration'ların anonim sınıfının adı bir
-şey söylemez, yazılmaz: `up()`. Tam ad JSON çıktısındadır:
-`App\Services\SiparisServisi->kargoUcreti`.
+Kimliğe fonksiyonun sınıfsız adı katılır (`kargoUcreti`); dosya zaten kimliktedir. Sınıf
+katılsaydı bir trait'teki tek bir hata, trait'i kullanan her sınıf için ayrı bir satır olurdu:
+PHP trait'teki bir metodu onu kullanan sınıfın adıyla yazar (`App\Models\Urun->kaydet()`,
+`App\Models\Siparis->kaydet()`), dosya ve satır ise aynıdır. Gösterilen ad da sınıfsızdır:
+`kargoUcreti()`, `bul()`, migration'ların anonim sınıfında `up()`. Tam ad JSON çıktısındadır:
+`App\Services\SiparisServisi->kargoUcreti` (trait'teki bir metotta kayıtların ilkininki).
 
 **Closure'lar.** PHP 8.4'ten önce bir sınıftaki bütün closure'lar aynı adla yazılır:
 `App\Services\SiparisServisi->App\Services\{closure}`. İki metottaki iki closure'ı ayırmak için
@@ -577,7 +614,8 @@ yazılır (`dosya:satır` → fonksiyon). Okuma bitince satırla kalmış konuml
 fonksiyonla belirlenir; bir kanal JSON yazıyorsa ya da log biçimi değiştirildiyse aynı hatanın
 JSON ve metin kayıtları böyle birleşir. Harita yalnızca kesin bilgiyle çalışır: aynı satır iki
 farklı fonksiyonda görüldüyse (log bir dağıtımı aşıyor ve satır başka bir fonksiyona kaymış)
-o satır kullanılmaz. Logun hiçbir yığın izinde geçmeyen bir satır da satırla kalır.
+o satır kullanılmaz; trait'teki bir satırın farklı sınıflarla görülmesi aynı fonksiyondur. Logun
+hiçbir yığın izinde geçmeyen bir satır da satırla kalır.
 
 `--konum satir` 0.1'in davranışıdır: konum dosya ve satırdır. Aynı fonksiyonun iki satırında
 aynı istisna sınıfı ve aynı kalıpla oluşan iki hata fonksiyonla tek satır olur; satırla
@@ -800,17 +838,22 @@ Zamanlar `--karsilastir` gibi yazılır; yalnızca saat verilirse logun son gün
 `--son` ve yalnızca saat verilmiş sınırlar logun sonunu, yani en yeni kaydı bilmeyi
 gerektirir. Kayıtlar her zaman zaman sırasıyla yazılmadığı için en yeni kayıt dosyanın
 sonundaki kayıt olmayabilir: log önce baştan sona taranır. Taramada kayıtlar toplanmaz,
-yalnızca bir kaydın başladığı satırlara bakılır. Standart girdi yalnızca bir kez okunabildiği
-için tarama sırasında geçici bir dosyaya kopyalanır ve asıl okuma kopyadan yapılır.
+yalnızca bir kaydın başladığı satırlara bakılır. Bir borudan gelen standart girdi
+(`zcat ... | veylog -`) yalnızca bir kez okunabildiği için tarama sırasında geçici bir dosyaya
+kopyalanır ve asıl okuma kopyadan yapılır; kopya yazılamazsa (disk dolu) rapor çıkmaz, çıkış
+kodu 1'dir. Dosyaya yönlendirilmiş standart girdi (`veylog - < laravel.log`) kopyalanmaz,
+dosyanın kendisi yeniden okunur. Logda hiç kayıt yoksa sona göre verilen sınırlar (`--son`,
+yalnızca saat verilmiş sınırlar) çözülmez: `Filtre` satırında tarih yerine `son 1 sa` yazar,
+JSON'da çözülmeyen sınır `null`dur.
 
 Filtreye uymayan kayıtlar en pahalı adımları (maskeleme, Drain, parmak izi) atladığı için
 filtreli bir rapor daha hızlı çıkar. 500 MB'lık sentetik bir logda:
 
 | Komut | Süre | Bellek |
 |---|---|---|
-| filtresiz | 8 sn | 17 MB |
-| `--seviye error` | 1,9 sn | 7 MB |
-| `--son 2sa` (tarama dahil) | 2,5 sn | 8 MB |
+| filtresiz | 3,8 sn | 16 MB |
+| `--seviye error` | 1,8 sn | 6 MB |
+| `--son 2sa` (tarama dahil) | 1,8 sn | 8 MB |
 
 ## Kalıp raporu
 
@@ -866,22 +909,25 @@ Her kayıttan özet için gerekenler bir depoya alınır:
 |---|---|---|
 | Alt gruplar: maskeli mesajı, Drain kümesi, istisnası (konumun gösterilen satırıyla) ve seviyesi aynı olan kayıtlar; her birinin kayıt sayısı, ilk kaydının mesajı, ilk ve son zamanı, en geç kaydının sırası | farklı alt grup başına | Kalıp tablosu |
 | Her farklı maskeli mesaj, bir kez; Drain'in o mesaj için son bulduğu küme | farklı mesaj başına | Drain |
+| Drain'in kalıpları: kümeyi açan maskeli mesajın metni (yukarıdakiyle paylaşılır) ve belirteçlerinin yerleri | kalıbın belirteci başına 8 bayt | Kalıp tablosu |
 | Kayıt sütunları: her kaydın zamanı ve alt grubu | kayıt başına 2–3 bayt | Karşılaştırma, ani artışlar |
 | Seyrek dizin: her 1024 kayıtta bir kaydın dosyadaki yeri | 1024 kayıtta 8 bayt | Bir kaydın mesajını yeniden okumak |
 | Parmak izleri, proje kökleri, kökü bekleyen istisnalar | farklı istisna başına | Konum sütunu |
 | Farklı ham mesaj sayısı | en fazla 4–8 MB, sonra 64 KB | "45 farklı mesaj" |
 
-Bellek böylece dosyanın boyuyla değil, farklı mesajların sayısıyla büyür:
+Bellek böylece dosyanın boyuyla değil, farklı mesajların sayısı ve uzunluğuyla büyür:
 
 | Log | Boyut | 0.1.0 | Şimdi |
 |---|---|---|---|
-| Gerçek bir geliştirme logu | 13 MB | 21 MB | 9 MB |
-| 30 günlük log, `--ani-artis 1` | 92 MB | 138 MB | 9 MB |
-| Sentetik üretim logu, 1,5 milyon kayıt | 500 MB | 976 MB | 17 MB |
-| Aynı, 6,3 milyon kayıt | 2 GB | 3 975 MB | 30 MB |
+| Gerçek bir geliştirme logu | 13 MB | 20 MB | 5 MB |
+| 30 günlük log, `--ani-artis 1` | 92 MB | 138 MB | 7 MB |
+| Sentetik üretim logu, 1,5 milyon kayıt | 500 MB | 976 MB | 16 MB |
+| Aynı, 6,3 milyon kayıt | 2 GB | 3 975 MB | 27 MB |
 
-Süre değişmedi; 2 GB'lık log iki çekirdekli bir makinede 33 saniyede okunuyor (0.1.0'da 35
-saniye).
+Bellek GNU `time`'ın ölçtüğü en yüksek yerleşik bellektir. Süre de kısaldı: 2 GB'lık log iki
+çekirdekli bir makinede 0.1.0'da 36, şimdi 15 saniyede okunuyor. Kazanç satırların
+okunmasından (geçerli UTF-8 hızlı yoldan denetlenir), maskelemeden (ASCII kelime sınırları) ve
+Drain'in sıkışık kalıplarından gelir.
 
 **Drain sıraya bağlıdır.** Her kaydın maskeli mesajı, okunurken, logdaki sırasıyla Drain'e
 verilir. Aynı mesaj logun farklı yerlerinde farklı kümelere katılabilir. Dört kayıtlık bir
@@ -937,12 +983,14 @@ döndürülürken `copytruncate` ile kesilip yeniden yazıldıysa) o sırada ba�
 o kayıt örnek olmaz, yerine alt grubunun örneği (maskeli mesajı, seviyesi ve istisnası aynı
 ilk kaydın mesajı) yazılır ve bir uyarı çıkar.
 
-Standart girdi yalnızca bir kez okunabildiği için `--ani-artis` verildiyse okunurken geçici
-bir dosyaya kopyalanır. Dosya oluşturulur oluşturulmaz silinir: açık kaldıkça kullanılır,
-program nasıl biterse bitsin (Ctrl+C dahil) diskte kalmaz. Unix'te yalnızca sahibi okuyup
-yazabilir; silinmeden önceki kısa sürede başka bir kullanıcı açamaz. Kopya girdi kadar yer
-tutar. Geçici dosya oluşturulamazsa (geçici klasör yok, disk dolu) girdi kopyalanmadan okunur:
-rapor yine çıkar, yeniden okunamayan örneklerin yerine alt gruplarının örneği yazılır.
+Borudan gelen standart girdi yalnızca bir kez okunabildiği için `--ani-artis` verildiyse
+okunurken geçici bir dosyaya kopyalanır (dosyaya yönlendirilmiş standart girdi kopyalanmaz,
+dosyanın kendisi yeniden okunur). Dosya oluşturulur oluşturulmaz silinir: açık kaldıkça
+kullanılır, program nasıl biterse bitsin (Ctrl+C dahil) diskte kalmaz. Unix'te yalnızca sahibi
+okuyup yazabilir; silinmeden önceki kısa sürede başka bir kullanıcı açamaz. Kopya girdi kadar
+yer tutar. Kopya oluşturulamaz ya da yazılamazsa (geçici klasör yok, disk dolu) bir uyarı
+yazılır ve girdi kopyasız okunur: rapor yine çıkar, yeniden okunamayan örneklerin yerine alt
+gruplarının örneği yazılır.
 
 **Farklı mesajları saymak.** "45 farklı mesaj" için her ham mesajın 64 bitlik özeti saklanır
 ve tam sayılır. Her mesajı başka olan bir logda (bir kimlik, bir zaman damgası) bu, kayıt
@@ -957,13 +1005,25 @@ araçlar deneysel düzeltme tabloları kullanır, bu tahminci kullanmaz. Standar
 1'den 18 milyona kadar denenen sayılarda en büyük hata %0,6 çıktı. Tahmin olan sayının önünde
 `≈` yazar; JSON'da `ham_mesaj_yaklasik` alanı `true` olur.
 
-İki koruma da var: bir satırın en fazla 256 MB'ı okunur; bir kaydın devam satırlarının en
-fazla 256 MB'ı (ve 16 milyon satırı) saklanır, sığmayan ilk satırdan sonrakiler sayılır ama
-saklanmaz. Satır sonu olmayan dev bir dosya ya da sonu gelmeyen bir döküm belleği
-dolduramaz. Gerçek loglardaki en uzun satırlar bağlamında dev bir SQL sorgusu taşıyan
-istisnalardır (MySQL'in bir sorguya izin verdiği en büyük boy 64 MB'tır); onlar da sınırın
-çok altındadır. Saklanan kısım kaydın başıdır: istisnanın sınıfı ve yeri, uygulama kodunun
-çerçeveleri.
+Dev satırlara ve kayıtlara karşı sınırlar:
+
+- Bir satırın en fazla 256 MB'ı okunur.
+- Bir başlık satırının ilk 1 MB'ı saklanır (toplayıcı başlığı, kayıt tamamlanana kadar
+  kopyalar); JSON kaydının mesajının da ilk 1 MB'ı. Kaydın parçaları satırın başındadır:
+  zaman, seviye, mesaj ve bağlamın başı; istisnanın yığın izi devam satırlarındadır.
+- Bir mesajın ilk 64 KB'ı maskelenir, kümelenir ve örnek olur. Daha uzun mesajlar ilk
+  64 KB'ları aynıysa aynı mesaj sayılır.
+- Bir JSON satırında yalnızca kaydın gerektirdiği alanlar (`message`, `level_name`,
+  `datetime`, bağlamdaki `exception`) kurulur; ötekiler okunup denetlenir ama bellekte bir ağaç
+  olmaz. Bağlamında dev bir dizi taşıyan satır, satırın on katı bellek istemez.
+- Bir kaydın devam satırlarının en fazla 256 MB'ı ve bir milyon satırı saklanır; sığmayan ilk
+  satırdan sonrakiler sayılır ama saklanmaz. Saklanan kısım kaydın başıdır: istisnanın sınıfı
+  ve yeri, uygulama kodunun çerçeveleri.
+
+Satır sonu olmayan 300 MB'lık bir dosya 262 MB, 100 MB'lık tek bir başlık satırı 102 MB,
+50 MB'lık bir JSON satırı 52 MB bellekle okunur. Gerçek loglardaki en uzun satırlar bağlamında
+dev bir SQL sorgusu taşıyan istisnalardır (MySQL'in bir sorguya izin verdiği en büyük boy
+64 MB'tır).
 
 ### Canlı izleme
 
@@ -974,6 +1034,8 @@ okumaya devam eder ve yeni kayıt geldikçe raporu yeniden çizer. Dört parçad
 anahtar sözlüğünü, toplanmakta olan kaydı) çizimler arasında korur; eklenen baytlar satırlara
 ayrılır, satırlar kayıt toplayıcıya, tamamlanan kayıtlar depoya gider. Rapor her çizimde
 depodan yeniden üretilir: maliyeti alt grupların sayısıyla orantılıdır, dosyanın boyuyla değil.
+Zaman penceresi (aşağıda) ve ani artışlar kayıt sütunlarını da dolaşır: onlarla bir çizim kayıt
+sayısıyla orantılıdır (2 milyon kayıtta 30–100 ms).
 Drain bir çizimde değişken bir konum bulduysa kayıtlar o çizimde yeniden kümelenir (ikinci
 tur); sonraki çizimlerde yeni bir değişken konum bulunursa bir tur daha yapılır ve önceki
 turlarda öğrenilenler unutulmaz. Log bir kerede okunurken en fazla iki tur vardır; izlemede
@@ -998,7 +1060,10 @@ bakılır) sessizlik o zamandan sayılır: durgun bir logun son kaydı ilk çizi
 aralık sonra değil.
 
 **Döndürme.** Her aralıkta önce eldeki dosya sonuna kadar okunur, sonra yolundaki dosyayla
-karşılaştırılır; eski dosyaya döndürülmeden hemen önce yazılan kayıtlar böylece kaybolmaz.
+karşılaştırılır; eski dosyaya döndürülmeden hemen önce yazılan ve o ana kadar okunmamış
+kayıtlar böylece kaybolmaz. Döndürme fark edildikten sonra eski dosyaya yazılanlar
+(dosyayı açık tutan bir kuyruk işçisi) ve `copytruncate`'te son okumayla kesme arasında
+yazılanlar ise okunmaz ([sınırlamalar](sinirlamalar.md#canlı-izleme)).
 Unix'te yolun düğüm (inode) numarası değiştiyse (logrotate dosyayı yeniden adlandırıp yenisini
 açmıştır) eski dosya bitmiş sayılır (satır sonu olmayan son satırı da okunur), yeni dosya
 açılıp baştan okunur; eldeki dosya okunandan kısaysa (`copytruncate`) başa sarılır.
@@ -1008,22 +1073,39 @@ dosya her seferinde yeniden açılır, oluşturulma zamanı başkaysa ya da elde
 başka bir dosya sayılır. Depo korunur: eski dosyanın kayıtları raporda kalır, yalnızca
 örnekleri artık yeniden okunamaz. Yeni dosyanın ilk kaydı seyrek dizine yeni dosyadaki
 konumuyla yazılır; dizinin öteki kayıtları her 1024 kayıtta birdir ve döndürmenin ortasına
-düşen bloktaki yeni kayıtlar, o olmasa eski dosyanın konumlarıyla aranırdı. Yol geçici olarak yoksa (döndürmenin ortası) eldeki dosya
-okunmaya devam eder, sonraki aralıkta yeniden bakılır. Durum satırına `döndürüldü` yazılır.
+düşen bloktaki yeni kayıtlar, o olmasa eski dosyanın konumlarıyla aranırdı. Yol geçici olarak
+yoksa (döndürmenin ortası) eldeki dosya okunmaya devam eder, sonraki aralıkta yeniden bakılır.
+Durum satırına `döndürüldü` yazılır.
 
 **Kayan pencere.** Zaman filtreleri okunurken değil her çizimde, o ana kadar okunan en yeni
 kayda göre uygulanır: `--son 1sa` hep son bir saati, `--baslangic 15:00` hep logun son
-gününün 15:00'inden sonrasını gösterir. Deponun pencere görünümü (`Depo::pencere`) kayıt
-sütunlarını bir kez dolaşıp alt grupların sayılarını ve zamanlarını yalnızca pencereye giren
-kayıtlardan toplar; kalıplar, maskeli mesajlar, parmak izleri ve proje kökleri okunan bütün
-kayıtlardan gelir (kümeleme yinelenmez; pencerenin dışına çıkan kayıtlar da öğretir). Farklı
-ham mesaj sayısı ve saat dilimi sayıları kayıt başına saklanmadığı için okunan bütün kayıtlar
-içindir. Seviye filtresi ise okunurken uygulanır: uymayan kayıt depoya hiç girmez.
+gününün 15:00'inden sonrasını gösterir. En yeni kayıt, toplu okumadaki ön taramada olduğu
+gibi seviye filtresine uymayanlarla birlikte bulunur: `--seviye error --son 1sa` son bir
+saatin hatalarıdır, son hatadan önceki bir saatin değil. Log ilerledikçe aralık boşalabilir
+(`--bitis 2026-10-25` ve log 25 Ekim'e geçti): pencerede kayıt kalmaz, izleme sürer. Bir kayıt
+gelene kadar sona göre verilen sınırlar çözülmez. Pencerenin dışında ilk kaydı kalan alt
+grupların örnekleri girdiden yeniden okunur; pencere her çizimde biraz kaydığı için bir önceki
+çizimde okunanlar saklanır, yalnızca yenileri okunur. Deponun pencere görünümü
+(`Depo::pencere`) kayıt sütunlarını bir kez dolaşıp alt grupların sayılarını ve zamanlarını
+yalnızca pencereye giren kayıtlardan toplar; kalıplar, maskeli mesajlar, parmak izleri ve proje
+kökleri okunan bütün kayıtlardan gelir (kümeleme yinelenmez; pencerenin dışına çıkan kayıtlar
+da öğretir). Farklı ham mesaj sayısı ve saat dilimi sayıları kayıt başına saklanmadığı için
+okunan bütün kayıtlar içindir. Seviye filtresi ise okunurken uygulanır: uymayan kayıt depoya
+hiç girmez.
 
 Standart girdi ayrı bir iş parçacığında okunur; ana döngü parçaları bir kanaldan alır ve bir
 aralık boyunca parça gelmezse sessizlik sayar. Girdi bitince son rapor yazılır ve çıkılır.
 `--ani-artis` istendiyse girdi okunurken geçici bir dosyaya da kopyalanır; artışların
-örnekleri ondan okunur. Dosya izlenirken örnekler dosyanın kendisinden okunur.
+örnekleri ondan okunur. Kopya izleme sürdükçe büyür; `/tmp` birçok dağıtımda bellekte olduğu
+için 256 MB'ı aşınca bırakılır (o zamana kadar okunan örnekler saklanır). Dosya izlenirken
+örnekler dosyanın kendisinden okunur.
+
+**Çizim.** Çıktı bir terminalse her çizimde ekran ve kaydırma geçmişi temizlenir; durum satırı
+en alta yazılır: rapor ekrandan uzunsa başı yukarı kayar, durum satırı hep görünür. Uyarılar
+(standart hataya yazılır yazılmaz ekran temizlendiği için) durum satırının üstünde
+tekrarlanır. Windows'un eski konsolunda ekranı temizleyen kaçış dizileri program tarafından
+açılır; açılamazsa çizimler terminal değilmiş gibi yazılır. Çıktı bir dosya ya da boruysa
+çizimler bir ayırıcı satırla art arda yazılır, durum satırı her çizimin başındadır.
 
 Doğrulama: örnek log satır ortalarından üç parçaya bölünüp aralıklarla bir dosyaya eklenirken
 (ve standart girdiye yazılırken) izlenir; son çizim, durum satırı dışında, dosyanın bir kerede

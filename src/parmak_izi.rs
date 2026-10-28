@@ -105,9 +105,27 @@ use crate::kayit::Kayit;
 /// öncesinde `php artisan serve`'ün proje kökündeki giriş dosyasıdır.
 const GIRIS_NOKTALARI: [&str; 3] = ["artisan", "public/index.php", "server.php"];
 
-/// Proje kökünü bulmak için aranan vendor klasörü ve ondan önceki ayraç: Linux ve macOS'ta
-/// `/`, Windows'ta `\`.
-const VENDOR_KLASORLERI: [(&str, &str); 2] = [("/", "/vendor/"), ("\\", "\\vendor\\")];
+/// Yoldaki vendor klasörlerinin yerleri, soldan sağa: `/vendor/` ya da `\vendor\` içindeki
+/// `vendor`'ın başı. Yolun bu yere kadarki kısmı proje kökü adayıdır, sonundaki ayraçla:
+/// `/var/www/magaza/vendor/laravel/...` → `/var/www/magaza/`. Ayraç Linux ve macOS'ta `/`,
+/// Windows'ta `\`; iki yanındaki aynı olmalıdır.
+///
+/// `vendor` kelimesi `v` harfinden aranır: tek bir harfi aramak bir alt dizgi aramasının her
+/// seferindeki hazırlığını gerektirmez. Her istisnalı kayıtta her çerçevenin yoluna bakıldığı
+/// için fark ölçülür: yığın izli loglarda toplam sürenin beşte biri kadardı.
+fn vendor_yerleri(yol: &str) -> impl Iterator<Item = usize> + '_ {
+    let baytlar = yol.as_bytes();
+    yol.match_indices('v').filter_map(move |(konum, _)| {
+        let ayrac = *baytlar.get(konum.checked_sub(1)?)?;
+        (matches!(ayrac, b'/' | b'\\')
+            && baytlar[konum..].starts_with(b"vendor")
+            && baytlar.get(konum + "vendor".len()) == Some(&ayrac))
+        .then_some(konum)
+    })
+}
+
+/// Proje kökü için denenen en fazla aday (`vendor_koku`).
+const KOK_ADAYI_SINIRI: usize = 8;
 
 /// Laravel'in derlenmiş şablonları koyduğu klasör ve ondan önceki ayraç. Kaydın hiçbir yolunda
 /// vendor yoksa kök bundan bulunur.
@@ -144,13 +162,14 @@ impl Konum<'_> {
     /// Parmak izinin yeri. `metot`: yerin içinde bulunduğu fonksiyon, biliniyorsa.
     fn sahiplen(&self, metot: Option<&str>, tur: KonumTuru) -> Yer {
         let metot = match tur {
-            KonumTuru::Metot => metot.map(str::to_owned),
+            KonumTuru::Metot => metot,
             KonumTuru::Satir => None,
         };
         Yer {
             dosya: ayraci_duzelt(&self.dosya).into_owned(),
             kimlik_satiri: if metot.is_some() { None } else { self.satir },
-            metot,
+            uye: metot.map(|metot| metot_kimligi(metot).to_owned()),
+            metot: Gosterilen(metot.map(str::to_owned)),
             satir: Gosterilen(self.satir),
         }
     }
@@ -215,9 +234,15 @@ impl KonumTuru {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Yer {
     dosya: String,
-    /// İçinde bulunduğu fonksiyon (`App\Services\SepetHesaplayici->toplam`); konum satırla
-    /// belirleniyorsa None.
-    metot: Option<String>,
+    /// İçinde bulunduğu fonksiyonun kimlikteki adı (`metot_kimligi`): sınıfsız üye adı
+    /// (`toplam`, `{closure:olustur()}`) ya da sınıfsız bir fonksiyonun tam adı
+    /// (`App\yardimci`); konum satırla belirleniyorsa None. Sınıf kimliğe katılmaz: trait'teki
+    /// bir metot yığın izinde onu kullanan sınıfın adıyla yazılır (`App\Models\Urun->kaydet`,
+    /// `App\Models\Siparis->kaydet`), dosya ve satır ise aynıdır.
+    uye: Option<String>,
+    /// İçinde bulunduğu fonksiyonun tam adı (`App\Services\SepetHesaplayici->toplam`):
+    /// kimliğe katılmaz. Trait'teki bir metotta kayıtların ilkinin sınıfıyladır.
+    metot: Gosterilen<Option<String>>,
     /// Kimliğin parçası olan satır: konum satırla belirleniyorsa satır, fonksiyonla
     /// belirleniyorsa None.
     kimlik_satiri: Option<u32>,
@@ -233,8 +258,8 @@ impl fmt::Display for Yer {
         if let Some(satir) = self.satir.0 {
             write!(f, ":{satir}")?;
         }
-        if let Some(metot) = &self.metot {
-            write!(f, ", {}", kisa_metot(metot, &self.dosya))?;
+        if let Some(uye) = &self.uye {
+            write!(f, ", {}", kisa_metot(uye))?;
         }
         Ok(())
     }
@@ -326,8 +351,9 @@ impl ParmakIzi {
 
     /// Konumun içinde bulunduğu fonksiyonun tam adı: `App\Services\SepetHesaplayici->toplam`,
     /// `App\Services\SiparisServisi->{closure:olustur()}`. Konum satırla belirleniyorsa None.
+    /// Trait'teki bir metotta, hatanın kayıtlarının ilkinde onu kullanan sınıfın adıyla.
     pub fn metot(&self) -> Option<&str> {
-        self.konum.as_ref()?.metot.as_deref()
+        self.konum.as_ref()?.metot.0.as_deref()
     }
 
     /// Konumun raporda gösterilen hali: `app/Services/SepetHesaplayici.php:88, toplam()`.
@@ -504,33 +530,41 @@ impl<'k> Istisna<'k> {
         }
     }
 
-    /// Kaydın kendi yollarından bulunan proje kökü: vendor klasörünü içeren ilk yoldan,
-    /// "/var/www/magaza/". Hiçbir yolda vendor yoksa derlenmiş şablonların klasöründen.
-    /// Derlenmiş şablon yığın izinde vendor'dan önce gelse de önce bütün yollarda vendor
-    /// aranır: paylaşılan `storage` klasörü dağıtımın klasörünün dışında olabilir. Yollar
+    /// Kaydın kendi yollarından bulunan proje kökü: vendor klasöründen önceki kısım,
+    /// "/var/www/magaza/" (`vendor_koku`). Hiçbir yolda vendor yoksa derlenmiş şablonların
+    /// klasöründen. Derlenmiş şablon yığın izinde vendor'dan önce gelse de önce bütün yollarda
+    /// vendor aranır: paylaşılan `storage` klasörü dağıtımın klasörünün dışında olabilir. Yollar
     /// zaten köke göre yazılmışsa ("vendor/laravel/...") kök yoktur, gerek de yoktur.
     pub fn kok(&self) -> Option<&str> {
-        let ara = |klasorler: &[(&str, &str)]| {
+        vendor_koku(self.adaylar.iter().map(|aday| &*aday.konum.dosya)).or_else(|| {
             self.adaylar
                 .iter()
-                .find_map(|aday| klasorden_kok(&aday.konum.dosya, klasorler))
-        };
-        ara(&VENDOR_KLASORLERI).or_else(|| ara(&DERLENMIS_SABLON_KLASORLERI))
+                .find_map(|aday| klasorden_kok(&aday.konum.dosya, &DERLENMIS_SABLON_KLASORLERI))
+        })
     }
 
     /// Bilinen köklerden kaydın yollarından birinin başında olanı. Birden çoğu uyuyorsa en
     /// uzunu: iç içe iki projede içteki kök daha doğrudur. Uzunluklar eşitse sıralamada
     /// sonuncusu.
+    ///
+    /// Kökler bir ayraçla biter (`/var/www/magaza/`): her yolun ayraçla biten başları
+    /// köklerde aranır. Her kökü her yolla karşılaştırmak, binlerce kökü (sıfır kesintili
+    /// dağıtımların klasörleri) ve binlerce köksüz istisnası olan bir logda süreyi ikisinin
+    /// çarpımıyla büyütürdü.
     fn bilinen_kok<'b>(&self, kokler: &'b BTreeSet<String>) -> Option<&'b str> {
-        kokler
-            .iter()
-            .filter(|kok| {
-                self.adaylar
-                    .iter()
-                    .any(|aday| aday.konum.dosya.starts_with(kok.as_str()))
-            })
-            .max_by_key(|kok| kok.len())
-            .map(String::as_str)
+        let mut bulunan: Option<&'b str> = None;
+        for aday in &self.adaylar {
+            let dosya: &str = &aday.konum.dosya;
+            for (konum, ayrac) in dosya.match_indices(['/', '\\']) {
+                let Some(kok) = kokler.get(&dosya[..konum + ayrac.len()]) else {
+                    continue;
+                };
+                if bulunan.is_none_or(|onceki| (kok.len(), kok.as_str()) > (onceki.len(), onceki)) {
+                    bulunan = Some(kok);
+                }
+            }
+        }
+        bulunan
     }
 
     /// Kaydın proje kökü: kendi yollarında bulunan ya da yoksa `kokler`den biri (logun bütün
@@ -539,8 +573,9 @@ impl<'k> Istisna<'k> {
         self.kok().or_else(|| self.bilinen_kok(kokler))
     }
 
-    /// Parmak izi. `kokler`: logun bütün kayıtlarında bulunan kökler; kaydın kendi kökü
-    /// yoksa denenir.
+    /// Testlerde parmak izi. `kokler`: logun bütün kayıtlarında bulunan kökler; kaydın kendi
+    /// kökü yoksa denenir. Depo kökü bir kez bulup `koke_gore`yi çağırır.
+    #[cfg(test)]
     pub fn parmak_izi(&self, kokler: &BTreeSet<String>, tur: KonumTuru) -> ParmakIzi {
         self.koke_gore(self.cozulmus_kok(kokler), tur)
     }
@@ -676,18 +711,20 @@ impl MetotHaritasi {
     /// değişmez.
     pub fn tamamla(&self, iz: &mut ParmakIzi) {
         let Some(konum) = &mut iz.konum else { return };
-        let (None, Some(satir)) = (&konum.metot, konum.kimlik_satiri) else {
+        let (None, Some(satir)) = (&konum.uye, konum.kimlik_satiri) else {
             return;
         };
         if let Some(metot) = self.bul(&konum.dosya, satir) {
-            konum.metot = Some(metot.to_owned());
+            konum.uye = Some(metot_kimligi(metot).to_owned());
+            konum.metot = Gosterilen(Some(metot.to_owned()));
             konum.kimlik_satiri = None;
         }
     }
 }
 
 /// Satırın fonksiyonunu dosyanın satırlarına yazar. Satır başka bir fonksiyonda görülmüşse
-/// belirsizdir: None.
+/// belirsizdir: None. Fonksiyonlar kimlikleriyle karşılaştırılır: trait'teki bir satır onu
+/// kullanan her sınıfın adıyla görülür, yine de aynı fonksiyondadır.
 fn satira_yaz(satirlar: &mut HashMap<u32, Option<Box<str>>>, satir: u32, metot: &str) {
     match satirlar.entry(satir) {
         Entry::Vacant(bos) => {
@@ -697,7 +734,7 @@ fn satira_yaz(satirlar: &mut HashMap<u32, Option<Box<str>>>, satir: u32, metot: 
             if dolu
                 .get()
                 .as_deref()
-                .is_some_and(|bilinen| bilinen != metot)
+                .is_some_and(|bilinen| metot_kimligi(bilinen) != metot_kimligi(metot))
             {
                 dolu.insert(None);
             }
@@ -736,23 +773,62 @@ fn uygulama_yolu<'b>(dosya: &'b str, kok: Option<&str>) -> Option<&'b str> {
     uygulamada.then_some(dosya)
 }
 
-/// Yolun vendor klasöründen önceki kısmı, sonundaki ayraçla:
-/// `/var/www/magaza/vendor/laravel/...` → `/var/www/magaza/`. Yol köke göre yazılmışsa
-/// (`vendor/laravel/...`) boş. Yolda vendor yoksa None.
-fn vendor_oneki(dosya: &str) -> Option<&str> {
-    if dosya.starts_with("vendor/") || dosya.starts_with("vendor\\") {
-        return Some("");
+/// Yolların proje kökü: vendor klasöründen önceki kısım, sonundaki ayraçla
+/// (`/var/www/magaza/vendor/laravel/...` → `/var/www/magaza/`). Yollarda vendor yoksa None.
+///
+/// Yollarda birden çok vendor geçebilir: proje `vendor` adlı bir klasörün içinde olabilir
+/// (`/home/ali/vendor/magaza/vendor/laravel/...`) ya da bir paket kendi vendor klasörünü
+/// taşıyabilir (`/var/www/magaza/vendor/acme/paket/vendor/...`). Her vendor'dan önceki kısım
+/// bir adaydır; kök, hemen altında bir giriş noktası (`public/index.php`, `artisan`) olan
+/// aday, yoksa altında uygulama kodu olan en kısa aday, o da yoksa en kısa adaydır. Adayı
+/// tek olan yollarda (hemen hepsi) bunlara bakılmaz.
+///
+/// Yollarda ilk görülen `KOK_ADAYI_SINIRI` aday denenir: gerçek yığın izlerinde aday birkaç
+/// tanedir, her biri yolların çoğunda geçer. Sınır olmasa her çerçevesi başka bir köke sahip
+/// dev bir yığın izi (bir milyon çerçeveye kadar saklanır) her adayı her yolla karşılaştırtır,
+/// süre çerçeve sayısının karesiyle artardı.
+fn vendor_koku<'b>(yollar: impl Iterator<Item = &'b str> + Clone) -> Option<&'b str> {
+    let mut adaylar: Vec<&'b str> = Vec::new();
+    'yollar: for yol in yollar.clone() {
+        for son in vendor_yerleri(yol) {
+            let kok = &yol[..son];
+            if !adaylar.contains(&kok) {
+                if adaylar.len() == KOK_ADAYI_SINIRI {
+                    break 'yollar;
+                }
+                adaylar.push(kok);
+            }
+        }
     }
-    klasorden_kok(dosya, &VENDOR_KLASORLERI)
+    if adaylar.len() <= 1 {
+        return adaylar.first().copied();
+    }
+    adaylar.sort_by_key(|kok| kok.len());
+    // Kökün altındaki bir yolun köke göre hali bir koşula uyuyor mu?
+    let altinda = |kok: &str, kosul: fn(&str) -> bool| {
+        yollar.clone().any(|yol| {
+            yol.strip_prefix(kok)
+                .is_some_and(|kalan| kosul(&ayraci_duzelt(kalan)))
+        })
+    };
+    let giris_noktasi = |yol: &str| GIRIS_NOKTALARI.contains(&yol);
+    let uygulama_kodu = |yol: &str| {
+        !UYGULAMA_DISI.iter().any(|klasor| yol.starts_with(klasor))
+            && !GIRIS_NOKTALARI.contains(&yol)
+    };
+    adaylar
+        .iter()
+        .find(|kok| altinda(kok, giris_noktasi))
+        .or_else(|| adaylar.iter().find(|kok| altinda(kok, uygulama_kodu)))
+        .or(adaylar.first())
+        .copied()
 }
 
 /// Yol bir vendor klasöründe mi? Proje kökü bilinmeden de söylenebilir: yolda `/vendor/`
 /// geçer ya da yol köke göre yazılmışsa (`vendor/laravel/...`) onunla başlar. Vendor'daki bir
 /// yer parmak izinin konumu olamaz; içinde bulunduğu fonksiyon da aranmaz.
 fn vendor_yolu_mu(dosya: &str) -> bool {
-    VENDOR_KLASORLERI
-        .iter()
-        .any(|(_, vendor)| dosya.contains(vendor))
+    vendor_yerleri(dosya).next().is_some()
         || dosya.starts_with("vendor/")
         || dosya.starts_with("vendor\\")
 }
@@ -817,13 +893,61 @@ fn sinif_gecerli(sinif: &str) -> bool {
 
 /// Başlığın sonundaki `at /yol/Dosya.php:88)` kısmından istisnanın fırlatıldığı yeri alır.
 /// Yol bağlamın JSON'unda yazıldığı için kaçışlıdır; çözülür.
+///
+/// Yol parantez (`C:\\Program Files (x86)\\...`) ve ` at ` (`/home/ali/is at ev/...`)
+/// içerebilir; mesaj da ` at ` içerebilir. Bu yüzden her ` at ` sağdan denenir: ardından
+/// `dosya:satır)` gelenlerden yolu mutlak olan (`/`, `\`, sürücü harfi) sağdaki ilki seçilir;
+/// hiçbirinin yolu mutlak değilse sağdaki ilki. Bir ` at `'in yeri, ondan sonraki ilk
+/// `:satır)`'dır.
+///
+/// Satırdaki `:satır)`'lar önce bir kez, soldan sağa bulunur; her ` at ` için ardındakilerin
+/// ilki ikili aramayla seçilir. Her ` at `'te satırın geri kalanını yeniden taramak, ` at ` ve
+/// `)` ile dolu dev bir istisna mesajında (ör. 50 KB'lık ` at x)` tekrarı) programı dakikalarca
+/// meşgul ederdi.
 fn firlatildigi_yer(satir: &str) -> Option<Konum<'_>> {
-    let (_, sonrasi) = satir.rsplit_once(" at ")?; // "/yol/Dosya.php:88)" ve belki "\"}"
-    let (yer, _) = sonrasi.split_once(')')?; // "/yol/Dosya.php:88"
-    let (dosya, satir_no) = yer.rsplit_once(':')?; // "/yol/Dosya.php" ve "88"
+    // `:satır)` biçimindeki bitişler: iki noktanın yeri ve satır numarası. Her `)`'ten geriye
+    // yalnızca hemen önündeki rakamlara bakılır; bir rakam dizisi tek bir `)`'in önündedir,
+    // bu yüzden bütün bakılanlar satırın boyu kadardır.
+    let baytlar = satir.as_bytes();
+    let bitisler: Vec<(usize, u32)> = satir
+        .match_indices(')')
+        .filter_map(|(son, _)| {
+            let rakamlar = baytlar[..son]
+                .iter()
+                .rev()
+                .take_while(|bayt| bayt.is_ascii_digit())
+                .count();
+            let iki_nokta = son.checked_sub(rakamlar + 1)?;
+            if rakamlar == 0 || baytlar[iki_nokta] != b':' {
+                return None;
+            }
+            Some((iki_nokta, satir[iki_nokta + 1..son].parse().ok()?))
+        })
+        .collect();
+    let mut ilk = None;
+    for (konum, _) in satir.rmatch_indices(" at ") {
+        let bas = konum + " at ".len();
+        // ` at `'ten sonraki ilk bitiş: iki noktalar da `)`'ler gibi soldan sağa sıralıdır
+        let sira = bitisler.partition_point(|&(iki_nokta, _)| iki_nokta < bas);
+        let Some(&(iki_nokta, satir_no)) = bitisler.get(sira) else {
+            continue;
+        };
+        let dosya = &satir[bas..iki_nokta];
+        let mutlak = dosya.starts_with(['/', '\\'])
+            || dosya
+                .as_bytes()
+                .get(..2)
+                .is_some_and(|bas| bas[0].is_ascii_alphabetic() && bas[1] == b':');
+        if mutlak {
+            ilk = Some((dosya, satir_no));
+            break;
+        }
+        ilk.get_or_insert((dosya, satir_no));
+    }
+    let (dosya, satir_no) = ilk?;
     Some(Konum {
         dosya: metni_coz(dosya),
-        satir: Some(satir_no.parse().ok()?),
+        satir: Some(satir_no),
     })
 }
 
@@ -887,11 +1011,19 @@ fn adaylari_kur<'k>(
         .collect();
 
     // Vendor'daki çerçevelerin fonksiyonu aranmaz. Yolların çoğu aynı kökten başlar: kök bir kez
-    // bulunur ve yollar önce onunla karşılaştırılır; her yolda alt dizgi aranmaz.
-    let onek = yerler
+    // bulunur ve yollar önce onunla karşılaştırılır; her yolda alt dizgi aranmaz. Yollar köke
+    // göre yazılmışsa (`vendor/laravel/...`) kök boştur.
+    let onek = match yerler
         .iter()
         .flatten()
-        .find_map(|yer| vendor_oneki(&yer.dosya));
+        .find(|yer| vendor_yolu_mu(&yer.dosya))
+    {
+        Some(yer) if yer.dosya.starts_with("vendor/") || yer.dosya.starts_with("vendor\\") => {
+            Some("")
+        }
+        Some(_) => vendor_koku(yerler.iter().flatten().map(|yer| &*yer.dosya)),
+        None => None,
+    };
     let vendorda = |dosya: &str| match onek {
         Some(onek) if dosya.starts_with(onek) => {
             let kalan = &dosya[onek.len()..];
@@ -904,21 +1036,18 @@ fn adaylari_kur<'k>(
     let mut icinde: Vec<Option<Cow<'k, str>>> = vec![None; cerceveler.len()];
     // Dosya → o dosyadaki çerçevelerden şimdiye kadar bakılanların en içteki. Dıştan içe
     // gidildiği için bir çerçeveye gelindiğinde, aynı dosyada dışa doğru ilk çerçevedir.
-    let mut disaridaki: Vec<(&str, usize)> = Vec::new();
+    let mut disaridaki: HashMap<&str, usize> = HashMap::new();
     for (sira, yer) in yerler.iter().enumerate().rev() {
         let Some(yer) = yer else { continue };
         if vendorda(&yer.dosya) {
             continue;
         }
-        let onceki = disaridaki.iter().position(|&(dosya, _)| dosya == yer.dosya);
         // Dıştaki çerçevelerin fonksiyonları bulundu; `dis` (sira + 1). çerçeveden başlar
         let (ic, dis) = icinde.split_at_mut(sira + 1);
-        let sahibi = onceki.and_then(|no| dis[disaridaki[no].1 - sira - 1].as_deref());
+        let sahibi = disaridaki
+            .insert(&yer.dosya, sira)
+            .and_then(|onceki| dis[onceki - sira - 1].as_deref());
         ic[sira] = kapsayan(cerceveler.get(sira + 1), sahibi, kacisli);
-        match onceki {
-            Some(no) => disaridaki[no].1 = sira,
-            None => disaridaki.push((&yer.dosya, sira)),
-        }
     }
 
     let mut adaylar = Vec::with_capacity(yerler.len() + 1);
@@ -1095,34 +1224,27 @@ fn parantez_disinda(metin: &str, kosul: impl Fn(&str) -> bool) -> Option<usize> 
     None
 }
 
-/// Fonksiyonun raporda gösterilen kısa adı. Sınıfın adı dosyanın adıyla aynıysa (PSR-4:
-/// `SepetHesaplayici.php`'de `SepetHesaplayici`) yalnızca metot: `toplam()`; değilse kısa sınıf
-/// adıyla: `Odeme->al()`, `Urun::bul()`. Anonim sınıfın (migration'lar) adı bir şey söylemez:
-/// `up()`. Closure'lar sınıfsız yazılır, `routes/web.php`'dekilerin sınıfı Laravel'in kendi
-/// sınıfıdır: `{closure:olustur()}`, `{closure}`.
-fn kisa_metot(metot: &str, dosya: &str) -> String {
-    if let Some(konum) = closure_konumu(metot) {
-        return metot[konum..].to_string();
+/// Fonksiyonun kimlikteki adı: sınıfı atılmış. `App\X->toplam` → `toplam`, `App\X::bul` →
+/// `bul`, `App\X->{closure:olustur()}` → `{closure:olustur()}`. Sınıfsız bir fonksiyonda adın
+/// tamamı: `App\yardimci`. Dosya parmak izinde zaten vardır; sınıf, trait'teki bir metodu
+/// onu kullanan her sınıf için ayrı bir yer yapardı.
+fn metot_kimligi(metot: &str) -> &str {
+    match closure_konumu(metot) {
+        Some(konum) => &metot[konum..],
+        None => uye_adi(metot),
     }
-    let dosya_adi = dosya.rsplit('/').next().unwrap_or(dosya);
-    let dosya_koku = dosya_adi.split('.').next().unwrap_or(dosya_adi);
-    let ayrac = ["->", "::"]
-        .into_iter()
-        .filter_map(|ayrac| metot.rfind(ayrac).map(|konum| (konum, ayrac)))
-        .max();
-    match ayrac {
-        Some((konum, ayrac)) => {
-            let sinif = kisa_ad(&metot[..konum]);
-            let ad = &metot[konum + ayrac.len()..];
-            if sinif == dosya_koku || sinif.ends_with("@anonymous") {
-                format!("{ad}()")
-            } else {
-                format!("{sinif}{ayrac}{ad}()")
-            }
-        }
-        // Bir fonksiyon: ad alanı atılır
-        None => format!("{}()", kisa_ad(metot)),
+}
+
+/// Fonksiyonun raporda gösterilen kısa adı, kimliğinden (`metot_kimligi`): `toplam()`,
+/// `bul()`; bir fonksiyonda ad alanı atılır: `yardimci()`. Closure'lar olduğu gibi:
+/// `{closure:olustur()}`, `{closure}`. Sınıf yazılmaz: dosya gösterilir, trait'teki bir metodun
+/// sınıfı ise kayıttan kayda değişir. Anonim sınıfların (migration'lar) adı da bir şey
+/// söylemezdi.
+fn kisa_metot(uye: &str) -> String {
+    if closure_konumu(uye).is_some() {
+        return uye.to_string();
     }
+    format!("{}()", kisa_ad(uye))
 }
 
 /// Çağrı, Laravel'in Pipeline'ında bir sonraki adım mı? Middleware'deki `$next($request)`
@@ -1536,7 +1658,7 @@ mod testler {
 
     #[test]
     fn proje_koku_ve_yol_cozulur() {
-        let vendor = |dosya| klasorden_kok(dosya, &VENDOR_KLASORLERI);
+        let vendor = |dosya: &'static str| vendor_yerleri(dosya).next().map(|son| &dosya[..son]);
         assert_eq!(
             vendor("/var/www/magaza/vendor/laravel/x.php"),
             Some("/var/www/magaza/")
@@ -2423,33 +2545,44 @@ Stack trace:
     }
 
     #[test]
-    fn metodun_kisa_adi() {
-        let dosya = "app/Services/SepetHesaplayici.php";
-        assert_eq!(
-            kisa_metot(r"App\Services\SepetHesaplayici->toplam", dosya),
-            "toplam()"
-        );
-        assert_eq!(kisa_metot(r"App\Services\Odeme->al", dosya), "Odeme->al()");
-        assert_eq!(kisa_metot(r"App\Models\Urun::bul", dosya), "Urun::bul()");
-        assert_eq!(kisa_metot(r"App\Support\yardimci", dosya), "yardimci()");
-        assert_eq!(
-            kisa_metot(
+    fn metodun_kimligi_ve_kisa_adi() {
+        for (metot, kimlik, kisa) in [
+            (
+                r"App\Services\SepetHesaplayici->toplam",
+                "toplam",
+                "toplam()",
+            ),
+            (r"App\Services\Odeme->al", "al", "al()"),
+            (r"App\Models\Urun::bul", "bul", "bul()"),
+            (
+                r"App\Support\yardimci",
+                r"App\Support\yardimci",
+                "yardimci()",
+            ),
+            (
                 r"Illuminate\Database\Migrations\Migration@anonymous->up",
-                dosya
+                "up",
+                "up()",
             ),
-            "up()"
-        );
-        assert_eq!(
-            kisa_metot(
+            (
                 r"Illuminate\Routing\RouteFileRegistrar->{closure}",
-                "routes/web.php"
+                "{closure}",
+                "{closure}",
             ),
-            "{closure}"
-        );
-        assert_eq!(
-            kisa_metot(r"App\Services\SiparisServisi->{closure:olustur()}", dosya),
-            "{closure:olustur()}"
-        );
+            (
+                r"App\Services\SiparisServisi->{closure:olustur()}",
+                "{closure:olustur()}",
+                "{closure:olustur()}",
+            ),
+            (
+                "{closure:App\\yardimci()}",
+                "{closure:App\\yardimci()}",
+                "{closure:App\\yardimci()}",
+            ),
+        ] {
+            assert_eq!(metot_kimligi(metot), kimlik, "{metot}");
+            assert_eq!(kisa_metot(kimlik), kisa, "{metot}");
+        }
     }
 
     /// `UYGULAMADA_FIRLATILAN` ile aynı hata, Monolog'un JSON biçiminde: yığın izinde çağrılar
@@ -2531,6 +2664,186 @@ Stack trace:
         );
         assert_eq!(satirla[0], satirla[1]);
         assert_eq!(satirla[1].as_ref().unwrap().metot(), None);
+    }
+
+    /// Trait'teki bir metotta fırlatılan istisna; `{sinif}` metodu kullanan sınıf.
+    fn trait_hatasi(sinif: &str, denetleyici: &str, saniye: u32) -> String {
+        format!(
+            r#"[2026-10-24 10:00:{saniye:02}] production.ERROR: Kaydedilemedi {{"exception":"[object] (RuntimeException(code: 0): Kaydedilemedi at /var/www/magaza/app/Traits/Kaydedilebilir.php:12)
+[stacktrace]
+#0 /var/www/magaza/app/Http/Controllers/{denetleyici}.php(20): App\\Models\\{sinif}->kaydet()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/Controller.php(54): App\\Http\\Controllers\\{denetleyici}->store()
+#2 {{main}}
+"}} "#
+        )
+    }
+
+    #[test]
+    fn trait_metodundaki_hata_tek_yerdir() {
+        // PHP trait'teki metodu onu kullanan sınıfın adıyla yazar: dosya ve satır aynı, sınıf
+        // farklı. Aynı hatadır; çağrısız JSON kaydı da ona katılır.
+        let json = r#"{"message":"Kaydedilemedi","context":{"exception":{"class":"RuntimeException","message":"Kaydedilemedi","code":0,"file":"/var/www/magaza/app/Traits/Kaydedilebilir.php:12"}},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-24T10:00:02+00:00","extra":{}}"#;
+        let log = format!(
+            "{}\n{}\n{json}",
+            trait_hatasi("Urun", "UrunController", 0),
+            trait_hatasi("Siparis", "SiparisController", 1)
+        );
+        let ucu = izler(&log);
+        assert_eq!(ucu[0], ucu[1]);
+        assert_eq!(ucu[1], ucu[2]);
+        assert_eq!(
+            ucu[0].as_ref().map(ToString::to_string),
+            Some("app/Traits/Kaydedilebilir.php:12, kaydet() (RuntimeException)".to_string())
+        );
+        // Tam ad kayıtların ilkinden
+        assert_eq!(
+            ucu[0].as_ref().unwrap().metot(),
+            Some(r"App\Models\Urun->kaydet")
+        );
+    }
+
+    #[test]
+    fn yolda_parantez_ya_da_at_olsa_da_yer_bulunur() {
+        for (baslik, dosya, satir) in [
+            (
+                "x at /home/ali/projeler (eski)/magaza/app/X.php:12)",
+                "/home/ali/projeler (eski)/magaza/app/X.php",
+                12,
+            ),
+            (
+                r"x at C:\\Program Files (x86)\\magaza\\app\\X.php:7)",
+                r"C:\Program Files (x86)\magaza\app\X.php",
+                7,
+            ),
+            (
+                "x at /home/ali/is at ev/magaza/app/X.php:3)",
+                "/home/ali/is at ev/magaza/app/X.php",
+                3,
+            ),
+            ("x at y at /srv/a.php:5)", "/srv/a.php", 5),
+            ("a.php:5) at /srv/b.php:6)", "/srv/b.php", 6),
+            // Mesajda da mutlak bir yer olsa sağdaki seçilir: fırlatıldığı yer en sondadır
+            ("x at /srv/a.php:5) at /srv/b.php:6)", "/srv/b.php", 6),
+            // Mutlak yolu olmayan bir yer: sağdaki ` at `'inki
+            ("x at a.php:5) at b.php:6)", "b.php", 6),
+            // `:satır)`'dan önceki iki nokta yolun parçasıdır
+            ("x at a:b.php:1:2)", "a:b.php:1", 2),
+            ("x at :12)", "", 12),
+            // Satır numarası `u32`'ye sığmıyorsa sonraki `)` denenir
+            (
+                "x at /a.php:99999999999) /b.php:7)",
+                "/a.php:99999999999) /b.php",
+                7,
+            ),
+        ] {
+            assert_eq!(
+                firlatildigi_yer(baslik),
+                Some(Konum {
+                    dosya: Cow::Borrowed(dosya),
+                    satir: Some(satir)
+                }),
+                "{baslik}"
+            );
+        }
+        for baslik in [
+            "x at /srv/a.php)",
+            "at yok",
+            "x at /a.php:)",
+            "x:5 at 6)",
+            "",
+        ] {
+            assert_eq!(firlatildigi_yer(baslik), None, "{baslik}");
+        }
+        // ` at ` ve `)` ile dolu dev bir mesaj: her ` at `'te satırın geri kalanı yeniden
+        // taranmaz (taransa bu satır dakikalar sürerdi)
+        let dev = format!("x{} at /a.php:5)", " at y)".repeat(200_000));
+        let bas = std::time::Instant::now();
+        assert_eq!(
+            firlatildigi_yer(&dev),
+            Some(Konum {
+                dosya: Cow::Borrowed("/a.php"),
+                satir: Some(5)
+            })
+        );
+        assert_eq!(firlatildigi_yer(&" at y)".repeat(200_000)), None);
+        assert!(bas.elapsed().as_secs() < 5, "{:?}", bas.elapsed());
+    }
+
+    #[test]
+    fn vendor_adli_bir_klasordeki_proje() {
+        // Proje kökü yoldaki son değil, uygulama kodunu kapsayan vendor'dan bulunur
+        let log = UYGULAMADA_FIRLATILAN.replace("/var/www/magaza/", "/home/ali/vendor/magaza/");
+        assert_eq!(ozet(&iz(&log)), ozet(&iz(UYGULAMADA_FIRLATILAN)));
+        // Bir paketin kendi vendor klasörü kökü değiştirmez
+        let ic_ice = VENDORDA_FIRLATILAN.replace(
+            "#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php(779)",
+            "#0 /var/www/magaza/vendor/acme/paket/vendor/baska/x/src/Y.php(5): Y->z()\n#1 /var/www/magaza/vendor/acme/paket/src/A.php(9): A->b()\n#2 /var/www/magaza/vendor/acme/paket/src/A.php(19): A->c()\n#3 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php(779)",
+        );
+        assert_eq!(ozet(&iz(&ic_ice)), ozet(&iz(VENDORDA_FIRLATILAN)));
+        assert!(ozet(&iz(&ic_ice)).unwrap().1.unwrap().starts_with("app/"));
+        // Uygulama kodu olmayan bir iz: kök, altında giriş noktası olan adaydır. Paketin kendi
+        // vendor'ından önceki kısım (`paket/`) kök sayılsaydı paketin kodu (`src/A.php`)
+        // uygulama kodu sanılırdı
+        let paketli = r#"[2026-10-24 09:14:20] production.ERROR: Hata {"exception":"[object] (RuntimeException(code: 0): Hata at /var/www/magaza/vendor/acme/paket/vendor/baska/x/src/Y.php:5)
+[stacktrace]
+#0 /var/www/magaza/vendor/acme/paket/src/A.php(9): Baska\\X\\Y->z()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/ControllerDispatcher.php(46): Acme\\Paket\\A->b()
+#2 /var/www/magaza/public/index.php(17): Illuminate\\Foundation\\Application->handleRequest(Object(Illuminate\\Http\\Request))
+#3 {main}
+"} "#;
+        assert_eq!(ozet(&iz(paketli)), Some(("RuntimeException", None)));
+    }
+
+    #[test]
+    fn bilinen_koklerden_en_uzunu_secilir() {
+        // Yollarında vendor olmayan istisnalar: kökleri logun öteki kayıtlarında bulunanlardan
+        // seçilir. Yolun başındaki köklerden en uzunu; uzunluklar eşitse sıralamada sonuncusu.
+        let log = r#"[2026-10-24 10:00:00] local.ERROR: Hata {"exception":"[object] (RuntimeException(code: 0): Hata at /srv/a/b/app/X.php:3)"}
+[2026-10-24 10:00:01] local.ERROR: Hata {"exception":"[object] (RuntimeException(code: 0): Hata at /srv/x/app/A.php:1)
+[stacktrace]
+#0 /srv/y/app/B.php(2): f()
+#1 {main}
+"}
+[2026-10-24 10:00:02] local.ERROR: Hata {"exception":"[object] (RuntimeException(code: 0): Hata at /baska/app/C.php:5)"}
+"#;
+        let mut toplayan = Toplayan::default();
+        okuyucu::oku(log.as_bytes(), &SatirBicimi::default(), &mut toplayan).unwrap();
+        let istisnalar: Vec<Istisna<'_>> = toplayan
+            .taslaklar
+            .iter()
+            .flatten()
+            .map(IstisnaTaslagi::istisna)
+            .collect();
+        assert_eq!(istisnalar.len(), 3);
+        let kokler: BTreeSet<String> = [
+            "/srv/",
+            "/srv/a/",
+            "/srv/a/b/",
+            "/srv/a/c/",
+            "/srv/x/",
+            "/srv/y/",
+            "/srv/a/b/app/X.php/",
+        ]
+        .map(String::from)
+        .into();
+        let bulunan: Vec<Option<&str>> = istisnalar
+            .iter()
+            .map(|istisna| istisna.bilinen_kok(&kokler))
+            .collect();
+        assert_eq!(bulunan, [Some("/srv/a/b/"), Some("/srv/y/"), None]);
+    }
+
+    #[test]
+    fn kok_adaylari_sinirlidir() {
+        // Her çerçevesi başka bir köke sahip dev bir yığın izi: ilk adaylar denenir, her aday
+        // her yolla karşılaştırılmaz (karşılaştırılsa bu iz dakikalar sürerdi)
+        let mut yollar: Vec<String> = (0..200_000)
+            .map(|sira| format!("/r{sira}/vendor/x/Y.php"))
+            .collect();
+        yollar.push("/r0/app/X.php".to_owned());
+        let bas = std::time::Instant::now();
+        assert_eq!(vendor_koku(yollar.iter().map(String::as_str)), Some("/r0/"));
+        assert!(bas.elapsed().as_secs() < 5, "{:?}", bas.elapsed());
     }
 
     #[test]

@@ -102,9 +102,11 @@ karakterinden oluşan bir ayırıcı satırla art arda yazılır; son çizim son
 - `istisna`, kayıtlar bir istisnadan gelmiyorsa `null`'dır. `metot` konumun içinde bulunduğu
   fonksiyonun tam adıdır: `App\Http\Middleware\HizSiniri->handle`, closure'larda
   `App\Services\SiparisServisi->{closure:olustur()}`. O zaman `satir` o hatanın en yeni
-  kaydının satırıdır ([satır değil fonksiyon](nasil-calisir.md#satır-değil-fonksiyon)). Konum
-  satırla belirlendiyse (`--konum satir`, bir dosyanın en üst düzeyindeki kod, fonksiyonu
-  bilinmeyen JSON kayıtları) `metot` `null`'dır. İstisnanın uygulama kodunda yeri
+  kaydının satırıdır ([satır değil fonksiyon](nasil-calisir.md#satır-değil-fonksiyon)).
+  Hatayı sınıf adı değil dosya ve fonksiyon tanıtır: bir trait'teki metodun hatası onu
+  kullanan bütün sınıflarda tek satırdır, `metot` kayıtların ilkinin yazdığı sınıfla yazılır.
+  Konum satırla belirlendiyse (`--konum satir`, bir dosyanın en üst düzeyindeki kod,
+  fonksiyonu bilinmeyen JSON kayıtları) `metot` `null`'dır. İstisnanın uygulama kodunda yeri
   bulunamadıysa `dosya`, `satir` ve `metot` `null`'dır. View hatalarında `dosya` şablondur;
   `satir` ve `metot` `null`'dır.
 - `konum`: konumun neyle belirlendiği (`--konum`): `metot` ya da `satir`.

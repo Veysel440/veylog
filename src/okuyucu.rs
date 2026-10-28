@@ -168,11 +168,26 @@ impl<R: BufRead> SatirOkuyucu<R> {
                 self.tampon.pop();
             }
         }
-        let metin = String::from_utf8_lossy(&self.tampon);
-        if let Cow::Owned(_) = metin {
-            self.gecersiz_utf8 = true;
+        Ok(Some((
+            utf8_metin(&self.tampon, &mut self.gecersiz_utf8),
+            bas,
+        )))
+    }
+}
+
+/// Baytların metni: geçerli UTF-8 ise kopyalanmadan; değilse geçersiz baytlar � olur ve
+/// `gecersiz` işaretlenir.
+///
+/// Önce `str::from_utf8` denenir: geçerli metinde (hemen her satır) ASCII baytları sekizer
+/// sekizer geçen hızlı bir denetimdir. `String::from_utf8_lossy` geçerli metni de bayt bayt
+/// dolaşır; okumanın üçte biri kadar sürüyordu.
+pub(crate) fn utf8_metin<'a>(baytlar: &'a [u8], gecersiz: &mut bool) -> Cow<'a, str> {
+    match std::str::from_utf8(baytlar) {
+        Ok(metin) => Cow::Borrowed(metin),
+        Err(_) => {
+            *gecersiz = true;
+            String::from_utf8_lossy(baytlar)
         }
-        Ok(Some((metin, bas)))
     }
 }
 
@@ -570,7 +585,8 @@ mod testler {
                 satir: 4,
                 kayit: 2,
                 devam: 1,
-                yetim: 1
+                yetim: 1,
+                taninmayan_seviye: 0,
             }
         );
         assert!(!sonuc.gecersiz_utf8);

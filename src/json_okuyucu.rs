@@ -91,17 +91,79 @@ impl std::error::Error for OkumaHatasi {}
 
 /// Metnin tamamını tek bir JSON değeri olarak okur. Değerden önce ve sonra yalnızca boşluk
 /// (boşluk, sekme, satır sonu) olabilir.
+#[cfg(test)]
 pub fn oku(metin: &str) -> Result<Deger<'_>, OkumaHatasi> {
+    tamamini_oku(metin, Secim::Hepsi).map(|deger| deger.expect("her şey seçildi"))
+}
+
+/// Monolog'un bir JSON satırını okur: yalnızca bir kaydın gerektirdiği alanlar (`message`,
+/// `level_name`, `datetime` ve `context` içindeki `exception`) kurulur. Ötekiler `oku`daki gibi
+/// denetlenir ama bellekte kurulmaz: bağlamında dev bir dizi taşıyan satır, ağacının
+/// kurulması için satırın kendisinin on katı bellek istemez. Satır `oku`nun okuyabildiği her
+/// satırı okur, okuyamadığını okumaz.
+pub fn kayit_oku(metin: &str) -> Result<Deger<'_>, OkumaHatasi> {
+    // Bir kayıt nesnedir; nesne değilse seçilen alan da yoktur
+    tamamini_oku(metin, Secim::Alanlar(KAYIT_ALANLARI)).map(|deger| deger.unwrap_or(Deger::Yok))
+}
+
+/// Bir Monolog kaydının okunan alanları ve bağlamın okunan alanı.
+const KAYIT_ALANLARI: &[(&str, Secim)] = &[
+    ("message", Secim::Hepsi),
+    ("level_name", Secim::Hepsi),
+    ("datetime", Secim::Hepsi),
+    ("context", Secim::Alanlar(&[("exception", Secim::Hepsi)])),
+];
+
+fn tamamini_oku(metin: &str, secim: Secim) -> Result<Option<Deger<'_>>, OkumaHatasi> {
     let mut okuyucu = Okuyucu {
         kaynak: metin,
         konum: 0,
     };
-    let deger = okuyucu.deger(0)?;
+    let deger = okuyucu.deger(0, secim)?;
     okuyucu.bosluk_atla();
     if okuyucu.konum < metin.len() {
         return Err(okuyucu.hata("değerden sonra fazladan karakter var"));
     }
     Ok(deger)
+}
+
+/// Bir metnin başındaki JSON değeri (`onek`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Onek {
+    /// Tam bir değer; bittiği bayttan sonrası değerin dışındadır.
+    Tam(usize),
+    /// Metin, değer bitmeden ama bir yanlışlık da olmadan bitti: değer metnin ötesinde
+    /// (sonraki satırlarda) sürüyor olabilir.
+    Yarim,
+    /// Geçersiz.
+    Gecersiz,
+}
+
+/// Metnin başında bir JSON değeri var mı? Değer kurulmaz, yalnızca denetlenir. Değerden önceki
+/// boşluklar atlanır.
+pub fn onek(metin: &str) -> Onek {
+    let mut okuyucu = Okuyucu {
+        kaynak: metin,
+        konum: 0,
+    };
+    match okuyucu.deger(0, Secim::Hicbiri) {
+        Ok(_) => Onek::Tam(okuyucu.konum),
+        // Hata metnin sonundaysa okuyucu yalnızca devamını bekliyordu
+        Err(hata) if hata.konum >= metin.len() => Onek::Yarim,
+        Err(_) => Onek::Gecersiz,
+    }
+}
+
+/// Bir değerin ne kadarının bellekte kurulacağı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Secim {
+    /// Değerin tamamı.
+    Hepsi,
+    /// Değer bir nesneyse yalnızca listedeki alanları, her biri kendi seçimiyle; nesne değilse
+    /// hiçbiri.
+    Alanlar(&'static [(&'static str, Secim)]),
+    /// Hiçbiri: değer yalnızca denetlenir.
+    Hicbiri,
 }
 
 /// JSON metnindeki kaçışları çözer: `Trait \"X\" bulunamadı` → `Trait "X" bulunamadı`
@@ -209,12 +271,14 @@ impl<'a> Okuyucu<'a> {
         }
     }
 
-    /// `derinlik`: değerin içinde bulunduğu dizi ve nesne sayısı.
-    fn deger(&mut self, derinlik: usize) -> Result<Deger<'a>, OkumaHatasi> {
+    /// `derinlik`: değerin içinde bulunduğu dizi ve nesne sayısı. `secim`: değerin ne kadarı
+    /// kurulacak; hiçbiri kurulmayacaksa (ya da bir nesne beklenip başka bir değer geldiyse)
+    /// None. Kurulmayan değerler de aynı kurallarla denetlenir.
+    fn deger(&mut self, derinlik: usize, secim: Secim) -> Result<Option<Deger<'a>>, OkumaHatasi> {
         self.bosluk_atla();
-        match self.siradaki() {
-            Some(b'{') => self.nesne(derinlik + 1),
-            Some(b'[') => self.dizi(derinlik + 1),
+        let deger = match self.siradaki() {
+            Some(b'{') => return self.nesne(derinlik + 1, secim),
+            Some(b'[') => return self.dizi(derinlik + 1, secim),
             Some(b'"') => self.metin().map(Deger::Metin),
             Some(b'-' | b'0'..=b'9') => self.sayi(),
             Some(b't') => self.sabit("true", Deger::Mantiksal(true)),
@@ -222,19 +286,21 @@ impl<'a> Okuyucu<'a> {
             Some(b'n') => self.sabit("null", Deger::Yok),
             Some(_) => Err(self.hata("beklenmeyen karakter var")),
             None => Err(self.hata("bir değer bekleniyordu")),
-        }
+        }?;
+        Ok((secim == Secim::Hepsi).then_some(deger))
     }
 
-    fn nesne(&mut self, derinlik: usize) -> Result<Deger<'a>, OkumaHatasi> {
+    fn nesne(&mut self, derinlik: usize, secim: Secim) -> Result<Option<Deger<'a>>, OkumaHatasi> {
         if derinlik > EN_FAZLA_DERINLIK {
             return Err(self.hata("iç içe çok fazla dizi ya da nesne var"));
         }
         self.konum += 1; // {
         let mut alanlar = Vec::new();
+        let kur = secim != Secim::Hicbiri;
         self.bosluk_atla();
         if self.siradaki() == Some(b'}') {
             self.konum += 1;
-            return Ok(Deger::Nesne(alanlar));
+            return Ok(kur.then_some(Deger::Nesne(alanlar)));
         }
         loop {
             self.bosluk_atla();
@@ -247,38 +313,56 @@ impl<'a> Okuyucu<'a> {
                 return Err(self.hata("`:` bekleniyordu"));
             }
             self.konum += 1;
-            alanlar.push((anahtar, self.deger(derinlik)?));
+            let alt = match secim {
+                Secim::Alanlar(liste) => liste
+                    .iter()
+                    .find(|&&(ad, _)| ad == anahtar)
+                    .map_or(Secim::Hicbiri, |&(_, alt)| alt),
+                diger => diger,
+            };
+            if let Some(deger) = self.deger(derinlik, alt)? {
+                alanlar.push((anahtar, deger));
+            }
             self.bosluk_atla();
             match self.siradaki() {
                 Some(b',') => self.konum += 1,
                 Some(b'}') => {
                     self.konum += 1;
-                    return Ok(Deger::Nesne(alanlar));
+                    return Ok(kur.then_some(Deger::Nesne(alanlar)));
                 }
                 _ => return Err(self.hata("`,` ya da `}` bekleniyordu")),
             }
         }
     }
 
-    fn dizi(&mut self, derinlik: usize) -> Result<Deger<'a>, OkumaHatasi> {
+    /// Dizi. Yalnızca hepsi seçildiyse kurulur: bir nesnenin alanları beklenirken gelen dizi
+    /// beklenen şey değildir.
+    fn dizi(&mut self, derinlik: usize, secim: Secim) -> Result<Option<Deger<'a>>, OkumaHatasi> {
         if derinlik > EN_FAZLA_DERINLIK {
             return Err(self.hata("iç içe çok fazla dizi ya da nesne var"));
         }
         self.konum += 1; // [
         let mut ogeler = Vec::new();
+        let secim = match secim {
+            Secim::Hepsi => Secim::Hepsi,
+            _ => Secim::Hicbiri,
+        };
+        let kur = secim == Secim::Hepsi;
         self.bosluk_atla();
         if self.siradaki() == Some(b']') {
             self.konum += 1;
-            return Ok(Deger::Dizi(ogeler));
+            return Ok(kur.then_some(Deger::Dizi(ogeler)));
         }
         loop {
-            ogeler.push(self.deger(derinlik)?);
+            if let Some(oge) = self.deger(derinlik, secim)? {
+                ogeler.push(oge);
+            }
             self.bosluk_atla();
             match self.siradaki() {
                 Some(b',') => self.konum += 1,
                 Some(b']') => {
                     self.konum += 1;
-                    return Ok(Deger::Dizi(ogeler));
+                    return Ok(kur.then_some(Deger::Dizi(ogeler)));
                 }
                 _ => return Err(self.hata("`,` ya da `]` bekleniyordu")),
             }
@@ -509,6 +593,11 @@ mod testler {
             ("truex", 4, "değerden sonra fazladan karakter var"),
         ] {
             assert_eq!(oku(metin), Err(OkumaHatasi { konum, neden }), "{metin:?}");
+            assert_eq!(
+                kayit_oku(metin),
+                Err(OkumaHatasi { konum, neden }),
+                "{metin:?}"
+            );
         }
         assert_eq!(
             oku("[1,]").unwrap_err().to_string(),
@@ -538,6 +627,65 @@ mod testler {
         assert_eq!(oku("-2.5E-3"), Ok(Deger::Sayi("-2.5E-3")));
         // DEL ve C1 karakterleri JSON'da kaçışsız yazılabilir
         assert_eq!(oku("\"\u{7f}\u{9b}\""), Ok(Deger::Metin("\u{7f}\u{9b}")));
+    }
+
+    #[test]
+    fn kaydin_yalnizca_gereken_alanlari_kurulur() {
+        let satir = r##"{"message":"Ödeme alınamadı","context":{"userId":2210,"sepet":[1,2,{"a":[3]}],"exception":{"class":"RuntimeException","trace":["#0 a"]}},"level":400,"level_name":"ERROR","channel":"local","datetime":"2026-10-24T09:02:13+00:00","extra":{"uid":"ab"}}"##;
+        let tam = oku(satir).unwrap();
+        let secilen = kayit_oku(satir).unwrap();
+        // Seçilen alanlar tam okumadakiyle aynı; ötekiler hiç kurulmadı
+        for ad in ["message", "level_name", "datetime"] {
+            assert_eq!(secilen.alan(ad), tam.alan(ad), "{ad}");
+        }
+        fn istisna<'a>(deger: &Deger<'a>) -> Option<Deger<'a>> {
+            deger
+                .alan("context")
+                .and_then(|baglam| baglam.alan("exception"))
+                .cloned()
+        }
+        assert_eq!(istisna(&secilen), istisna(&tam));
+        assert!(istisna(&secilen).is_some());
+        for ad in ["level", "channel", "extra"] {
+            assert_eq!(secilen.alan(ad), None, "{ad}");
+        }
+        assert_eq!(
+            secilen.alan("context"),
+            Some(&Deger::Nesne(vec![("exception", istisna(&tam).unwrap())]))
+        );
+        // Nesne olmayan bir kayıt: seçilecek alan yok
+        assert_eq!(kayit_oku("[1,2]"), Ok(Deger::Yok));
+        assert_eq!(kayit_oku("5"), Ok(Deger::Yok));
+        // Bağlam nesne değilse içinden alan seçilmez
+        let satir = r#"{"message":"m","context":[{"exception":1}]}"#;
+        assert_eq!(kayit_oku(satir).unwrap().alan("context"), None);
+    }
+
+    #[test]
+    fn json_oneki() {
+        for (metin, beklenen) in [
+            (r#"{"a":1} sonra"#, Onek::Tam(7)),
+            (r#"  {"a":1}"#, Onek::Tam(9)),
+            ("[] []", Onek::Tam(2)),
+            (r#"{"a":[1,2]}x"#, Onek::Tam(11)),
+            // Satır, değer bitmeden ama bir yanlışlık olmadan bitti
+            (r#"{"a":"#, Onek::Yarim),
+            (r#"{"a":"yarım"#, Onek::Yarim),
+            (r#"{"a":12"#, Onek::Yarim),
+            (r#"{"a":1."#, Onek::Yarim),
+            (r#"{"a":[1,"#, Onek::Yarim),
+            ("{", Onek::Yarim),
+            // Geçersiz
+            (r#"{"a" x"#, Onek::Gecersiz),
+            (r#"{"a":1,}"#, Onek::Gecersiz),
+            ("{'a':1}", Onek::Gecersiz),
+            ("x", Onek::Gecersiz),
+        ] {
+            assert_eq!(onek(metin), beklenen, "{metin}");
+        }
+        // Derinlik sınırı geçilince geçersiz, metin bitmemişse bile
+        assert_eq!(onek(&"[".repeat(1_000)), Onek::Gecersiz);
+        assert_eq!(onek(&"[".repeat(EN_FAZLA_DERINLIK)), Onek::Yarim);
     }
 
     #[test]
@@ -682,6 +830,9 @@ mod testler {
             ] {
                 let okunan = oku(&metin).unwrap_or_else(|hata| panic!("{hata}: {metin}"));
                 assert_eq!(serdeye(&okunan), deger, "{metin}");
+                // Seçerek okuma da aynı metni kabul eder; tam değerin metni de bir önektir
+                assert!(kayit_oku(&metin).is_ok(), "{metin}");
+                assert_eq!(onek(&metin), Onek::Tam(metin.len()), "{metin}");
             }
         }
     }

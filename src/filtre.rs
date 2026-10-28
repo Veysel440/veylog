@@ -49,19 +49,10 @@ impl Filtre {
     }
 
     /// Sınırları çözer. `en_yeni`: logun en yeni kaydının zamanı; yalnızca `sonu_gerekir`
-    /// ise gerekir. Logda hiç kayıt yoksa (None) zaman sınırları da yoktur: hiçbir kayıt
-    /// gelmeyecektir.
+    /// ise gerekir. Başlangıç bitişten önce değilse hiçbir kayıt uyamaz: kullanım hatası.
     pub fn coz(&self, en_yeni: Option<Zaman>) -> Result<CozulmusFiltre, FiltreHatasi> {
-        let son = en_yeni.unwrap_or_else(|| Zaman::saniyeden(0));
-        let baslangic = match self.son {
-            Some(sure) => {
-                let sure = i64::try_from(sure).unwrap_or(i64::MAX);
-                Some(son.saniye().saturating_sub(sure))
-            }
-            None => self.baslangic.map(|nokta| nokta.coz(son).saniye()),
-        };
-        let bitis = self.bitis.map(|nokta| nokta.coz(son).saniye());
-        if let (Some(bas), Some(bit)) = (baslangic, bitis)
+        let cozulmus = self.coz_bos_olabilir(en_yeni);
+        if let (Some(bas), Some(bit)) = (cozulmus.baslangic, cozulmus.bitis)
             && bas >= bit
         {
             return Err(FiltreHatasi::BosAralik {
@@ -69,11 +60,34 @@ impl Filtre {
                 bitis: Zaman::saniyeden(bit),
             });
         }
-        Ok(CozulmusFiltre {
+        Ok(cozulmus)
+    }
+
+    /// Sınırları çözer; aralık boş olsa da hata vermez, hiçbir kayıt uymaz. Canlı izlemede:
+    /// log ilerledikçe pencere boşalabilir (`--baslangic 09:00 --bitis 2026-10-25`).
+    ///
+    /// Logda kayıt yoksa (`en_yeni` None) logun sonu da yoktur: sona göre verilen sınırlar
+    /// (`--son`, yalnızca saat) çözülmez, yoktur. Gelecek bir kayıt da olmadığı için sonuç
+    /// değişmez; rapor da 1970'e göre çözülmüş bir tarih göstermez.
+    pub fn coz_bos_olabilir(&self, en_yeni: Option<Zaman>) -> CozulmusFiltre {
+        let coz = |nokta: ZamanNoktasi| match (nokta, en_yeni) {
+            (ZamanNoktasi::Tam(zaman), _) => Some(zaman.saniye()),
+            (nokta @ ZamanNoktasi::Saat { .. }, Some(son)) => Some(nokta.coz(son).saniye()),
+            (ZamanNoktasi::Saat { .. }, None) => None,
+        };
+        let baslangic = match (self.son, en_yeni) {
+            (Some(sure), Some(son)) => {
+                let sure = i64::try_from(sure).unwrap_or(i64::MAX);
+                Some(son.saniye().saturating_sub(sure))
+            }
+            (Some(_), None) => None,
+            (None, _) => self.baslangic.and_then(coz),
+        };
+        CozulmusFiltre {
             seviye: self.seviye.unwrap_or(Seviye::Debug),
             baslangic,
-            bitis,
-        })
+            bitis: self.bitis.and_then(coz),
+        }
     }
 }
 
@@ -311,6 +325,58 @@ mod testler {
         assert!(Filtre::default().bos_mu());
         let cozulmus = filtre.coz(None).unwrap();
         assert_eq!((cozulmus.baslangic(), cozulmus.bitis()), (None, None));
+    }
+
+    #[test]
+    fn kayitsiz_logda_sona_gore_sinirlar_cozulmez() {
+        // Logda kayıt yok: `--son` ve yalnızca saat verilmiş sınırlar yoktur (1970'e göre
+        // çözülmez); tam zamanlar olduğu gibi. Aralık boş sayılmaz.
+        for (baslangic, bitis, son, beklenen) in [
+            (None, None, Some(3_600), (None, None)),
+            (Some("15:00"), None, None, (None, None)),
+            (
+                Some("2026-10-24"),
+                Some("18:00"),
+                None,
+                (Some(zaman("2026-10-24 00:00:00")), None),
+            ),
+            (
+                None,
+                Some("2026-10-25 06:00"),
+                Some(60),
+                (None, Some(zaman("2026-10-25 06:00:00"))),
+            ),
+        ] {
+            let filtre = Filtre {
+                baslangic: baslangic.and_then(ZamanNoktasi::ayristir),
+                bitis: bitis.and_then(ZamanNoktasi::ayristir),
+                son,
+                ..Filtre::default()
+            };
+            let cozulmus = filtre.coz(None).unwrap();
+            assert_eq!((cozulmus.baslangic(), cozulmus.bitis()), beklenen);
+        }
+    }
+
+    #[test]
+    fn izlemede_bos_aralik_hata_degildir() {
+        let filtre = Filtre {
+            baslangic: ZamanNoktasi::ayristir("09:00"),
+            bitis: ZamanNoktasi::ayristir("2026-10-25"),
+            ..Filtre::default()
+        };
+        // Log 25 Ekim'e geçti: başlangıç (25 Ekim 09:00) bitişten sonra
+        let en_yeni = Some(zaman("2026-10-25 10:00:00"));
+        assert!(filtre.coz(en_yeni).is_err());
+        let cozulmus = filtre.coz_bos_olabilir(en_yeni);
+        assert_eq!(cozulmus.baslangic(), Some(zaman("2026-10-25 09:00:00")));
+        // Hiçbir kayıt uymaz
+        for an in ["2026-10-24 12:00:00", "2026-10-25 09:30:00"] {
+            assert!(
+                !cozulmus.gecer(zaman(an).saniye(), Seviye::Emergency),
+                "{an}"
+            );
+        }
     }
 
     #[test]

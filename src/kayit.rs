@@ -33,7 +33,7 @@ use std::mem;
 
 use crate::istisna_metni::{self, IstisnaMetni};
 use crate::json_okuyucu::{self, Deger};
-use crate::satir_bicimi::{Baslik, BaslikYeri, SatirBicimi};
+use crate::satir_bicimi::{Baslik, BaslikYeri, SatirBicimi, Tanima};
 use crate::zaman;
 
 /// Laravel log seviyeleri. Sıralama önem sırasıdır: Debug en düşük, Emergency en yüksek.
@@ -145,12 +145,12 @@ impl<'a> Kayit<'a> {
         self.seviye
     }
 
-    /// Bağlam JSON'u olmadan mesajın kendisi.
+    /// Bağlam JSON'u olmadan mesajın kendisi; en fazla `MESAJ_SINIRI` bayt.
     ///
     /// Dönen metin kayda bağlıdır (`&self` kadar yaşar), satıra değil: JSON satırındaki kaçışlı
     /// bir mesajın çözülmüş hali yalnızca kayıtta vardır.
     pub fn mesaj(&self) -> &str {
-        &self.mesaj
+        bayt_siniri(&self.mesaj, MESAJ_SINIRI)
     }
 
     /// Başlık satırında mesajdan sonra gelen bağlam: `{"exception":"[object] (...`
@@ -243,6 +243,10 @@ pub struct SatirSayilari {
     /// İlk kayıttan önce gelen, hiçbir kayda ait olmayan satırlar. Dosya bir kaydın ortasından
     /// başlıyorsa olur (ör. log dosyası döndürüldüğünde).
     pub yetim: usize,
+    /// `--desen`'e ve zamana uyduğu halde seviyesi tanınmadığı için kayıt sayılmayan satırlar.
+    /// Ayrı bir yer değildir: bu satırlar da yukarıdakiler gibi bir kaydın devamı ya da yetim
+    /// sayılır. Kullanıcı uyarılsın diye ayrıca sayılır.
+    pub taninmayan_seviye: usize,
 }
 
 /// Bir kaydın saklanan devam satırlarının toplam boyu en fazla bu kadar bayt (256 MB) olabilir.
@@ -251,8 +255,34 @@ pub struct SatirSayilari {
 /// kayıtlar bunun çok altındadır; sınır, sonu gelmeyen bir kaydın (bir döküm, bozuk bir dosya)
 /// belleği doldurmasını önler.
 const DEVAM_SINIRI: usize = 256 << 20;
-/// Bir kaydın saklanan devam satırı sayısı da sınırlıdır: boş satırlar bayt tutmaz.
-const DEVAM_SATIR_SINIRI: usize = 16 << 20;
+/// Bir kaydın saklanan devam satırı sayısı da sınırlıdır (bir milyon): boş satırlar bayt
+/// tutmaz, ama her satırın yeri ve kayıt tamamlanırken dilimi bellek tutar. PHP'nin en uzun
+/// yığın izleri birkaç yüz satırdır.
+const DEVAM_SATIR_SINIRI: usize = 1 << 20;
+
+/// Bir başlık satırının ve bir JSON kaydının mesajının en fazla bu kadar baytı (1 MB) okunur ve
+/// saklanır: toplayıcı başlık satırını kayıt tamamlanana kadar kopyalar, 256 MB'lık bir satır
+/// belleği ikinci kez tutmasın. Kaydın bütün parçaları satırın başındadır (zaman, seviye,
+/// mesaj ve bağlamın başı); istisnanın yığın izi devam satırlarındadır.
+pub const BASLIK_SINIRI: usize = 1 << 20;
+
+/// Bir mesajın en fazla bu kadar baytı (64 KB) maskelenir, kümelenir ve örnek olarak saklanır.
+/// Satırlar 256 MB'a kadar okunur, ama yüz megabaytlık bir mesajın maskelenmiş kopyaları ve
+/// Drain'in belirteçleri gigabaytlar tutardı. Gerçek mesajlar bunun çok altındadır; daha
+/// uzunları, ilk 64 KB'ları aynıysa aynı mesaj sayılır.
+pub const MESAJ_SINIRI: usize = 64 << 10;
+
+/// Metnin en fazla `sinir` baytlık başı; bir karakter ortadan bölünmez.
+pub fn bayt_siniri(metin: &str, sinir: usize) -> &str {
+    if metin.len() <= sinir {
+        return metin;
+    }
+    let mut son = sinir;
+    while !metin.is_char_boundary(son) {
+        son -= 1;
+    }
+    &metin[..son]
+}
 
 /// Satırları teker teker alıp kayıtlara toplar.
 ///
@@ -317,14 +347,21 @@ impl KayitToplayici {
     pub fn satir<A: KayitAlici + ?Sized>(&mut self, satir: &str, konum: u64, alici: &mut A) {
         self.sayilar.satir += 1;
         let satir = satir.strip_prefix('\u{feff}').unwrap_or(satir);
-        if let Some(baslik) = self.bicim.baslik(satir) {
-            let yer = baslik.yeri(satir);
-            self.bitir(alici);
-            let bilgi = self.yeni_kayit(konum);
-            self.baslik.clear();
-            self.baslik.push_str(satir);
-            self.bekleyen = Bekleyen::Metin(bilgi, yer);
-        } else if let Some(kayit) = json_satiri_ayristir(satir) {
+        let baslik_satiri = bayt_siniri(satir, BASLIK_SINIRI);
+        match self.bicim.tani(baslik_satiri) {
+            Tanima::Baslik(baslik) => {
+                let yer = baslik.yeri(baslik_satiri);
+                self.bitir(alici);
+                let bilgi = self.yeni_kayit(konum);
+                self.baslik.clear();
+                self.baslik.push_str(baslik_satiri);
+                self.bekleyen = Bekleyen::Metin(bilgi, yer);
+                return;
+            }
+            Tanima::TaninmayanSeviye => self.sayilar.taninmayan_seviye += 1,
+            Tanima::Degil => {}
+        }
+        if let Some(kayit) = json_satiri_ayristir(satir) {
             self.bitir(alici);
             let bilgi = self.yeni_kayit(konum);
             if kayit.json_istisna.is_some() {
@@ -374,20 +411,22 @@ impl KayitToplayici {
         // değiştirilemez; bu yüzden önce dışarı alınır
         let bekleyen = mem::take(&mut self.bekleyen);
         let mut bas = 0;
-        let devam_satirlari: Vec<&str> = self
-            .devam_sonlari
-            .iter()
-            .map(|&son| {
-                let son = son as usize;
-                let satir = &self.devam[bas..son];
-                bas = son;
-                satir
-            })
-            .collect();
+        // Devam satırları yalnızca alıcıya verilecek bir kayıt varsa dilimlenir
+        let mut devam_satirlari = || -> Vec<&str> {
+            self.devam_sonlari
+                .iter()
+                .map(|&son| {
+                    let son = son as usize;
+                    let satir = &self.devam[bas..son];
+                    bas = son;
+                    satir
+                })
+                .collect()
+        };
         match bekleyen {
             Bekleyen::Metin(bilgi, yer) => {
                 let mut kayit = Kayit::basliktan(yer.baslik(&self.baslik));
-                kayit.devam_satirlari = devam_satirlari;
+                kayit.devam_satirlari = devam_satirlari();
                 kayit.istisna_metnine_bak();
                 alici.kayit(&kayit, bilgi);
             }
@@ -398,7 +437,7 @@ impl KayitToplayici {
                     mesaj: ilk_satir(&Cow::Borrowed(&self.json_govde)),
                     baglam: "",
                     govde: Cow::Borrowed(&self.json_govde),
-                    devam_satirlari,
+                    devam_satirlari: devam_satirlari(),
                     json: true,
                     json_istisna: None,
                     istisna_metni: false,
@@ -438,11 +477,12 @@ impl KayitToplayici {
 /// Satır bir kaydın başlangıcıysa (verilen biçimde bir başlık ya da bir JSON kaydı) o kayıt;
 /// devam satırları olmadan. Satırın başındaki BOM atılır.
 ///
-/// Toplayıcıyla aynı kararı verir. Kaydın zamanı ve seviyesi kesindir; mesajı ise metin
+/// Toplayıcıyla aynı kararı verir; başlık satırının da toplayıcıdaki gibi yalnızca ilk
+/// `BASLIK_SINIRI` baytına bakılır. Kaydın zamanı ve seviyesi kesindir; mesajı ise metin
 /// biçiminde PHP'nin istisna metniyse (o devam satırlarına uzanır) başlıktaki gibidir.
 pub fn kayit_baslangici<'a>(bicim: &SatirBicimi, satir: &'a str) -> Option<Kayit<'a>> {
     let satir = satir.strip_prefix('\u{feff}').unwrap_or(satir);
-    match bicim.baslik(satir) {
+    match bicim.baslik(bayt_siniri(satir, BASLIK_SINIRI)) {
         Some(baslik) => Some(Kayit::basliktan(baslik)),
         None => json_satiri_ayristir(satir),
     }
@@ -454,18 +494,30 @@ pub fn kayit_baslangici<'a>(bicim: &SatirBicimi, satir: &'a str) -> Option<Kayit
 /// zaman), `level_name` (bilinen bir seviye) ve `message`. Biri eksikse satır kayıt değildir;
 /// bir önceki kaydın devam satırı sayılır.
 fn json_satiri_ayristir(satir: &str) -> Option<Kayit<'_>> {
-    // Okumaya çalışmadan önce ucuz bir ön eleme: JSON kaydı `{` ile başlar
-    if !satir.starts_with('{') {
+    // Okumaya çalışmadan önce ucuz bir ön eleme: JSON kaydı `{` ile başlar ve üç alanın
+    // adını taşır. Kaydın devam satırlarındaki JSON (bir HTTP yanıtının gövdesi) böylece hiç
+    // ayrıştırılmaz.
+    if !satir.starts_with('{')
+        || !satir.contains("\"datetime\"")
+        || !satir.contains("\"level_name\"")
+        || !satir.contains("\"message\"")
+    {
         return None;
     }
-    let deger = json_okuyucu::oku(satir).ok()?;
+    let deger = json_okuyucu::kayit_oku(satir).ok()?;
     // Zaman kaçış içeremez (rakamlar, `-`, `:`, `T`, `+`); ham hali doğrudan denetlenir
     let zaman = deger.alan("datetime")?.ham_metin()?;
     if !zaman::kayit_zamani_mi(zaman) {
         return None;
     }
     let seviye = Seviye::ayristir(deger.alan("level_name")?.ham_metin()?)?;
-    let govde = deger.alan("message")?.metin()?;
+    let govde = match deger.alan("message")?.metin()? {
+        Cow::Borrowed(govde) => Cow::Borrowed(bayt_siniri(govde, BASLIK_SINIRI)),
+        Cow::Owned(govde) if govde.len() > BASLIK_SINIRI => {
+            Cow::Owned(bayt_siniri(&govde, BASLIK_SINIRI).to_owned())
+        }
+        govde => govde,
+    };
     let json_istisna = deger
         .alan("context")
         .and_then(|baglam| baglam.alan("exception"))
@@ -676,7 +728,8 @@ mod testler {
                 satir: 6,
                 kayit: 3,
                 devam: 3,
-                yetim: 0
+                yetim: 0,
+                taninmayan_seviye: 0,
             }
         );
         // Sıra numaraları logdaki sıradır; konumlar başlık satırlarının baytı
@@ -1110,5 +1163,71 @@ Stack trace:
         // Çevrilen zaman kayda aittir
         let kayit = kayit_baslangici(&bicim, "27.10.2026 14:03:14 [warn] x").unwrap();
         assert!(matches!(kayit.zaman, Cow::Owned(_)));
+
+        // Desene ve zamana uyan ama seviyesi tanınmayan satırlar kayıt değildir: önceki kaydın
+        // devamı sayılırlar, ayrıca da sayılırlar
+        let metin = "\
+27.10.2026 14:03:14 [warn] Kuyruk dolu
+27.10.2026 14:03:15 [uyari] Bilinmeyen
+27.10.2026 14:03:16 [INF] Kısaltma tanınır
+27.10.2026 14:03:17 [uyari] Bir daha";
+        let (kayitlar, sayilar) = topla_bicimle(metin, bicim);
+        assert_eq!(kayitlar.len(), 2);
+        assert_eq!(kayitlar[1].seviye, Seviye::Info);
+        assert_eq!(
+            sayilar,
+            SatirSayilari {
+                satir: 4,
+                kayit: 2,
+                devam: 2,
+                yetim: 0,
+                taninmayan_seviye: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn dev_basligin_basi_saklanir() {
+        // 3 MB'lık bir başlık: toplayıcı ilk 1 MB'ını saklar; yeniden okurken de aynısına
+        // bakılır, kayıt aynıdır
+        let baglam = format!("{{\"veri\":\"{}\"}}", "ğ".repeat(3 << 19));
+        let satir = format!("[2026-10-24 10:00:00] local.ERROR: Dev bağlam {baglam}");
+        let (kayitlar, sayilar) = topla(&format!("{satir}\nsonraki satır"));
+        assert_eq!(sayilar.kayit, 1);
+        let kayit = &kayitlar[0];
+        assert_eq!(kayit.mesaj, "Dev bağlam");
+        assert!(kayit.baglam.len() <= BASLIK_SINIRI);
+        assert!(baglam.starts_with(&kayit.baglam));
+        assert_eq!(kayit.devam, ["sonraki satır"]);
+        let yeniden = kayit_baslangici(&SatirBicimi::default(), &satir).unwrap();
+        assert_eq!(yeniden.mesaj(), kayit.mesaj);
+        assert_eq!(yeniden.baglam(), kayit.baglam);
+        // JSON kaydının dev mesajı da
+        let json = format!(
+            r#"{{"message":"{}","level_name":"INFO","datetime":"2026-10-24T10:00:00+00:00"}}"#,
+            "ş".repeat(1 << 20)
+        );
+        let kayit = kayit_baslangici(&SatirBicimi::default(), &json).unwrap();
+        assert_eq!(kayit.govde.len(), BASLIK_SINIRI);
+        assert_eq!(kayit.mesaj().len(), MESAJ_SINIRI);
+    }
+
+    #[test]
+    fn dev_mesajin_basi_kullanilir() {
+        // İki baytlık harflerle 128 KB'lık bir mesaj: ilk 64 KB'ı kullanılır
+        let mesaj = "ç".repeat(MESAJ_SINIRI);
+        let satir = format!("[2026-10-24 10:00:00] local.ERROR: {mesaj} {{\"a\":1}}");
+        let kayit = baslik_ayristir(&satir).unwrap();
+        assert_eq!(kayit.mesaj().len(), MESAJ_SINIRI);
+        assert!(mesaj.starts_with(kayit.mesaj()));
+        assert_eq!(kayit.baglam(), r#"{"a":1}"#);
+        // Bir harf ortasından bölünmez
+        let satir = format!("[2026-10-24 10:00:00] local.ERROR: a{mesaj}");
+        let kayit = baslik_ayristir(&satir).unwrap();
+        assert_eq!(kayit.mesaj().len(), MESAJ_SINIRI - 1);
+        assert_eq!(bayt_siniri("abç", 3), "ab");
+        assert_eq!(bayt_siniri("abç", 4), "abç");
+        assert_eq!(bayt_siniri("abç", 10), "abç");
+        assert_eq!(bayt_siniri("", 0), "");
     }
 }

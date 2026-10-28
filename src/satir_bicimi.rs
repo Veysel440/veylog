@@ -31,6 +31,7 @@ use std::ops::Range;
 use regex::Regex;
 
 use crate::dil::{self, Dil};
+use crate::json_okuyucu::{self, Onek};
 use crate::kayit::Seviye;
 use crate::zaman;
 use crate::zaman_bicimi::ZamanBicimi;
@@ -118,14 +119,21 @@ impl BaslikYeri {
 }
 
 /// `parca`nın `satir` içindeki yeri. Başlığın parçaları satırın dilimleridir; boş bir parça
-/// (bağlam yoksa `""`) satırın dışından gelebilir, onun yeri önemsizdir.
+/// (bağlam yoksa `""`) satırın dışından gelebilir, onun yeri önemsizdir. Satırın dışından
+/// gelen boş olmayan bir parça bir programlama hatasıdır: testlerde panikler, sürümde boş
+/// bir yer verir (yanlış bir dilim ya da panik yerine).
 fn aralik(satir: &str, parca: &str) -> Range<usize> {
     if parca.is_empty() {
         return 0..0;
     }
-    let bas = parca.as_ptr() as usize - satir.as_ptr() as usize;
-    debug_assert!(bas + parca.len() <= satir.len(), "parça satırın dışında");
-    bas..bas + parca.len()
+    let bas = (parca.as_ptr() as usize).checked_sub(satir.as_ptr() as usize);
+    match bas {
+        Some(bas) if bas + parca.len() <= satir.len() => bas..bas + parca.len(),
+        _ => {
+            debug_assert!(false, "parça satırın dışında");
+            0..0
+        }
+    }
 }
 
 /// Desen derlenemedi.
@@ -232,8 +240,19 @@ impl SatirBicimi {
 
     /// Satır bir kaydın başlığıysa başlıktan okunanlar.
     pub fn baslik<'a>(&self, satir: &'a str) -> Option<Baslik<'a>> {
+        match self.tani(satir) {
+            Tanima::Baslik(baslik) => Some(baslik),
+            Tanima::TaninmayanSeviye | Tanima::Degil => None,
+        }
+    }
+
+    /// Satır bir kaydın başlığı mı; değilse, desene ve zamana uyup yalnızca seviyesi mi
+    /// tanınmadı?
+    pub fn tani<'a>(&self, satir: &'a str) -> Tanima<'a> {
         match &self.desen {
-            None => self.laravel_basligi(satir),
+            None => self
+                .laravel_basligi(satir)
+                .map_or(Tanima::Degil, Tanima::Baslik),
             Some(desen) => self.desen_basligi(desen, satir),
         }
     }
@@ -258,13 +277,26 @@ impl SatirBicimi {
     }
 
     /// `--desen`: grupların yakaladıkları.
-    fn desen_basligi<'a>(&self, desen: &Desen, satir: &'a str) -> Option<Baslik<'a>> {
-        let yakalanan = desen.ifade.captures(satir)?;
-        let zaman = self.zaman_coz(yakalanan.get(desen.zaman)?.as_str().trim())?;
+    fn desen_basligi<'a>(&self, desen: &Desen, satir: &'a str) -> Tanima<'a> {
+        let Some(yakalanan) = desen.ifade.captures(satir) else {
+            return Tanima::Degil;
+        };
+        let Some(zaman) = yakalanan
+            .get(desen.zaman)
+            .and_then(|zaman| self.zaman_coz(zaman.as_str().trim()))
+        else {
+            return Tanima::Degil;
+        };
         // Seviye grubu yoksa ya da (isteğe bağlıysa) bir şey yakalamadıysa INFO. Yakaladığı
-        // seviye bilinmiyorsa satır bir başlık değildir: Laravel'in biçimindeki gibi.
+        // seviye bilinmiyorsa satır bir başlık değildir: Laravel'in biçimindeki gibi. Ama
+        // desene ve zamana uyduğu için büyük olasılıkla bir kayıttır: sayılır, uyarılır.
         let seviye = match desen.seviye.and_then(|grup| yakalanan.get(grup)) {
-            Some(seviye) if !seviye.as_str().trim().is_empty() => seviye_oku(seviye.as_str())?,
+            Some(seviye) if !seviye.as_str().trim().is_empty() => {
+                match seviye_oku(seviye.as_str()) {
+                    Some(seviye) => seviye,
+                    None => return Tanima::TaninmayanSeviye,
+                }
+            }
             _ => Seviye::Info,
         };
         let govde = yakalanan
@@ -280,7 +312,7 @@ impl SatirBicimi {
             None => mesaji_ayir(govde),
         };
         let govde = govde.trim();
-        Some(Baslik {
+        Tanima::Baslik(Baslik {
             zaman,
             seviye,
             govde,
@@ -299,31 +331,145 @@ impl SatirBicimi {
     }
 }
 
+/// Bir satırın tanınması (`SatirBicimi::tani`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tanima<'a> {
+    /// Bir kaydın başlığı.
+    Baslik(Baslik<'a>),
+    /// Desene ve zamana uyuyor ama seviyesi tanınmadı: kayıt sayılmaz.
+    TaninmayanSeviye,
+    /// Başlık değil: bir kaydın devamı ya da yetim bir satır.
+    Degil,
+}
+
 /// Başlıkta seviyeden sonra gelen kısmı mesaj ve bağlam olarak ikiye ayırır.
 ///
 /// Laravel, mesajın arkasına bağlam bilgisini JSON olarak ekler:
 /// `Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"}`
 /// → `Kullanıcı 381 giriş yaptı` ve `{"ip":"203.0.113.24"}`
 ///
-/// Bağlam ` {"` ile başlar; ondan öncesi mesajdır. Baştaki ve sondaki boşluklar atılır.
+/// Bağlam ` {"` ile başlar ve geçerli bir JSON nesnesidir. Mesajın kendisi de ` {"` içerebilir
+/// (`Ödeme {"tutar":50} onaylandı`); bu yüzden ` {"`'lerin her biri soldan denenir ve
+/// sonrası bağlama en çok benzeyen ilki seçilir (`baglam_mi`). Ardından bir kelime gelen
+/// geçerli bir JSON mesajın parçasıdır; hiçbir aday kalmazsa mesaj bölünmez. En fazla
+/// `BAGLAM_ADAYI` aday denenir: her deneme adayın JSON'unu baştan okur, iç içe yüzlerce aday
+/// taşıyan bir satır böylece yavaşlatamaz.
+///
+/// Monolog'un `%context% %extra%` biçiminde boş bağlam ve ek `[]` diye yazılır (Laravel'in
+/// varsayılan biçimlendiricisi onları hiç yazmaz, `formatter_with` ile kurulan yazar):
+/// `Kuyruk dolu [] []`. Mesajın sonundaki bu `[]`'lar atılır; yoksa aynı mesaj bağlamlı ve
+/// bağlamsız halleriyle iki kalıba bölünürdü. Baştaki ve sondaki boşluklar atılır.
 pub fn mesaji_ayir(metin: &str) -> (&str, &str) {
-    let (mesaj, baglam) = match metin.find(" {\"") {
+    // En çok benzeyen ilk aday: benzerlik ve konumu
+    let mut secilen: Option<(Benzerlik, usize)> = None;
+    for (konum, _) in metin.match_indices(" {\"").take(BAGLAM_ADAYI) {
+        let benzerlik = baglam_mi(&metin[konum + 1..]);
+        if benzerlik > secilen.map_or(Benzerlik::Degil, |(onceki, _)| onceki) {
+            secilen = Some((benzerlik, konum));
+        }
+        if benzerlik == Benzerlik::Kesin {
+            break;
+        }
+    }
+    let (mesaj, baglam) = match secilen.map(|(_, konum)| konum) {
         Some(konum) => metin.split_at(konum),
         None => (metin, ""),
     };
-    (mesaj.trim(), baglam.trim())
+    // `[]`'ların önündeki boşluk mesaj boşken de durur: sağdan atılır, sonra baştan kırpılır
+    (bos_ekleri_at(mesaj.trim_end()).trim_start(), baglam.trim())
 }
 
-/// Desenle okunan bir seviye: Laravel'in adları (büyük küçük harf fark etmez), başka
-/// araçların kısaltmaları ve Monolog'un sayıları (`%level%`).
+/// `mesaji_ayir`'ın denediği en fazla aday sayısı.
+const BAGLAM_ADAYI: usize = 32;
+
+/// `{` ile başlayan bir metnin Monolog'un bağlamına benzerliği; azdan çoğa sıralı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Benzerlik {
+    /// Ardından bir kelime gelen geçerli bir JSON: mesajın parçası
+    /// (`Ödeme {"tutar":50} onaylandı`).
+    Degil,
+    /// Geçersiz bir JSON. Monolog geçerli JSON yazar, ama bozuk bir satırda ya da başka bir
+    /// yazıcının satırında başka aday yoksa bağlam yine buradan başlar (0.1'deki gibi).
+    Zayif,
+    /// Tam bir JSON nesnesi ama ardından JSON olmayan, harf ya da rakamla başlamayan bir şey
+    /// (`--desen`'deki bir biçimde bağlamdan sonra gelen alanlar: `{...} [production]`).
+    Olasi,
+    /// Tam bir JSON nesnesi ve ardından hiçbir şey ya da ek (`[]`, bir nesne); ya da satır
+    /// sonuna kadar yarım kalan bir JSON (bağlamın yığın izi sonraki satırlarda sürer).
+    Kesin,
+}
+
+fn baglam_mi(metin: &str) -> Benzerlik {
+    match json_okuyucu::onek(metin) {
+        Onek::Yarim => Benzerlik::Kesin,
+        Onek::Gecersiz => Benzerlik::Zayif,
+        Onek::Tam(son) => {
+            let ek = metin[son..].trim();
+            let ek_json = ek.starts_with(['{', '['])
+                && match json_okuyucu::onek(ek) {
+                    Onek::Tam(son) => ek[son..].trim().is_empty(),
+                    Onek::Yarim => true,
+                    Onek::Gecersiz => false,
+                };
+            if ek.is_empty() || ek_json {
+                Benzerlik::Kesin
+            } else if ek.starts_with(char::is_alphanumeric) {
+                Benzerlik::Degil
+            } else {
+                Benzerlik::Olasi
+            }
+        }
+    }
+}
+
+/// Mesajın sonundaki boş bağlam ve ek: en fazla iki ` []`. Mesaj boşsa ilk `[]`'ın önündeki
+/// boşluk metnin başındadır (`" [] []"`); bu yüzden metnin başı kırpılmadan verilir.
+fn bos_ekleri_at(mut mesaj: &str) -> &str {
+    for _ in 0..2 {
+        match mesaj.strip_suffix(" []") {
+            Some(kalan) => mesaj = kalan.trim_end(),
+            None => break,
+        }
+    }
+    mesaj
+}
+
+/// Desenle okunan bir seviye. Büyük küçük harf fark etmez. Tanınanlar:
+///
+/// - Laravel'in adları: `DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, `CRITICAL`, `ALERT`,
+///   `EMERGENCY`;
+/// - başka araçların adları ve kısaltmaları: log4j ve NLog'un `TRACE`, `WARN`, `FATAL`'ı,
+///   Serilog'un `VRB`, `DBG`, `INF`, `WRN`, `ERR`, `FTL`'si, syslog'un `CRIT`, `EMERG`'i,
+///   .NET'in `Information`, `fail`, `dbug`, `trce`'si, Java'nın `SEVERE`, `CONFIG`, `FINE`'ı,
+///   Go'nun `PANIC`'i;
+/// - bu adların en az üç harflik başları: Monolog'un `setMaxLevelNameLength`'i ve logrus
+///   `ERRO`, `WARN`, `DEBU` yazar;
+/// - Monolog'un sayıları (`%level%`): `100`–`600`.
 fn seviye_oku(metin: &str) -> Option<Seviye> {
-    const DIGER: [(&str, Seviye); 14] = [
+    const DIGER: [(&str, Seviye); 31] = [
         ("WARN", Seviye::Warning),
+        ("WRN", Seviye::Warning),
         ("ERR", Seviye::Error),
+        ("FAIL", Seviye::Error),
+        ("SEVERE", Seviye::Error),
         ("CRIT", Seviye::Critical),
-        ("EMERG", Seviye::Emergency),
+        ("CRT", Seviye::Critical),
         ("FATAL", Seviye::Critical),
+        ("FTL", Seviye::Critical),
+        ("PANIC", Seviye::Critical),
+        ("EMERG", Seviye::Emergency),
+        ("INFORMATION", Seviye::Info),
+        ("CONFIG", Seviye::Info),
         ("TRACE", Seviye::Debug),
+        ("TRC", Seviye::Debug),
+        ("TRCE", Seviye::Debug),
+        ("VERBOSE", Seviye::Debug),
+        ("VRB", Seviye::Debug),
+        ("DBG", Seviye::Debug),
+        ("DBUG", Seviye::Debug),
+        ("FINE", Seviye::Debug),
+        ("FINER", Seviye::Debug),
+        ("FINEST", Seviye::Debug),
         ("100", Seviye::Debug),
         ("200", Seviye::Info),
         ("250", Seviye::Notice),
@@ -334,12 +480,33 @@ fn seviye_oku(metin: &str) -> Option<Seviye> {
         ("600", Seviye::Emergency),
     ];
     let metin = metin.trim();
-    Seviye::HEPSI
-        .into_iter()
-        .map(|seviye| (seviye.ad(), seviye))
-        .chain(DIGER)
-        .find(|(ad, _)| ad.eq_ignore_ascii_case(metin))
-        .map(|(_, seviye)| seviye)
+    let adlar = || {
+        Seviye::HEPSI
+            .into_iter()
+            .map(|seviye| (seviye.ad(), seviye))
+            .chain(DIGER)
+    };
+    if let Some((_, seviye)) = adlar().find(|(ad, _)| ad.eq_ignore_ascii_case(metin)) {
+        return Some(seviye);
+    }
+    // Bir adın başı: en az üç harf. Başı o olan bütün adlar aynı seviyeyi göstermeli; bugünkü
+    // adların ilk üç harfi bir seviyeyi tek başına belirler (CRI, CON; FAT, FIN; EME, ERR)
+    if metin.len() < 3 || !metin.bytes().all(|bayt| bayt.is_ascii_alphabetic()) {
+        return None;
+    }
+    let mut bulunan = None;
+    for (ad, seviye) in adlar() {
+        let bas_mi = ad.len() > metin.len() && ad[..metin.len()].eq_ignore_ascii_case(metin);
+        if !bas_mi {
+            continue;
+        }
+        match bulunan {
+            None => bulunan = Some(seviye),
+            Some(onceki) if onceki == seviye => {}
+            Some(_) => return None,
+        }
+    }
+    bulunan
 }
 
 /// `--desen`'i derler: Monolog'un biçim dizgesiyse (`%message%` içeriyorsa) önce düzenli
@@ -660,8 +827,147 @@ mod testler {
         ] {
             assert_eq!(seviye_oku(metin), Some(seviye), "{metin}");
         }
-        for metin in ["", "hata", "401", "WARNINGS"] {
+        // Başka araçların adları ve kısaltmaları; en az üç harflik başlar
+        for (metin, seviye) in [
+            ("INF", Seviye::Info),
+            ("wrn", Seviye::Warning),
+            ("DBG", Seviye::Debug),
+            ("VRB", Seviye::Debug),
+            ("FTL", Seviye::Critical),
+            ("Information", Seviye::Info),
+            ("fail", Seviye::Error),
+            ("dbug", Seviye::Debug),
+            ("trce", Seviye::Debug),
+            ("SEVERE", Seviye::Error),
+            ("CONFIG", Seviye::Info),
+            ("FINEST", Seviye::Debug),
+            ("PANIC", Seviye::Critical),
+            ("550", Seviye::Alert),
+            ("ERRO", Seviye::Error),
+            ("WARNI", Seviye::Warning),
+            ("DEBU", Seviye::Debug),
+            ("NOTI", Seviye::Notice),
+            ("CRI", Seviye::Critical),
+            ("EME", Seviye::Emergency),
+            ("ALE", Seviye::Alert),
+            ("FATA", Seviye::Critical),
+            ("TRAC", Seviye::Debug),
+            ("PANI", Seviye::Critical),
+            ("Infor", Seviye::Info),
+            ("FIN", Seviye::Debug),
+        ] {
+            assert_eq!(seviye_oku(metin), Some(seviye), "{metin}");
+        }
+        for metin in [
+            "", "hata", "401", "WARNINGS", "IN", "E", "ER", "ERRORS", "ERR0", "XYZ", "INFOS",
+            "İNFO", "E-R", "1",
+        ] {
             assert_eq!(seviye_oku(metin), None, "{metin}");
+        }
+    }
+
+    #[test]
+    fn seviyesi_taninmayan_satir_ayirt_edilir() {
+        let desen = bicim(r"(?P<zaman>\S+ \S+) (?P<seviye>\w+) +(?P<mesaj>.*)");
+        assert!(matches!(
+            desen.tani("2026-10-27 14:03:11 warn x"),
+            Tanima::Baslik(_)
+        ));
+        // Desene ve zamana uyuyor, seviye bilinmiyor
+        assert_eq!(
+            desen.tani("2026-10-27 14:03:11 sorun x"),
+            Tanima::TaninmayanSeviye
+        );
+        // Desene ya da zamana uymuyor
+        assert_eq!(desen.tani("#3 2026-10-27 14:03:11 warn x"), Tanima::Degil);
+        assert_eq!(desen.tani("2026-10-27 25:03:11 sorun x"), Tanima::Degil);
+        // Laravel'in biçiminde bilinmeyen seviye ayrıca sayılmaz: `[`'li başka satırlar çoktur
+        assert_eq!(
+            SatirBicimi::default().tani("[2026-10-27 14:03:11] production.HATA: x"),
+            Tanima::Degil
+        );
+    }
+
+    #[test]
+    fn mesaj_ve_baglam_ayrilir() {
+        for (metin, mesaj, baglam) in [
+            (r#"Giriş {"ip":"x"}"#, "Giriş", r#"{"ip":"x"}"#),
+            ("  Giriş yapıldı  ", "Giriş yapıldı", ""),
+            // Mesaj boş: bağlamın önündeki boşluk ayırır
+            (r#" {"a":1}"#, "", r#"{"a":1}"#),
+            // Mesajın içindeki JSON'u bir kelime izliyorsa mesajın parçasıdır
+            (
+                r#"Ödeme {"tutar":50} onaylandı {"siparis":5}"#,
+                r#"Ödeme {"tutar":50} onaylandı"#,
+                r#"{"siparis":5}"#,
+            ),
+            (
+                r#"Ödeme {"tutar":50} onaylandı"#,
+                r#"Ödeme {"tutar":50} onaylandı"#,
+                "",
+            ),
+            // Geçersiz JSON'dan sonra geçerli bir bağlam varsa o seçilir; yoksa geçersiz olan
+            (
+                r#"Şablon {"x" bozuk {"a":1}"#,
+                r#"Şablon {"x" bozuk"#,
+                r#"{"a":1}"#,
+            ),
+            (
+                r#"Şablon {"x" bozuk {"a":1} sonra"#,
+                "Şablon",
+                r#"{"x" bozuk {"a":1} sonra"#,
+            ),
+            (r#"Bozuk {"a": 'b'}"#, "Bozuk", r#"{"a": 'b'}"#),
+            // Satır sonunda yarım kalan bağlam: istisnanın yığın izi sonraki satırlarda
+            (
+                r#"Bağlantı koptu {"exception":"[object] (PDOException(code: 2002): x at /var/www/magaza/a.php:12)"#,
+                "Bağlantı koptu",
+                r#"{"exception":"[object] (PDOException(code: 2002): x at /var/www/magaza/a.php:12)"#,
+            ),
+            // Bağlam ve ek
+            (
+                r#"Kuyruk dolu {"a":1} {"uid":"ab"}"#,
+                "Kuyruk dolu",
+                r#"{"a":1} {"uid":"ab"}"#,
+            ),
+            (r#"Kuyruk dolu {"a":1} []"#, "Kuyruk dolu", r#"{"a":1} []"#),
+            // Boş bağlam ve ek (`[]`) atılır: en fazla iki, önlerinde boşlukla
+            ("Kuyruk dolu [] []", "Kuyruk dolu", ""),
+            ("Kuyruk dolu []", "Kuyruk dolu", ""),
+            (
+                r#"Kuyruk dolu [] {"uid":"ab"}"#,
+                "Kuyruk dolu",
+                r#"{"uid":"ab"}"#,
+            ),
+            ("Liste [] [] []", "Liste []", ""),
+            ("Liste:[]", "Liste:[]", ""),
+            // Mesaj boş, bağlam ve ek boş; mesaj `[]`
+            (" [] []", "", ""),
+            ("  [] [] []", "[]", ""),
+            ("[] []", "[]", ""),
+            (r#"  [] {"uid":"ab"}"#, "", r#"{"uid":"ab"}"#),
+            // Bağlamdan sonra JSON olmayan bir alan (desenle okunan biçimlerde): başka bir
+            // aday yoksa bağlamdır
+            (
+                r#"Giriş {"ip":"x"} - istek"#,
+                "Giriş",
+                r#"{"ip":"x"} - istek"#,
+            ),
+            (r#"A {"b":1} - B {"c":2}"#, r#"A {"b":1} - B"#, r#"{"c":2}"#),
+            // Ardından ek gelen bağlam, ardından JSON olmayan bir şey gelen öncekinden iyidir
+            (
+                r#"A {"b":1} - B {"c":2} []"#,
+                r#"A {"b":1} - B"#,
+                r#"{"c":2} []"#,
+            ),
+            // Satır sonunda yarım kalan bağlam da (yığın izi sonraki satırlarda) öncekinden iyidir
+            (
+                r#"A {"b":1} - B {"exception":"[object] (X(code: 0): y at /a.php:3)"#,
+                r#"A {"b":1} - B"#,
+                r#"{"exception":"[object] (X(code: 0): y at /a.php:3)"#,
+            ),
+        ] {
+            assert_eq!(mesaji_ayir(metin), (mesaj, baglam), "{metin}");
         }
     }
 

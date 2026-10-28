@@ -202,8 +202,9 @@ impl SaatDilimi {
         };
         let (saat, dakika) = match geri.split_once(':') {
             Some(parcalar) => parcalar,
-            // "0300": ilk ikisi saat, son ikisi dakika
-            None if geri.len() == 4 => geri.split_at(2),
+            // "0300": ilk ikisi saat, son ikisi dakika. Bölünen yer bir harfin ortasına
+            // düşebilir ("0ş0"): o zaman metin geçersizdir
+            None if geri.len() == 4 => geri.split_at_checked(2)?,
             None => (geri, "00"),
         };
         SaatDilimi::saat_dakika(eksi, sayi(saat, 1..=2)?, sayi(dakika, 2..=2)?)
@@ -817,6 +818,12 @@ mod testler {
             "+03:00 ",
             "GMT",
             "Europe/Istanbul",
+            // Dört bayt ama ikinci bayttan sonrası bir harfin ortası: bölünemez, panik olmaz
+            "+0ş0",
+            "+ş00",
+            "-00ş",
+            "+٣٠٠",
+            "+３:００",
         ] {
             assert_eq!(SaatDilimi::ayristir(metin), None, "{metin:?}");
         }

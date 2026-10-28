@@ -15,6 +15,12 @@
 //! (Przyborowski ve Wilenski, 1940) sınanır. Sıklık değişmediyse bir kalıbın n kaydının her
 //! biri, "sonra" yarısına o yarının toplam süredeki payı kadar ihtimalle düşer. Sonraya en az
 //! gözlenen kadar kaydın düşme ihtimali (p değeri) %1'den küçükse artış tesadüf sayılmaz.
+//!
+//! Logun ilk ve son kaydı ise rastgele düşmez: yarıların sınırlarını onlar belirler. Son kayıt
+//! "sonra"ya, ilk kayıt "önce"ye kesin düşer. Test bu yüzden onların dışındaki kayıtlarla
+//! yapılır: son kaydın satırında bir kayıt sonradan, ilk kaydınkinde bir kayıt önceden
+//! çıkarılır. Çıkarılmasa son kaydı taşıyan bir kalıp, sıklığı hiç değişmediği halde
+//! %1 yerine %2–%9 ihtimalle artan sayılırdı.
 
 use std::fmt;
 
@@ -144,12 +150,23 @@ impl Karsilastirma {
         // Tam noktadaki kayıt "sonra"dadır: önce [ilk, nokta), sonra [nokta, son]. Takvimde var
         // olan anlarda zamanların sırası saniyelerinin sırasıdır.
         let nokta_saniye = nokta.saniye();
+        let (ilk_saniye, son_saniye) = (ilk.saniye(), son.saniye());
         let mut sonra_adetleri = vec![0; analiz.satirlar.len()];
         let mut sonra_kayit = 0;
+        // Yarıların sınırını belirleyen kayıtların satırları: zamanı ilk kaydınkine eşit olan
+        // ilk kayıt ve zamanı son kaydınkine eşit olan son kayıt (logdaki sırayla)
+        let (mut ilk_satiri, mut son_satiri) = (None, None);
         for (saniye, alt_grup) in depo.kayitlar() {
+            let satir = analiz.alt_grup_satiri[alt_grup as usize];
             if saniye >= nokta_saniye {
                 sonra_kayit += 1;
-                sonra_adetleri[analiz.alt_grup_satiri[alt_grup as usize]] += 1;
+                sonra_adetleri[satir] += 1;
+            }
+            if saniye == ilk_saniye && ilk_satiri.is_none() {
+                ilk_satiri = Some(satir);
+            }
+            if saniye == son_saniye {
+                son_satiri = Some(satir);
             }
         }
         // Son kaydın saniyesi de sonra yarısına dahil olduğu için bir saniye eklenir
@@ -181,6 +198,9 @@ impl Karsilastirma {
             let once_adet = satir.adet - sonra_adet;
             // Önce 0 ise sonsuz, sonra 0 ise 0
             let kat = sonra.saatlik(sonra_adet) / once.saatlik(once_adet);
+            // Test, sınırı belirleyen kayıtlar çıkarılarak yapılır: rastgele düşmezler
+            let rastgele_once = once_adet - usize::from(ilk_satiri == Some(sira));
+            let rastgele_sonra = sonra_adet - usize::from(son_satiri == Some(sira));
             // Kapanış (closure): satırın bilgilerini yakalar, yalnızca p değerini bekler
             let degisim = |p_degeri| Degisim {
                 satir: sira,
@@ -191,14 +211,15 @@ impl Karsilastirma {
             };
             if once_adet == 0 {
                 // Kayıtların hepsinin tesadüfen sonraya düşme ihtimali
-                let p_degeri = binom_ust_kuyruk(sonra_adet, sonra_adet, sonra_payi);
+                let p_degeri = binom_ust_kuyruk(rastgele_sonra, rastgele_sonra, sonra_payi);
                 sonuc.yeni.push(degisim(p_degeri));
             } else if sonra_adet == 0 {
                 // Hepsinin tesadüfen önceye düşme ihtimali: önceye düşme ihtimali 1 − pay
-                let p_degeri = binom_ust_kuyruk(once_adet, once_adet, 1.0 - sonra_payi);
+                let p_degeri = binom_ust_kuyruk(rastgele_once, rastgele_once, 1.0 - sonra_payi);
                 sonuc.kaybolan.push(degisim(p_degeri));
             } else if sonra_adet >= EN_AZ_KAYIT && kat >= ARTIS_KATI {
-                let p_degeri = binom_ust_kuyruk(once_adet + sonra_adet, sonra_adet, sonra_payi);
+                let p_degeri =
+                    binom_ust_kuyruk(rastgele_once + rastgele_sonra, rastgele_sonra, sonra_payi);
                 if p_degeri < ANLAMLILIK {
                     sonuc.artan.push(degisim(p_degeri));
                 }
@@ -374,12 +395,13 @@ mod testler {
         let sonuc = karsilastir(&metin, "12:00").unwrap();
         assert_eq!((sonuc.once.saniye, sonuc.sonra.saniye), (10_800, 3_600));
 
-        // Yeni: iki kaydın ikisi de sonraya düştü: (1/4)²
+        // Yeni: iki kaydın ikisi de sonraya düştü. Biri logun son kaydı, sonraya kesin düşer:
+        // tesadüf ihtimali ötekinin sonraya düşmesi, 1/4
         assert_eq!(sonuc.yeni[0].sonra, 2);
-        assert!(yakin(sonuc.yeni[0].p_degeri, 0.0625));
-        // Kaybolan: ikisi de önceye düştü: (3/4)²
+        assert!(yakin(sonuc.yeni[0].p_degeri, 0.25));
+        // Kaybolan: ikisi de önceye düştü; biri logun ilk kaydı: 3/4
         assert_eq!(sonuc.kaybolan[0].once, 2);
-        assert!(yakin(sonuc.kaybolan[0].p_degeri, 0.5625));
+        assert!(yakin(sonuc.kaybolan[0].p_degeri, 0.75));
         // Artan: saatte 1/3'ten 6'ya, 18 kat. P(X ≥ 6), X ~ Binom(7; 1/4) = 22/16384
         assert_eq!((sonuc.artan[0].once, sonuc.artan[0].sonra), (1, 6));
         assert!(yakin(sonuc.artan[0].kat, 18.0));
@@ -425,6 +447,65 @@ mod testler {
             ozetle(&metin, &sonuc.artan),
             [("Disk doluyor".to_string(), 1, 2)]
         );
+    }
+
+    #[test]
+    fn son_kaydin_kalibi_kolayca_artan_sayilmaz() {
+        // Saatlik bir görev ve sabah bir, akşam iki uyarı. Uyarının son kaydı logun son kaydı:
+        // yarıların sınırını o belirler. Sıklık değişmediyse ötekinin son beş dakikaya düşme
+        // ihtimali ≈ %2: artış tesadüf olabilir.
+        let mut kayitlar = vec![
+            ("10:00:00", "INFO", "Zamanlanmış görev", 120, 5),
+            ("12:00:00", "WARNING", "Disk dolmak üzere", 1, 0),
+            ("19:55:00", "WARNING", "Disk dolmak üzere", 1, 0),
+        ];
+        let metin = format!(
+            "{}\n[2026-10-24 19:59:59] local.WARNING: Disk dolmak üzere",
+            log_metni(&kayitlar)
+        );
+        let sonuc = karsilastir(&metin, "19:54").unwrap();
+        assert!(sonuc.artan.is_empty());
+        // Son kayıt başka bir kalıbınsa aynı iki uyarı tesadüf değildir
+        kayitlar.push(("19:56:00", "WARNING", "Disk dolmak üzere", 1, 0));
+        let metin = format!(
+            "{}\n[2026-10-24 19:59:59] local.INFO: Zamanlanmış görev",
+            log_metni(&kayitlar)
+        );
+        let sonuc = karsilastir(&metin, "19:54").unwrap();
+        assert_eq!(
+            ozetle(&metin, &sonuc.artan),
+            [("Disk dolmak üzere".to_string(), 1, 2)]
+        );
+    }
+
+    #[test]
+    fn sinir_kayitlari_testten_cikarilir() {
+        // Eşit yarılar: 10:00–12:00 ve 12:00–13:59:59. Logun ilk kaydı "Kuyruk dolu"nun (aynı
+        // saniyedeki kayıtlardan logda önce gelen), son kaydı "Disk doluyor"un: ikisi de
+        // yarısına kesin düşer, testte sayılmaz
+        let metin = log_metni(&[
+            ("10:00:00", "INFO", "Kuyruk dolu", 3, 30),
+            ("10:00:00", "ERROR", "Eski hata", 2, 30),
+            ("10:20:00", "WARNING", "Disk doluyor", 1, 0),
+            ("12:10:00", "WARNING", "Disk doluyor", 10, 10),
+            ("13:59:59", "WARNING", "Disk doluyor", 1, 0),
+        ]);
+        let sonuc = karsilastir(&metin, "12:00").unwrap();
+        assert_eq!((sonuc.once.saniye, sonuc.sonra.saniye), (7_200, 7_200));
+        let analiz = kaliplari_cikar(&depo::metinden(&metin), &RaporAyarlari::default());
+        let p_degeri = |liste: &[Degisim], kalip: &str| {
+            liste
+                .iter()
+                .find(|degisim| analiz.satirlar[degisim.satir].kalip == kalip)
+                .map(|degisim| degisim.p_degeri)
+                .unwrap_or_else(|| panic!("{kalip} listede yok"))
+        };
+        // Kaybolan: ilk kayıt dışındaki iki kaydın önceye düşme ihtimali 0,5²; aynı saniyedeki
+        // öteki kalıbın iki kaydı da rastgeledir: 0,5²
+        assert!(yakin(p_degeri(&sonuc.kaybolan, "Kuyruk dolu"), 0.25));
+        assert!(yakin(p_degeri(&sonuc.kaybolan, "Eski hata"), 0.25));
+        // Artan: 1 → 11; son kayıt çıkarılınca 1 → 10: P(X ≥ 10), X ~ Binom(11; 0,5) = 12/2048
+        assert!(yakin(p_degeri(&sonuc.artan, "Disk doluyor"), 12.0 / 2048.0));
     }
 
     #[test]

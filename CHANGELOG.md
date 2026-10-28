@@ -5,27 +5,42 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 
 ## [Yayımlanmamış]
 
-### Bellek
+### Bellek ve hız
 
 - Log satır satır, akış halinde okunur; dosyanın tamamı belleğe alınmaz. Bellek dosyanın
-  boyuyla değil farklı mesajların sayısıyla büyür: 2 GB'lık bir log 4 GB yerine 30 MB ile,
-  500 MB'lık bir log 976 MB yerine 17 MB ile özetlenir. Süre değişmedi.
+  boyuyla değil farklı mesajların sayısı ve uzunluğuyla büyür: 2 GB'lık bir log 4 GB yerine
+  27 MB ile, 500 MB'lık bir log 976 MB yerine 16 MB ile özetlenir.
+- Okuma hızlandı: 2 GB'lık log 36 yerine 15 saniyede, 500 MB'lık log 8 yerine 3,8 saniyede
+  özetlenir. Geçerli UTF-8 satırlar hızlı yoldan denetlenir; maskeleme ve Drain aşağıdaki
+  değişikliklerle hızlandı.
 - Kayıtların zamanları ve alt grupları sıkıştırılmış sütunlarda tutulur (delta, zigzag ve
   LEB128 kodlaması): kayıt başına 2–3 bayt.
 - Kayıtlar okunurken, logdaki sırasıyla kümelenir. Bir mesajın tekrarında ağacın o uzunluktaki
   kısmı değişmediyse Drain'in önceki sonucu kullanılır (sürümlü önbellek); sonuç her kaydı
   aramayla kümelemekle aynıdır. Drain ikinci tura girerse kayıtlar sütunlardan yeniden
   kümelenir; girdi yeniden okunmaz.
+- Drain'in kalıpları belirteçlerini ayrı ayrı saklamaz: kümeyi açan maskeli mesaj depoyla
+  paylaşılır, belirteç başına 8 bayt tutulur. Her biri başka bir toplu SQL sorgusu taşıyan
+  1 500 istisnalık 34 MB'lık bir log 421 MB yerine 208 MB ile okunur.
 - Ani artışın örneği gerekirse kayıt dosyadan yeniden okunur (seyrek dizin). Okunan kaydın
   maskeli mesajı ve seviyesi denetlenir: dosya bu arada döndürüldüyse yanlış bir kayıt örnek
-  olmaz, uyarı yazılır. Standart girdi `--ani-artis` ile okunurken geçici bir dosyaya
-  kopyalanır; dosya hemen silinir, diskte kalmaz, Unix'te yalnızca sahibi okuyabilir.
-  Geçici dosya oluşturulamazsa rapor yine çıkar.
+  olmaz, uyarı yazılır.
+- Borudan gelen standart girdi, yeniden okunması gerekiyorsa (`--ani-artis`, logun sonuna göre
+  çözülen bir filtre) okunurken geçici bir dosyaya kopyalanır; dosya hemen silinir, diskte
+  kalmaz, Unix'te yalnızca sahibi okuyabilir. Dosyaya yönlendirilmiş standart girdi
+  (`veylog - < laravel.log`) kopyalanmaz, dosyanın kendisi yeniden okunur. Kopya yalnızca ani
+  artışların örnekleri içinse ve oluşturulamaz ya da yazılamazsa (disk dolu) bir uyarı
+  yazılır, rapor yine çıkar.
 - 262 144'ten fazla farklı ham mesaj varsa sayısı HyperLogLog ile tahmin edilir (64 KB,
   ±%0,4, Ertl'in sapmasız tahmincisi). Metinde sayının önünde `≈` yazar; JSON'a
-  `ham_mesaj_yaklasik` alanı eklendi.
-- Bir satırın en fazla 256 MB'ı okunur, bir kaydın devam satırlarının en fazla 256 MB'ı
-  saklanır: satır sonu olmayan dev bir dosya belleği dolduramaz.
+  `ham_mesaj_yaklasik` alanı eklendi. Tahmin, tam sayımın bıraktığı sayının altına inmez.
+- Dev satırlara ve kayıtlara karşı sınırlar: bir satırın en fazla 256 MB'ı okunur; bir başlık
+  satırının ve bir JSON kaydının mesajının ilk 1 MB'ı, bir mesajın ilk 64 KB'ı kullanılır;
+  bir kaydın devam satırlarının en fazla 256 MB'ı ve bir milyon satırı saklanır. JSON
+  satırlarında yalnızca kaydın gerektirdiği alanlar (`message`, `level_name`, `datetime`,
+  bağlamdaki `exception`) kurulur. Satır sonu olmayan 300 MB'lık bir dosya 262 MB, 100 MB'lık
+  tek bir başlık satırı 102 MB, bağlamında dev bir dizi taşıyan 50 MB'lık bir JSON satırı
+  52 MB bellekle okunur.
 
 ### Filtreler
 
@@ -37,7 +52,11 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 - Filtreler kalıpları, seviyeleri, zaman aralığını, karşılaştırmayı ve ani artışları süzer;
   dosyanın satır ve kayıt sayıları değişmez. Metin ve Markdown'da `Filtre` satırı, JSON'da
   `filtre` nesnesi yalnızca filtre verilince yazılır. Filtreye uymayan kayıtlar maskelenmez ve
-  kümelenmez: 500 MB'lık bir logun son iki saati 2,5 saniyede özetlenir.
+  kümelenmez: 500 MB'lık bir logun son iki saati 1,8 saniyede özetlenir.
+- `--son` ve yalnızca saat verilmiş sınırlar logun sonunu bilmeyi gerektirir: log önce bir
+  kez taranır, borudan gelen standart girdi taranırken geçici bir dosyaya kopyalanır. Logda
+  hiç kayıt yoksa bu sınırlar çözülmez; JSON'da çözülmeyen sınır `null`dur.
+- Başlangıç bitişten önce değilse filtrenin aralığı boştur: kullanım hatası, çıkış kodu 2.
 
 ### Saat dilimleri
 
@@ -64,8 +83,13 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
   istisna alınır. Açıklamalı yazılış da tanınır: `Log::error('Ödeme başarısız: ' . $e)`.
 - `--desen`: kendi satır biçimi. Monolog'un biçim dizgesi (`config/logging.php`'deki
   `format`) düzenli ifadeye çevrilir; adlandırılmış gruplu bir düzenli ifade de verilebilir
-  (`zaman`, `mesaj`; isteğe bağlı `seviye`, `baglam`, `kanal`). Seviye kısaltmaları (`WARN`,
-  `ERR`) ve Monolog'un sayıları (`%level%`) da okunur. JSON satırları her biçimde okunur.
+  (`zaman`, `mesaj`; isteğe bağlı `seviye`, `baglam`, `kanal`). JSON satırları her biçimde
+  okunur.
+- Desenle okunan seviyelerde başka araçların adları ve kısaltmaları da tanınır: `WARN`, `ERR`,
+  `FATAL`, `TRACE`; Serilog'un `VRB`, `DBG`, `INF`, `WRN`, `FTL`'si; .NET'in `fail`, `dbug`'ı;
+  Java'nın `SEVERE`, `FINE`'ı. Bu adların en az üç harflik tek anlamlı başları (Monolog'un
+  `setMaxLevelNameLength` ile kısalttığı `ERRO`, `NOTI`) ve Monolog'un sayıları (`%level%`)
+  da okunur. Desene ve zamana uyduğu halde seviyesi tanınmayan satırlar sayılır ve uyarılır.
 - `--zaman-bicimi`: zamanın biçimi, PHP'nin `date()` dizgesiyle (Monolog'un `dateFormat`'ı):
   `d.m.Y H:i:s`, `d/M/Y:H:i:s O`, `U`. Laravel'in satır biçiminde de geçerlidir.
 - Satırlardan hiçbiri bir kayıt başlatmıyorsa bir uyarı yazılır.
@@ -79,9 +103,12 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 - Bir hatanın yeri dosya ve satırın içinde bulunduğu fonksiyondur:
   `app/Services/SepetHesaplayici.php:88, toplam()`. Bir dağıtım dosyanın üstüne satır eklese
   de aynı hata tablonun aynı satırında kalır; `--karsilastir` onu kaybolan ve yeni çıkan
-  saymaz.
-  Fonksiyon, yığın izinde bir sonraki satırda çağrılan fonksiyondur. PHP'nin bir uyarısından
-  doğan `ErrorException`'da fırlatıldığı yer yığın izinde de görünür; fonksiyonu o satırınkidir.
+  saymaz. Fonksiyon, yığın izinde bir sonraki satırda çağrılan fonksiyondur. PHP'nin bir
+  uyarısından doğan `ErrorException`'da fırlatıldığı yer yığın izinde de görünür; fonksiyonu o
+  satırınkidir.
+- Kimliğe fonksiyonun sınıfsız adı katılır; dosya zaten kimliktedir. PHP trait'teki bir
+  metodu onu kullanan sınıfın adıyla yazar (`App\Models\Urun->kaydet()`,
+  `App\Models\Siparis->kaydet()`): trait'teki bir hata yine tek satırdır.
 - Gösterilen satır o hatanın en yeni kaydınınkidir: kod değiştiyse güncel satır.
 - Closure'lar tanımlandıkları fonksiyonla ayrılır: `{closure:olustur()}`. Fonksiyon PHP
   8.4'ün closure adından (`{closure:App\Services\SiparisServisi::olustur():12}`) okunur,
@@ -95,8 +122,6 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 - `--konum satir`: dosya ve satır, 0.1'deki gibi.
 - JSON çıktısında `istisna.metot` (fonksiyonun tam adı) ve `kaliplar.konum` alanları;
   Markdown'ın konum hücresinde fonksiyon.
-- Örnek logdaki Redis hatasının yığın izine middleware'i çağıran satır eklendi.
-- Yardım metninde 92 karakteri aşan satırlar bölündü.
 
 ### Kategorik konumlar
 
@@ -121,26 +146,34 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 ### Canlı izleme
 
 - `--izle`: log sonuna kadar okunur ve rapor yazılır; sonra eklenen kayıtlar okunmaya devam
-  eder, yeni kayıt geldikçe rapor yeniden çizilir (terminalde ekran temizlenerek, bir dosyaya
-  ya da boruya yazılıyorsa bir ayırıcı satırla art arda). Girdi yeniden okunmaz: depo okuma
+  eder, yeni kayıt geldikçe rapor yeniden çizilir. Girdi yeniden okunmaz: depo okuma
   durumunu korur, her çizim yalnızca yeni baytları işler; Drain değişken bir konum bulursa
-  kayıtlar o çizimde yeniden kümelenir. Raporun başında bir durum satırı vardır: dosya,
-  aralık, kayıt sayısı, en yeni kaydın zamanı.
+  kayıtlar o çizimde yeniden kümelenir. Bir durum satırı vardır: dosya, aralık, kayıt sayısı,
+  en yeni kaydın zamanı.
+- Terminalde her çizimde ekran ve kaydırma geçmişi temizlenir; durum satırı ve uyarılar
+  raporun altındadır, rapor ekrandan uzun olsa da görünür. Windows'un eski konsolunda ekranı
+  temizleyen kaçış dizileri program tarafından açılır. Bir dosyaya ya da boruya yazılıyorsa
+  çizimler bir ayırıcı satırla art arda yazılır.
 - `--aralik 500ms`: girdiye ne sıklıkla bakılacağı ve raporun en sık ne kadarda bir
-  çizileceği (varsayılan 2 sn, en az 100 ms). Süre sözdizimine `ms` birimi eklendi.
+  çizileceği (varsayılan 2 sn; 100 ms ile 1 sa arası). Süre sözdizimine `ms` birimi eklendi.
 - Okunan son kayıt, ondan sonra bir kayıt başlığı gelince ya da girdi bir aralık boyunca sessiz
   kalınca depoya alınır: yığın izi birkaç yazma işlemiyle gelen bir kayıt bölünmez. Satır
   ortasında kesilen okumalar da bekletilir; sessizlikte satır sonu gelmemiş satır da okunur.
   Böylece sessiz bir anda çizilen rapor, o ana kadar gelen baytların bir kerede
-  özetlenmesiyle aynıdır. Bir süredir değişmeyen bir dosyanın son kaydı ilk çizimde görünür.
+  özetlenmesiyle aynıdır (değişken konumu çok olan loglarda kalıplar nadiren farklı olabilir:
+  konumlar parça parça öğrenilir). Bir süredir değişmeyen bir dosyanın son kaydı ilk çizimde
+  görünür.
 - Döndürülen log (logrotate, `copytruncate`) fark edilir ve baştan okunur; önceki kayıtlar
   raporda kalır, durum satırına `döndürüldü` yazılır. Eski dosya önce sonuna kadar okunur:
   döndürülmeden hemen önce yazılan kayıtlar kaybolmaz. Seyrek dizin kayıtların sıra
   numaralarını da tutar; yeni dosyanın kayıtları yeni dosyadaki konumlarıyla yeniden okunur.
-- Zaman filtreleri izlemede kayan penceredir: `--son 1sa` her çizimde o ana kadarki en yeni
-  kayda göre uygulanır.
+- Zaman filtreleri izlemede kayan penceredir: `--son 1sa` her çizimde o ana kadar okunan en
+  yeni kayda göre uygulanır; en yeni kayıt, toplu okumadaki gibi seviye filtresine uymayanlarla
+  birlikte bulunur. Log ilerledikçe aralık boşalırsa pencerede kayıt kalmaz, izleme sürer.
+  Pencerenin dışında ilk kaydı kalan alt grupların örnekleri çizimler arasında saklanır.
 - Standart girdi izlenebilir (`tail -f laravel.log | veylog --izle -`): girdi bitince son
-  rapor yazılır ve çıkılır. `--ani-artis` örnekleri için girdi geçici bir dosyaya kopyalanır.
+  rapor yazılır ve çıkılır. `--ani-artis` örnekleri için tutulan geçici kopya 256 MB'ı aşınca
+  bırakılır.
 - `--izle` yalnızca metin biçimindedir; `--bicim json`, `--bicim markdown` ve `--karsilastir`
   ile kullanım hatası verir.
 
@@ -157,8 +190,56 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
   önerileri iki dilin adlarından seçilir.
 - Dil argümanlar ayrıştırılmadan önce seçilir: `--lang`'dan önce gelen bir yanlışlığın mesajı
   da seçilen dildedir. Tanınmayan bir `VEYLOG_DIL` değeri iki dilde uyarılır.
-- JSON çıktısı her dilde bayt bayt aynıdır: alan adları, değerler ve yer tutucular değişmez.
+- JSON çıktısı her dilde bayt bayt aynıdır: alan adları, değerler ve yer tutucular değişmez;
+  standart girdiden okunduysa `dosya` her dilde `<standart girdi>`dir.
 - Türkçe yardım metninin başında İngilizce yardımın nasıl açılacağı yazar.
+
+### Komut satırı
+
+- Değerlerde büyük ve küçük harf fark etmez: `--bicim JSON`, `--siralama ADET`,
+  `--sıralama ÖNEM`, `--konum SATIR`.
+- Kısa seçeneklerin değeri `=` ile de verilebilir: `-n=20`.
+- Tek tireyle yazılan uzun seçeneklere (`-hepsi`) ve büyük-küçük harfi karışan kısa
+  seçeneklere (`-v`) öneri verilir: `--hepsi`, `-V`.
+
+### Düzeltmeler
+
+- Mesaj bağlamdan, bağlamın geçerli bir JSON olarak başladığı yerden ayrılır: mesajın
+  içindeki satır içi bir JSON (`Ödeme {"tutar":50} onaylandı`) mesajda kalır. 0.1.0 mesajı ilk
+  ` {"`'de keserdi: JSON'dan sonraki kısım bağlama gider, farklı olaylar tek kalıpta
+  birleşirdi.
+- Mesajın sonundaki boş bağlam ve ek (`Kuyruk dolu [] []`; `formatter_with` ile kurulan
+  Monolog biçimi yazar) mesaja katılmaz: aynı mesaj bağlamlı ve bağlamsız haliyle aynı
+  kalıptadır.
+- Maskeleme: URL'nin ardındaki ters tırnak URL'ye katılmaz (Guzzle'ın
+  `` `POST https://...` resulted in ``'i); uzantıdan sonra süren bir yol (`/api/v1.2/urunler`)
+  dosya yolu sayılmaz; alan adı harfle başlayan bir parçayla bitmeyen `ad@sürüm`
+  (`laravel/framework@11.9.2`) e-posta sayılmaz.
+- Maskelemenin kelime sınırları ve rakamları ASCII'dir: Türkçe mesajlı 400 bin kayıtlık bir
+  log 1,7 yerine 0,7 saniyede okunur. Fark yalnızca ASCII olmayan bir harfe yapışık
+  rakamlardadır: `Sipariş5`'teki rakam artık maskelenir.
+- Drain'de bir yaprak 1 000 kümeye ulaşınca hiçbir kümeye benzemeyen yeni mesajlar yaprağın
+  taşma kümesinde toplanır. Her konumu az değer alan ama birleşimleri sayısız olan mesajlar
+  (`<ad> <eylem> <nesne>`) her yeni mesajı bütün kümelerle karşılaştırtır, süre mesaj
+  sayısının karesiyle artardı: 40 000 böyle satır 33 yerine 1,7 saniyede okunur.
+- Fırlatıldığı yer, yolunda parantez (`C:\Program Files (x86)\...`) ya da ` at ` olan
+  projelerde de doğru okunur; 0.1.0 ilk `)`'de keser, konumu çağıran satıra kaydırırdı.
+- Proje `vendor` adlı bir klasörün altındaysa (`/home/ali/vendor/magaza`) kök doğru bulunur:
+  yollardaki her vendor bir aday sayılır, kök altında giriş noktası ya da uygulama kodu olan
+  adaydır. 0.1.0 ilk vendor'dan önceki kısmı kök sayar, hiçbir hatanın konumunu bulamazdı.
+- Kökü kendi yollarında olmayan istisnaların kökü, logun bütün köklerini dolaşmadan bulunur:
+  binlerce kökü (sıfır kesintili dağıtımların klasörleri) ve binlerce böyle istisnası olan
+  bir log 15 saniye yerine 0,3 saniyede okunur.
+- Karşılaştırmada logun ilk ve son kaydı teste katılmaz: yarıların sınırını onlar belirler,
+  rastgele düşmezler. Son kaydı taşıyan bir kalıp, sıklığı değişmediği halde %1 yerine
+  %2–%9 ihtimalle artan sayılabiliyordu.
+
+### Diğer
+
+- Örnek logdaki Redis hatasının yığın izine middleware'i çağıran satır eklendi.
+- Yardım metninde 92 karakteri aşan satırlar bölündü.
+- README'ye Windows PowerShell 5.1'in yönlendirilen çıktıdaki Türkçe harfleri bozduğu notu
+  eklendi.
 
 ## [0.1.0] - 2026-10-26
 

@@ -87,6 +87,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::rc::Rc;
 
 /// Kalıpta değişken bir konumun iç işareti. Boşluk içerdiği için mesajdaki hiçbir belirteçle
 /// karışmaz. Gösterilen hali `JOKER_GORUNUMU`.
@@ -121,30 +122,86 @@ impl Default for Ayarlar {
     }
 }
 
+/// Bir yaprakta en fazla bu kadar küme × `en_fazla_cocuk` küme açılır. Her konumu en fazla
+/// `en_fazla_cocuk` farklı değer alan ama değerlerinin birleşimleri sayısız olan mesajlar
+/// (`<ad> <eylem> <nesne>`) hiçbir konumu değişken yapmaz: her biri ayrı bir küme açar, her
+/// yeni mesaj hepsiyle karşılaştırılır ve süre mesaj sayısının karesiyle artardı. Yaprak
+/// dolunca hiçbir kümeye benzemeyen mesajlar yaprağın taşma kümesinde toplanır; böylece bir
+/// mesaj en fazla bu kadar kümeyle karşılaştırılır. Gerçek loglarda yapraklar bunun çok
+/// altındadır.
+const YAPRAK_KATSAYISI: usize = 10;
+
 /// Aynı kalıba uyan mesajlar.
+///
+/// Kalıp yalnızca jokere döner (`guncelle`): joker olmayan belirteçleri hep kümeyi açan
+/// mesajınkilerdir. Bu yüzden belirteçler ayrı ayrı saklanmaz; kalıp, açan mesajın metni
+/// (depodaki maskeli mesajla paylaşılır) ve belirteçlerin o metindeki yerleridir. Belirteç
+/// başına sekiz bayt: uzun SQL mesajlarıyla dolu bir logda kalıplar, her belirteç ayrı bir
+/// metin olsaydı tutacakları belleğin yedide birini tutar.
 #[derive(Debug, Clone)]
 pub struct Kume {
-    /// Kalıbın belirteçleri; değişen konumlarda iç joker işareti. Gösterilecek hali `metin`.
-    kalip: Vec<String>,
+    /// Kümeyi açan mesaj.
+    acan: Rc<str>,
+    /// Kalıbın belirteçlerinin `acan`daki yerleri (başı ve sonu, bayt); jokerde
+    /// `JOKER_YERI`. Gösterilecek hali `metin`.
+    yerler: Box<[(u32, u32)]>,
     /// Kümeye katılan mesaj sayısı.
     pub adet: usize,
 }
 
+/// Kalıpta jokerin yeri: hiçbir metinde olmayan bir aralık.
+const JOKER_YERI: (u32, u32) = (u32::MAX, u32::MAX);
+
 impl Kume {
+    /// `acan` mesajıyla açılan küme; `sinirlar`: belirteçlerinin yerleri (`sinirlar`).
+    fn new(acan: &Rc<str>, sinirlar: &[(usize, usize)]) -> Kume {
+        let yer = |konum: usize| u32::try_from(konum).expect("mesaj 4 GB'tan kısadır");
+        Kume {
+            acan: Rc::clone(acan),
+            yerler: sinirlar
+                .iter()
+                .map(|&(bas, son)| (yer(bas), yer(son)))
+                .collect(),
+            adet: 1,
+        }
+    }
+
+    /// Kalıbın belirteçleri sırayla; jokerlerde iç joker işareti (`JOKER`).
+    fn belirtecler(&self) -> impl Iterator<Item = &str> + '_ {
+        self.yerler.iter().map(|&(bas, son)| {
+            if (bas, son) == JOKER_YERI {
+                JOKER
+            } else {
+                &self.acan[bas as usize..son as usize]
+            }
+        })
+    }
+
+    /// Kalıpta mesajdan farklı olan konumları jokere çevirir. Kalıp değiştiyse true.
+    fn guncelle(&mut self, belirtecler: &[&str]) -> bool {
+        let mut degisti = false;
+        for (yer, b) in self.yerler.iter_mut().zip(belirtecler) {
+            if *yer != JOKER_YERI && &self.acan[yer.0 as usize..yer.1 as usize] != *b {
+                *yer = JOKER_YERI;
+                degisti = true;
+            }
+        }
+        degisti
+    }
+
     /// Kalıptaki joker konumların sıraları (0'dan). Mesajda yazılı bir `<*>` joker değildir.
     pub fn joker_konumlari(&self) -> impl Iterator<Item = usize> + '_ {
-        self.kalip
+        self.yerler
             .iter()
             .enumerate()
-            .filter(|(_, belirtec)| *belirtec == JOKER)
+            .filter(|&(_, &yer)| yer == JOKER_YERI)
             .map(|(sira, _)| sira)
     }
 
     /// Kalıbın okunabilir hali: "Zamanlanmış görev başladı: <*>"
     pub fn metin(&self) -> String {
         let belirtecler: Vec<&str> = self
-            .kalip
-            .iter()
+            .belirtecler()
             .map(|belirtec| {
                 if belirtec == JOKER {
                     JOKER_GORUNUMU
@@ -157,6 +214,26 @@ impl Kume {
     }
 }
 
+/// Mesajın belirteçlerinin yerleri (başı ve sonu, bayt): `split_whitespace` gibi Unicode
+/// boşluklarından bölünür.
+fn sinirlar(mesaj: &str) -> Vec<(usize, usize)> {
+    let mut sinirlar = Vec::new();
+    let mut bas = None;
+    for (konum, harf) in mesaj.char_indices() {
+        if harf.is_whitespace() {
+            if let Some(bas) = bas.take() {
+                sinirlar.push((bas, konum));
+            }
+        } else if bas.is_none() {
+            bas = Some(konum);
+        }
+    }
+    if let Some(bas) = bas {
+        sinirlar.push((bas, mesaj.len()));
+    }
+    sinirlar
+}
+
 /// Ağacın bir düğümü.
 #[derive(Debug, Default)]
 struct Dugum {
@@ -164,6 +241,9 @@ struct Dugum {
     cocuklar: HashMap<String, Dugum>,
     /// Sadece yapraklarda dolu: bu yaprağa düşen kümelerin numaraları.
     kume_numaralari: Vec<usize>,
+    /// Sadece dolmuş yapraklarda: hiçbir kümeye benzemeyen mesajların kümesi
+    /// (`YAPRAK_KATSAYISI`). `kume_numaralari`nda değildir.
+    tasma: Option<usize>,
     /// Sadece yapraklarda ve esnek eşikte dolu: kümelerin kalıplarındaki her konum. Yaprakta
     /// `en_fazla_cocuk`'tan fazla küme olunca (ya da önceki turda değişken konumu
     /// öğrenildiyse) dolar; o zamana kadar boştur.
@@ -188,6 +268,17 @@ impl Konum {
 
 /// Bir yaprağın ağaçtaki yeri: belirteç sayısı ve köke inerken seçilen dallar.
 type YaprakYolu = (usize, Vec<String>);
+
+/// Ağaçta bir mesaja benzeyen kümenin aranması.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arama {
+    /// Eşiği geçen en benzer küme.
+    Bulundu(usize),
+    /// Benzeyen küme yok: yeni bir küme açılır.
+    Yok,
+    /// Benzeyen küme yok ve yaprak dolu: mesaj yaprağın taşma kümesine gider.
+    Dolu,
+}
 
 /// Drain kalıp çıkarıcısı. Dışarıdan `kumele` ile kullanılır.
 #[derive(Debug)]
@@ -245,16 +336,21 @@ impl Kumeleyici {
         }
     }
 
-    /// Mesajı kümeler; küme numarasını döndürür. `no`: mesajın numarası.
-    pub fn ekle(&mut self, no: usize, mesaj: &str) -> usize {
+    /// Mesajı kümeler; küme numarasını döndürür. `no`: mesajın numarası. Mesaj bir küme
+    /// açarsa kalıbı onun metnini paylaşır.
+    pub fn ekle(&mut self, no: usize, mesaj: &Rc<str>) -> usize {
         if let Some(Some(onceki)) = self.onbellek.get(no)
             && self.drain.surum(onceki.uzunluk) == onceki.surum
         {
             self.drain.kumeler[onceki.kume].adet += 1;
             return onceki.kume;
         }
-        let belirtecler: Vec<&str> = mesaj.split_whitespace().collect();
-        let kume = self.drain.belirtecleri_ekle(&belirtecler);
+        let sinirlar = sinirlar(mesaj);
+        let belirtecler: Vec<&str> = sinirlar
+            .iter()
+            .map(|&(bas, son)| &mesaj[bas..son])
+            .collect();
+        let kume = self.drain.belirtecleri_ekle(mesaj, &sinirlar, &belirtecler);
         if self.onbellek.len() <= no {
             self.onbellek.resize(no + 1, None);
         }
@@ -264,6 +360,12 @@ impl Kumeleyici {
             kume,
         });
         kume
+    }
+
+    /// Testlerde: mesaj bir metinden.
+    #[cfg(test)]
+    fn ekle_metin(&mut self, no: usize, mesaj: &str) -> usize {
+        self.ekle(no, &Rc::from(mesaj))
     }
 
     /// Kümelemede değişken bir konum bulundu mu? Bulunduysa mesajlar `ikinci_tur` ile baştan
@@ -317,10 +419,14 @@ impl Kumeleyici {
 /// ikinci kez kümelenir. `Kumeleyici`'nin sonuçlarının denetlendiği başvuru uygulamasıdır.
 #[cfg(test)]
 pub fn kumele(ayarlar: &Ayarlar, mesajlar: &[impl AsRef<str>]) -> (Vec<Kume>, Vec<usize>) {
+    let mesajlar: Vec<Rc<str>> = mesajlar
+        .iter()
+        .map(|mesaj| Rc::from(mesaj.as_ref()))
+        .collect();
     let mut ilk_tur = Drain::new(ayarlar.clone());
     let numaralar = mesajlar
         .iter()
-        .map(|mesaj| ilk_tur.ekle(mesaj.as_ref()))
+        .map(|mesaj| ilk_tur.ekle_rc(mesaj))
         .collect();
     if ilk_tur.degiskenler.is_empty() {
         return (ilk_tur.kumeler, numaralar);
@@ -332,7 +438,7 @@ pub fn kumele(ayarlar: &Ayarlar, mesajlar: &[impl AsRef<str>]) -> (Vec<Kume>, Ve
     };
     let numaralar = mesajlar
         .iter()
-        .map(|mesaj| ikinci_tur.ekle(mesaj.as_ref()))
+        .map(|mesaj| ikinci_tur.ekle_rc(mesaj))
         .collect();
     (ikinci_tur.kumeler, numaralar)
 }
@@ -354,36 +460,79 @@ impl Drain {
     /// Mesajı benzediği kümeye ekler, yoksa yeni küme açar. Kümenin numarasını döndürür.
     #[cfg(test)]
     fn ekle(&mut self, mesaj: &str) -> usize {
-        // 1. Belirteçlere böl
-        let belirtecler: Vec<&str> = mesaj.split_whitespace().collect();
-        self.belirtecleri_ekle(&belirtecler)
+        self.ekle_rc(&Rc::from(mesaj))
     }
 
-    /// Belirteçlerine bölünmüş mesajı ekler (`ekle`).
-    fn belirtecleri_ekle(&mut self, belirtecler: &[&str]) -> usize {
+    /// `ekle`; mesaj bir küme açarsa kalıbı onun metnini paylaşır.
+    #[cfg(test)]
+    fn ekle_rc(&mut self, mesaj: &Rc<str>) -> usize {
+        // 1. Belirteçlere böl
+        let sinirlar = sinirlar(mesaj);
+        let belirtecler: Vec<&str> = sinirlar
+            .iter()
+            .map(|&(bas, son)| &mesaj[bas..son])
+            .collect();
+        self.belirtecleri_ekle(mesaj, &sinirlar, &belirtecler)
+    }
+
+    /// Belirteçlerine bölünmüş mesajı ekler (`ekle`). `sinirlar`: belirteçlerin mesajdaki
+    /// yerleri.
+    fn belirtecleri_ekle(
+        &mut self,
+        mesaj: &Rc<str>,
+        sinirlar: &[(usize, usize)],
+        belirtecler: &[&str],
+    ) -> usize {
         // 2–4. Ağaçta en benzer kümeyi ara
         match self.ara(belirtecler) {
             // 5. Bulunan kümeye kat ve kalıbını güncelle
-            Some(numara) => {
-                let kume = &mut self.kumeler[numara];
-                kume.adet += 1;
-                if kalibi_guncelle(&mut kume.kalip, belirtecler) {
-                    self.degisti(belirtecler.len());
-                }
-                numara
-            }
+            Arama::Bulundu(numara) => self.kat(numara, belirtecler),
             // Yeterince benzer küme yok: yeni küme aç ve ağaca yerleştir
-            None => {
+            Arama::Yok => {
                 let numara = self.kumeler.len();
-                self.kumeler.push(Kume {
-                    kalip: belirtecler.iter().map(|b| b.to_string()).collect(),
-                    adet: 1,
-                });
+                self.kumeler.push(Kume::new(mesaj, sinirlar));
                 self.agaca_ekle(belirtecler, numara);
                 self.degisti(belirtecler.len());
                 numara
             }
+            // Yaprak dolu: taşma kümesine
+            Arama::Dolu => {
+                let yeni = self.kumeler.len();
+                let yaprak = self.yaprak_mut(belirtecler).expect("dolu yaprak ağaçtadır");
+                let tasma = *yaprak.tasma.get_or_insert(yeni);
+                if tasma == yeni {
+                    self.kumeler.push(Kume::new(mesaj, sinirlar));
+                    self.degisti(belirtecler.len());
+                    tasma
+                } else {
+                    self.kat(tasma, belirtecler)
+                }
+            }
         }
+    }
+
+    /// Mesajı kümeye katar, kalıbını günceller.
+    fn kat(&mut self, numara: usize, belirtecler: &[&str]) -> usize {
+        let kume = &mut self.kumeler[numara];
+        kume.adet += 1;
+        if kume.guncelle(belirtecler) {
+            self.degisti(belirtecler.len());
+        }
+        numara
+    }
+
+    /// Mesajın yaprağı: `ara`nın indiği yer, değiştirilebilir.
+    fn yaprak_mut(&mut self, belirtecler: &[&str]) -> Option<&mut Dugum> {
+        let yonlendiren = self.yonlendiren_sayisi(belirtecler.len());
+        let mut dugum = self.uzunluklar.get_mut(&belirtecler.len())?;
+        for belirtec in &belirtecler[..yonlendiren] {
+            dugum = if dugum.cocuklar.contains_key(*belirtec) {
+                dugum.cocuklar.get_mut(*belirtec)?
+            } else {
+                dugum.cocuklar.get_mut(JOKER)?
+            };
+        }
+        Some(dugum)
     }
 
     /// Ağacın bu uzunluktaki kısmının sürümü.
@@ -397,31 +546,47 @@ impl Drain {
     }
 
     /// Mesaja yeterince benzeyen en iyi kümeyi bulur. Ağacı değiştirmez.
-    fn ara(&self, belirtecler: &[&str]) -> Option<usize> {
+    fn ara(&self, belirtecler: &[&str]) -> Arama {
         // 2. İlk katman: belirteç sayısı
-        let mut dugum = self.uzunluklar.get(&belirtecler.len())?;
+        let Some(mut dugum) = self.uzunluklar.get(&belirtecler.len()) else {
+            return Arama::Yok;
+        };
 
         // 3. Baş belirteçlere göre aşağı in: önce birebir aynı dal, yoksa joker dalı
         for belirtec in &belirtecler[..self.yonlendiren_sayisi(belirtecler.len())] {
-            dugum = match dugum.cocuklar.get(*belirtec) {
+            dugum = match dugum.cocuklar.get(*belirtec).or(dugum.cocuklar.get(JOKER)) {
                 Some(cocuk) => cocuk,
-                None => dugum.cocuklar.get(JOKER)?,
+                None => return Arama::Yok,
             };
         }
 
         // Boş mesajlar (ör. Log::info('')) hep aynı kümede toplanır
         if belirtecler.is_empty() {
-            return dugum.kume_numaralari.first().copied();
+            return dugum
+                .kume_numaralari
+                .first()
+                .map_or(Arama::Yok, |&numara| Arama::Bulundu(numara));
         }
 
-        // 4. Yapraktaki en benzer küme
-        if let [belirtec] = belirtecler
+        // 4. Yapraktaki en benzer küme. Tek belirteçlilerde yaprak dolmaz: her mesaj en fazla
+        // iki kümeyle karşılaştırılır (`tek_belirtecli_adaylar`)
+        let bulunan = if let [belirtec] = belirtecler
             && self.ayarlar.benzerlik_esigi > 0.0
         {
             let adaylar = self.tek_belirtecli_adaylar(belirtec);
             self.en_benzer(&adaylar, belirtecler, &dugum.konumlar)
         } else {
             self.en_benzer(&dugum.kume_numaralari, belirtecler, &dugum.konumlar)
+        };
+        match bulunan {
+            Some(numara) => Arama::Bulundu(numara),
+            None if belirtecler.len() >= 2
+                && dugum.kume_numaralari.len()
+                    >= YAPRAK_KATSAYISI * self.ayarlar.en_fazla_cocuk =>
+            {
+                Arama::Dolu
+            }
+            None => Arama::Yok,
         }
     }
 
@@ -456,12 +621,7 @@ impl Drain {
         let mut en_iyi: Option<(usize, (usize, usize))> = None;
         let mut bicimler = Bicimler::new(belirtecler);
         for &numara in adaylar {
-            let sonuc = karsilastir(
-                &self.kumeler[numara].kalip,
-                belirtecler,
-                konumlar,
-                &mut bicimler,
-            );
+            let sonuc = karsilastir(&self.kumeler[numara], belirtecler, konumlar, &mut bicimler);
             if !self.esigi_gecer(&sonuc, belirtecler.len()) {
                 continue;
             }
@@ -555,7 +715,11 @@ impl Drain {
         };
         let mut yeni_degisken = false;
         for &kume in sayilacaklar {
-            for (konum, belirtec) in dugum.konumlar.iter_mut().zip(&self.kumeler[kume].kalip) {
+            for (konum, belirtec) in dugum
+                .konumlar
+                .iter_mut()
+                .zip(self.kumeler[kume].belirtecler())
+            {
                 if let Konum::Degerler(degerler) = konum
                     && belirtec != JOKER
                 {
@@ -632,15 +796,15 @@ struct Karsilastirma {
     rakamli_fark: usize,
 }
 
-/// Kalıp ile mesajı konum konum karşılaştırır. `konumlar`: yaprağın konumları; esnek eşik
-/// kapalıyken boştur.
+/// Kümenin kalıbı ile mesajı konum konum karşılaştırır. `konumlar`: yaprağın konumları; esnek
+/// eşik kapalıyken boştur.
 ///
 /// Joker, kalıbın o konumda farklı değerler gördüğünü söyler; o değerlerin rakamlı ya da kodsal
 /// olup olmadığı bilinmez. Jokerin karşısındaki belirteçte rakam varsa fark rakamlı, belirteç
 /// kodsal biçimdeyse fark kodsal sayılır. `bicimler`: mesajın belirteçlerinin biçimleri,
 /// gerektikçe bulunur.
 fn karsilastir(
-    kalip: &[String],
+    kume: &Kume,
     belirtecler: &[&str],
     konumlar: &[Konum],
     bicimler: &mut Bicimler<'_>,
@@ -651,11 +815,11 @@ fn karsilastir(
         degisken_fark: 0,
         rakamli_fark: 0,
     };
-    for (sira, (k, b)) in kalip.iter().zip(belirtecler).enumerate() {
+    for (sira, (k, b)) in kume.belirtecler().zip(belirtecler).enumerate() {
         let (rakamli, kodsal) = if k == JOKER {
             sonuc.joker += 1;
             (rakam_iceriyor(b), bicimler.bicim(sira).kodsal())
-        } else if k == b {
+        } else if k == *b {
             sonuc.esit += 1;
             continue;
         } else {
@@ -859,18 +1023,6 @@ fn sinif_adi_mi(ad: &str) -> bool {
             parca.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
                 && parca.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
-}
-
-/// Kalıpta mesajdan farklı olan konumları jokere çevirir. Kalıp değiştiyse true.
-fn kalibi_guncelle(kalip: &mut [String], belirtecler: &[&str]) -> bool {
-    let mut degisti = false;
-    for (k, b) in kalip.iter_mut().zip(belirtecler) {
-        if k != JOKER && k != b {
-            *k = JOKER.to_string();
-            degisti = true;
-        }
-    }
-    degisti
 }
 
 #[cfg(test)]
@@ -1366,7 +1518,7 @@ mod testler {
         // Üçüncü tur ikisini de bilmeli.
         let mut birinci = Kumeleyici::new(Ayarlar::default());
         for (no, mesaj) in bilinmeyen_kullanicilar(101).iter().enumerate() {
-            birinci.ekle(no, mesaj);
+            birinci.ekle_metin(no, mesaj);
         }
         assert!(birinci.ikinci_tur_gerekir());
         let mut ikinci = birinci.ikinci_tur();
@@ -1376,7 +1528,7 @@ mod testler {
             .map(|sira| format!("Görev bitti: {}", ad(sira)))
             .collect();
         for (no, mesaj) in gorevler.iter().enumerate() {
-            ikinci.ekle(200 + no, mesaj);
+            ikinci.ekle_metin(200 + no, mesaj);
         }
         assert!(ikinci.ikinci_tur_gerekir());
         let ucuncu = ikinci.ikinci_tur();
@@ -1384,10 +1536,10 @@ mod testler {
         // Sonuç: iki aile de baştan tek kalıpta
         let mut sonuc = ucuncu;
         for (no, mesaj) in bilinmeyen_kullanicilar(101).iter().enumerate() {
-            sonuc.ekle(no, mesaj);
+            sonuc.ekle_metin(no, mesaj);
         }
         for (no, mesaj) in gorevler.iter().enumerate() {
-            sonuc.ekle(200 + no, mesaj);
+            sonuc.ekle_metin(200 + no, mesaj);
         }
         assert_eq!(
             ozetle(sonuc.kumeler()),
@@ -1658,7 +1810,7 @@ mod testler {
             mesajlar
                 .iter()
                 .zip(&nolar)
-                .map(|(mesaj, &no)| kumeleyici.ekle(no, mesaj))
+                .map(|(mesaj, &no)| kumeleyici.ekle_metin(no, mesaj))
                 .collect()
         };
         let mut kumeleyici = Kumeleyici::new(ayarlar.clone());
@@ -1773,7 +1925,7 @@ mod testler {
             assert_eq!(kumeler, ozetle(&referans), "deneme {deneme}");
             let mut drain = Kumeleyici::new(ayarlar.clone());
             for (no, mesaj) in mesajlar.iter().enumerate() {
-                drain.ekle(no, mesaj);
+                drain.ekle_metin(no, mesaj);
             }
             iki_turlu += usize::from(drain.ikinci_tur_gerekir());
         }
@@ -1782,16 +1934,114 @@ mod testler {
     }
 
     #[test]
+    fn belirtec_sinirlari_split_whitespace_ile_ayni() {
+        for mesaj in [
+            "",
+            "   ",
+            "tek",
+            "  iki  kelime ",
+            "sekme\tve\nsatır sonu\r\n",
+            "Unicode\u{00a0}boşluk\u{2003}ve\u{3000}ideografik",
+            "çok baytlı ğüşıöç İ 🚀",
+            "\u{feff}BOM boşluk değildir",
+        ] {
+            let beklenen: Vec<&str> = mesaj.split_whitespace().collect();
+            let gelen: Vec<&str> = sinirlar(mesaj)
+                .iter()
+                .map(|&(bas, son)| &mesaj[bas..son])
+                .collect();
+            assert_eq!(gelen, beklenen, "{mesaj:?}");
+        }
+    }
+
+    #[test]
+    fn kalip_acan_mesajin_metnini_paylasir() {
+        let mesaj: Rc<str> = Rc::from("Kullanıcı <SAYI> giriş yaptı");
+        let mut kumeleyici = Kumeleyici::new(Ayarlar::default());
+        kumeleyici.ekle(0, &mesaj);
+        kumeleyici.ekle_metin(1, "Kullanıcı <SAYI> çıkış yaptı");
+        let kume = &kumeleyici.kumeler()[0];
+        assert!(Rc::ptr_eq(&kume.acan, &mesaj));
+        assert_eq!(kume.metin(), "Kullanıcı <SAYI> <*> yaptı");
+        assert_eq!(kume.joker_konumlari().collect::<Vec<_>>(), [2]);
+        // Mesajda yazılı `<*>` joker değildir
+        kumeleyici.ekle_metin(2, "Değer: <*>");
+        assert_eq!(kumeleyici.kumeler()[1].joker_konumlari().count(), 0);
+    }
+
+    #[test]
+    fn dolu_yaprakta_benzemeyenler_tasma_kumesine_gider() {
+        // Her konumu az değer alan ama birleşimleri sayısız mesajlar: hiçbiri bir başkasına
+        // benzemez (3 belirtecin en fazla 1'i aynı). Yaprak dolunca yenileri taşma kümesinde
+        // toplanır; bir mesaj en fazla yapraktaki kümelerle karşılaştırılır.
+        for esnek_esik in [false, true] {
+            let ayarlar = Ayarlar {
+                en_fazla_cocuk: 3,
+                esnek_esik,
+                ..Ayarlar::default()
+            };
+            let sinir = YAPRAK_KATSAYISI * ayarlar.en_fazla_cocuk;
+            let mesajlar: Vec<String> = (0..sinir + 20)
+                .map(|sira| format!("olay {} {}", ad(sira), ad(sira + 7_000)))
+                .collect();
+            let mut drain = Drain::new(ayarlar.clone());
+            for mesaj in &mesajlar {
+                drain.ekle(mesaj);
+            }
+            if esnek_esik {
+                // Esnek eşikte konumlar `en_fazla_cocuk`'tan fazla değer alınca değişkendir:
+                // ikinci turda hepsi tek kalıptır
+                assert!(!drain.degiskenler.is_empty());
+                let (kumeler, _) = kumele(&ayarlar, &mesajlar);
+                assert_eq!(ozetle(&kumeler), [format!("{} × olay <*> <*>", sinir + 20)]);
+                continue;
+            }
+            assert_eq!(drain.kumeler.len(), sinir + 1);
+            let tasma = &drain.kumeler[sinir];
+            assert_eq!((tasma.adet, tasma.metin().as_str()), (20, "olay <*> <*>"));
+            let yaprak = drain.yaprak_mut(&["olay", "x", "y"]).unwrap();
+            assert_eq!(yaprak.kume_numaralari.len(), sinir);
+            assert_eq!(yaprak.tasma, Some(sinir));
+            // Yapraktaki bir kümeye benzeyen mesaj yine ona katılır
+            assert_eq!(drain.ekle(&mesajlar[3]), 3);
+            // Önbellekli kümeleme aynı sonucu verir
+            let mut kumeleyici = Kumeleyici::new(ayarlar.clone());
+            let numaralar: Vec<usize> = mesajlar
+                .iter()
+                .chain(&mesajlar)
+                .enumerate()
+                .map(|(no, mesaj)| kumeleyici.ekle_metin(no % mesajlar.len(), mesaj))
+                .collect();
+            let iki_kez: Vec<&String> = mesajlar.iter().chain(&mesajlar).collect();
+            let (referans, referans_numaralari) = kumele(&ayarlar, &iki_kez);
+            assert_eq!(numaralar, referans_numaralari);
+            assert_eq!(ozetle(kumeleyici.kumeler()), ozetle(&referans));
+        }
+        // Tek belirteçli mesajların yaprağı dolmaz (her mesaj zaten en fazla iki kümeyle
+        // karşılaştırılır): her farklı kelime, yaprağın sınırından sonra da kendi kümesidir
+        for esnek_esik in [false, true] {
+            let ayarlar = Ayarlar {
+                en_fazla_cocuk: 3,
+                esnek_esik,
+                ..Ayarlar::default()
+            };
+            let kelimeler: Vec<String> = (0..YAPRAK_KATSAYISI * 3 + 20).map(ad).collect();
+            let (kumeler, _) = kumele(&ayarlar, &kelimeler);
+            assert_eq!(kumeler.len(), kelimeler.len());
+        }
+    }
+
+    #[test]
     fn onbellek_agac_degisince_yeniden_arar() {
         // "a b c" önce kendi kümesini açar; sonra aynı uzunlukta bir mesaj o kümenin kalıbını
         // değiştirir. "a b c" yeniden geldiğinde önbellekteki sonuç eskidir; yeniden aranır.
         let mut kumeleyici = Kumeleyici::new(Ayarlar::default());
-        assert_eq!(kumeleyici.ekle(0, "a b c d"), 0);
-        assert_eq!(kumeleyici.ekle(1, "a b c e"), 0);
-        assert_eq!(kumeleyici.ekle(0, "a b c d"), 0);
+        assert_eq!(kumeleyici.ekle_metin(0, "a b c d"), 0);
+        assert_eq!(kumeleyici.ekle_metin(1, "a b c e"), 0);
+        assert_eq!(kumeleyici.ekle_metin(0, "a b c d"), 0);
         // Başka uzunluktaki bir değişiklik önbelleği bozmaz
-        assert_eq!(kumeleyici.ekle(2, "x y"), 1);
-        assert_eq!(kumeleyici.ekle(0, "a b c d"), 0);
+        assert_eq!(kumeleyici.ekle_metin(2, "x y"), 1);
+        assert_eq!(kumeleyici.ekle_metin(0, "a b c d"), 0);
         assert_eq!(ozetle(kumeleyici.kumeler()), ["4 × a b c <*>", "1 × x y"]);
     }
 
@@ -1826,7 +2076,11 @@ mod testler {
                 let tam_tarama = drain.uzunluklar.get(&1).and_then(|yaprak| {
                     drain.en_benzer(&yaprak.kume_numaralari, &belirtecler, &yaprak.konumlar)
                 });
-                assert_eq!(drain.ara(&belirtecler), tam_tarama, "{mesaj}");
+                assert_eq!(
+                    drain.ara(&belirtecler),
+                    tam_tarama.map_or(Arama::Yok, Arama::Bulundu),
+                    "{mesaj}"
+                );
                 drain.ekle(&mesaj);
             }
         }

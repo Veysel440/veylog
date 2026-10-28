@@ -77,11 +77,13 @@ impl FarkliSayaci {
         }
     }
 
-    /// Farklı değer sayısı; `TAM_SINIR`'dan fazlaysa tahmini.
+    /// Farklı değer sayısı; `TAM_SINIR`'dan fazlaysa tahmini. Tahmin `TAM_SINIR`'ın altına
+    /// inmez: sayaç ancak o kadar farklı değer görünce tahmine geçer; bir değer daha eklenince
+    /// sayı (tahminin hatası yüzünden) gerilemesin.
     pub fn sayi(&self) -> usize {
         match &self.durum {
             Durum::Tam(ozetler) => ozetler.len(),
-            Durum::Yaklasik(kovalar) => tahmin(kovalar).round() as usize,
+            Durum::Yaklasik(kovalar) => (tahmin(kovalar).round() as usize).max(TAM_SINIR + 1),
         }
     }
 
@@ -215,6 +217,15 @@ mod testler {
             let hata = (sayac.sayi() as f64 - adet as f64).abs() / adet as f64;
             assert!(hata < 0.012, "{adet}: {} (hata {hata})", sayac.sayi());
         }
+        // Tahmine geçince sayı gerilemez; özetler kovalara kötü dağılsa da (hepsi aynı kovada,
+        // tahmin 1 civarı) tam sayımın bıraktığı sayının altına inmez
+        assert!(say(TAM_SINIR + 1).sayi() > TAM_SINIR);
+        let mut kotu = FarkliSayaci::default();
+        for ozet in 0..=TAM_SINIR as u64 {
+            kotu.ozet_ekle(ozet);
+        }
+        assert!(kotu.yaklasik_mi());
+        assert_eq!(kotu.sayi(), TAM_SINIR + 1);
         // Tekrarlar sayıyı değiştirmez
         let mut sayac = say(TAM_SINIR + 1);
         let once = sayac.sayi();

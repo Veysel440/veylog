@@ -69,6 +69,11 @@ Poisson sıklığını karşılaştıran koşullu binom testi kullanılır (Przy
 3. p değeri %1'in altındaysa "sıklık değişmedi" varsayımı bu gözlemi açıklayamaz: artış
    tesadüf değildir.
 
+Logun ilk ve son kaydı rastgele düşmez: yarıların sınırlarını onlar belirler, son kayıt
+sonraya, ilk kayıt önceye kesin düşer. Test bu yüzden onlar çıkarılarak yapılır: son kaydı
+taşıyan kalıpta n ve b'den, ilk kaydı taşıyandan n'den bir eksiltilir. Eksiltilmese son kaydı
+taşıyan bir kalıp, sıklığı hiç değişmediği halde %1 yerine %2–%9 ihtimalle artan sayılırdı.
+
 16:11'de p₀ = 8 408 / 34 270 ≈ 0,245:
 
 | Kalıp | Önce → sonra | Kat | p değeri | Sonuç |
@@ -80,7 +85,8 @@ Bu test kesindir ama temkinlidir: yanlış alarm oranı %1'i geçmez, çoğu zam
 ([Krishnamoorthy ve Thomson, 2004](https://userweb.ucs.louisiana.edu/~kxk4695/JSPI-04.pdf)).
 Python'da statsmodels'in
 [`test_poisson_2indep`](https://www.statsmodels.org/dev/generated/statsmodels.stats.rates.test_poisson_2indep.html)
-fonksiyonu `method="exact-cond"` ile aynı testi yapar ve aynı sonucu verir.
+fonksiyonu `method="exact-cond"` ile aynı testi yapar; logun ilk ya da son kaydını taşımayan
+kalıplarda aynı sonucu verir (taşıyanlarda o kayıt çıkarılarak verilen sayılarla).
 
 Üç şartın her biri bir hatayı önler:
 
@@ -96,7 +102,7 @@ fonksiyonu `method="exact-cond"` ile aynı testi yapar ve aynı sonucu verir.
 
 Yeni çıkan ve kaybolanlar için ek şart yoktur: ilk kez görülen bir hata tek kayıtla bile
 önemlidir. Onların p değeri de hesaplanıp JSON'a yazılır (yeni için p₀ᵇ, kaybolan için
-(1 − p₀)ᵃ), ama listeyi filtrelemez.
+(1 − p₀)ᵃ; sınırı belirleyen kayıt yine çıkarılarak), ama listeyi filtrelemez.
 
 İstatistik için kütüphane kullanılmadı. Binom dağılımının kuyruğu terim terim toplanır; çok
 küçük olasılıklar (yaklaşık 10⁻³⁰⁸'in altı) `f64`'te sıfıra yuvarlanacağı için terimlerin

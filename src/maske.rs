@@ -13,13 +13,17 @@
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
-use regex::Regex;
+use regex::{Captures, Regex};
 
 /// Bir maskeleme kuralı: desene uyan her parça yer tutucuyla değiştirilir.
 struct Kural {
     desen: Regex,
     /// Desenin gruplarına `${1}` diye başvurabilir: grubun yakaladığı metin yerinde kalır.
     yer_tutucu: &'static str,
+    /// Eşleşmeden hemen sonraki karakter bu koşula uyuyorsa eşleşme maskelenmez. regex
+    /// kütüphanesinde ileriye bakma (lookahead) yoktur; sonraki karakter desene katılsaydı
+    /// tüketilir, art arda iki yoldan ikincisinin başındaki ayraç olamazdı.
+    sonrasi_olmamali: Option<fn(char) -> bool>,
 }
 
 /// Kurallar yukarıdan aşağıya sırayla uygulanır ve sıra önemlidir: önce bütün yapılar
@@ -28,9 +32,16 @@ struct Kural {
 ///
 /// `LazyLock`: düzenli ifadeler ilk kullanımda bir kez derlenir, sonra hep aynısı kullanılır.
 ///
-/// URL boşlukta, kapanan parantezde (`(see https://...)`), tırnakta ve açılı ayraçta biter:
-/// RFC 3986'ya göre `"`, `<` ve `>` bir URL'de kaçışsız yazılamaz, `'` ise mesajlarda URL'yi
-/// çevreler (`'https://...'`).
+/// Kelime sınırları (`(?-u:\b)`) ve rakamlar (`[0-9]`) ASCII'dir: Unicode kelime sınırı,
+/// regex kütüphanesinin hızlı motorunu ASCII olmayan her baytta çok daha yavaş bir motora
+/// geçirir; Türkçe mesajlarda maskeleme dört kat yavaşlardı. Fark yalnızca ASCII olmayan bir
+/// harfe yapışık rakamlardadır: `Sipariş5` ve `4üncü`'deki rakam maskelenir (`oauth2`'deki
+/// maskelenmez).
+///
+/// URL boşlukta, kapanan parantezde (`(see https://...)`), tırnakta, ters tırnakta ve açılı
+/// ayraçta biter: RFC 3986'ya göre `"`, `<`, `>` ve `` ` `` bir URL'de kaçışsız yazılamaz, `'`
+/// ise mesajlarda URL'yi çevreler (`'https://...'`). Guzzle da URL'yi ters tırnağa alır:
+/// `` `POST https://...` resulted in ``.
 ///
 /// Dosya yolları üç kuralla bulunur. Laravel view hatalarının sonuna şablonun yolunu ekler:
 /// `... (View: C:\Users\İrem\Herd\magaza\resources\views\vitrin.blade.php)`. Yol
@@ -39,29 +50,39 @@ struct Kural {
 /// Öteki yollar: Windows'ta bir sürücü harfiyle başlar (`C:\Users\...`, `C:/Users/...`).
 /// Linux ve macOS'ta `/` ile başlar ve bir dosya uzantısıyla biter
 /// (`/var/www/magaza/app/X.php`); uzantı şartı, `/api/urunler/15` gibi URL yollarını dışarıda
-/// bırakır. Yol bir boşluktan, parantezden, tırnaktan ya da `=` ve `,`'den sonra başlar; o
-/// karakter (`${1}`) yerinde kalır.
+/// bırakır. Uzantıdan sonra yol sürmemelidir: `/api/v1.2/urunler` bir yol değildir. Yol bir
+/// boşluktan, parantezden, tırnaktan ya da `=` ve `,`'den sonra başlar; o karakter (`${1}`)
+/// yerinde kalır.
+///
+/// E-posta adresinin alan adı harfle başlayan bir parçayla biter (`.test`, `.com.tr`):
+/// `laravel/framework@11.9.2` bir paket sürümüdür.
 static KURALLAR: LazyLock<Vec<Kural>> = LazyLock::new(|| {
     vec![
-        yeni_kural(r#"https?://[^\s)"'<>]+"#, "<URL>"),
+        yeni_kural(r#"https?://[^\s)"'<>`]+"#, "<URL>"),
         // `.*?`: tembel; ilk `.php)`'de durur, iç içe şablonların ekleri ayrı ayrı maskelenir
         yeni_kural(r"\(View: .*?\.php\)", "(View: <YOL>)"),
         yeni_kural(
             r#"(^|[\s(\['"=,])[A-Za-z]:[\\/][^\s()'"<>|?*,;:]*"#,
             "${1}<YOL>",
         ),
+        Kural {
+            sonrasi_olmamali: Some(yol_suruyor),
+            ..yeni_kural(
+                r#"(^|[\s(\['"=,])/(?:[^\s/()'"<>|?*,;:]+/)+[^\s/()'"<>|?*,;:]*\.[A-Za-z0-9]+"#,
+                "${1}<YOL>",
+            )
+        },
+        yeni_kural(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.\p{L}[\w-]*", "<EPOSTA>"),
         yeni_kural(
-            r#"(^|[\s(\['"=,])/(?:[^\s/()'"<>|?*,;:]+/)+[^\s/()'"<>|?*,;:]*\.[A-Za-z0-9]+\b"#,
-            "${1}<YOL>",
-        ),
-        yeni_kural(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "<EPOSTA>"),
-        yeni_kural(
-            r"\b[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\b",
+            r"(?-u:\b)[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}(?-u:\b)",
             "<UUID>",
         ),
-        yeni_kural(r"\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\b", "<ZAMAN>"),
-        yeni_kural(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "<IP>"),
-        yeni_kural(r"\b\d+(?:\.\d+)*\b", "<SAYI>"),
+        yeni_kural(
+            r"(?-u:\b)[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?-u:\b)",
+            "<ZAMAN>",
+        ),
+        yeni_kural(r"(?-u:\b)(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?-u:\b)", "<IP>"),
+        yeni_kural(r"(?-u:\b)[0-9]+(?:\.[0-9]+)*(?-u:\b)", "<SAYI>"),
     ]
 });
 
@@ -70,7 +91,14 @@ fn yeni_kural(desen: &str, yer_tutucu: &'static str) -> Kural {
         // Desenler sabit; derlenemiyorsa bu bir programlama hatasıdır ve testler hemen yakalar.
         desen: Regex::new(desen).expect("geçersiz düzenli ifade"),
         yer_tutucu,
+        sonrasi_olmamali: None,
     }
+}
+
+/// Uzantıdan sonra yol sürüyor mu: bir klasör ayracı ya da uzantının parçası olabilecek bir
+/// harf. Uzantının ASCII harfleri ve rakamları desende zaten tüketilmiştir.
+fn yol_suruyor(harf: char) -> bool {
+    matches!(harf, '/' | '\\' | '_') || harf.is_alphanumeric()
 }
 
 /// Mesajdaki değişken kısımları yer tutucularla değiştirir.
@@ -79,7 +107,23 @@ fn yeni_kural(desen: &str, yer_tutucu: &'static str) -> Kural {
 pub fn maskele(mesaj: &str) -> Cow<'_, str> {
     let mut sonuc = Cow::Borrowed(mesaj);
     for kural in KURALLAR.iter() {
-        if let Cow::Owned(degisen) = kural.desen.replace_all(&sonuc, kural.yer_tutucu) {
+        let degisen = match kural.sonrasi_olmamali {
+            None => kural.desen.replace_all(&sonuc, kural.yer_tutucu),
+            Some(olmamali) => {
+                let metin: &str = &sonuc;
+                kural.desen.replace_all(metin, |gruplar: &Captures<'_>| {
+                    let eslesme = gruplar.get(0).expect("0. grup eşleşmenin tamamıdır");
+                    let mut yeni = String::new();
+                    if metin[eslesme.end()..].chars().next().is_some_and(olmamali) {
+                        yeni.push_str(eslesme.as_str());
+                    } else {
+                        gruplar.expand(kural.yer_tutucu, &mut yeni);
+                    }
+                    yeni
+                })
+            }
+        };
+        if let Cow::Owned(degisen) = degisen {
             sonuc = Cow::Owned(degisen);
         }
     }
@@ -112,6 +156,12 @@ mod testler {
             maskele("oauth2 jetonu yenilendi"),
             "oauth2 jetonu yenilendi"
         );
+        // Kelime sınırı ASCII'dir: ASCII olmayan bir harfe yapışık rakam maskelenir
+        assert_eq!(maskele("Sipariş5 hazır"), "Sipariş<SAYI> hazır");
+        assert_eq!(maskele("4üncü deneme"), "<SAYI>üncü deneme");
+        assert_eq!(maskele("Ödeme3 ve 3d"), "Ödeme3 ve 3d");
+        // Yalnızca ASCII rakamlar sayıdır
+        assert_eq!(maskele("Sayı ٣٤ geldi"), "Sayı ٣٤ geldi");
     }
 
     #[test]
@@ -146,6 +196,23 @@ mod testler {
             "Webhook '<URL>' yanıt vermedi"
         );
         assert_eq!(maskele("<https://ornek.test/a>"), "<<URL>>");
+        // Guzzle URL'yi ters tırnağa alır
+        assert_eq!(
+            maskele(
+                "Client error: `POST https://api.odeme.test/v1/tahsilat` resulted in a `404 Not Found` response"
+            ),
+            "Client error: `POST <URL>` resulted in a `<SAYI> Not Found` response"
+        );
+        // Alan adı harfle başlayan bir parçayla biter: paket sürümü e-posta değildir
+        assert_eq!(
+            maskele("laravel/framework@11.9.2 yüklendi"),
+            "laravel/framework@<SAYI> yüklendi"
+        );
+        assert_eq!(maskele("php@8.3"), "php@<SAYI>");
+        assert_eq!(
+            maskele("ayşe@örnek.com.tr ve ali.veli+test@posta2.ornek.test"),
+            "<EPOSTA> ve <EPOSTA>"
+        );
         assert_eq!(
             maskele("Sipariş 3f2b8c1e-9d4a-4e7b-8a6f-1c2d3e4f5a6b oluşturuldu"),
             "Sipariş <UUID> oluşturuldu"
@@ -231,6 +298,23 @@ mod testler {
             "include(ust.php): Failed"
         );
         assert_eq!(maskele("Adım 1/2 tamam"), "Adım <SAYI>/<SAYI> tamam");
+        // Uzantıdan sonra yol sürüyorsa yol değildir
+        assert_eq!(
+            maskele("GET /api/v1.2/urunler/15 yavaş"),
+            "GET /api/v1.<SAYI>/urunler/<SAYI> yavaş"
+        );
+        assert_eq!(maskele("Klasör /srv/a.b/c boş"), "Klasör /srv/a.b/c boş");
+        assert_eq!(maskele("/srv/a.php_eski"), "/srv/a.php_eski");
+        assert_eq!(maskele("/srv/a.phpçok"), "/srv/a.phpçok");
+        // Art arda yollar; cümle sonundaki nokta ve tire yola katılmaz
+        assert_eq!(
+            maskele("/var/www/a.php /var/www/b.php,/srv/c.log"),
+            "<YOL> <YOL>,<YOL>"
+        );
+        assert_eq!(
+            maskele("Dosya /var/www/magaza/app/X.php. Sonra /srv/a.log-eski"),
+            "Dosya <YOL>. Sonra <YOL>-eski"
+        );
         // Bir kelimenin sonundaki harf sürücü sanılmaz; URL'ler kendi kuralıyla maskelenir
         assert_eq!(maskele(r"regex:\d+ hatalı"), r"regex:\d+ hatalı");
         assert_eq!(

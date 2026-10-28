@@ -34,6 +34,13 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
   dışında, boşluk içeren bir yolun (`C:\Program Files\...`) yalnızca ilk parçası maskelenir.
 - ANSI renk kodları (`␛[31m`) rakam içerdiği için Drain onları değişken sayar; renk kodlu
   kısa mesajlar aynı uzunluktaki başka renk kodlu mesajlarla birleşebilir.
+- Kelime sınırları ASCII'dir: ASCII olmayan bir harfe yapışık rakam (`Sipariş5`, `4üncü`)
+  maskelenir, ASCII bir harfe yapışık olan (`oauth2`) maskelenmez.
+- Mesajın kendisi ` {"` ile başlayan ve ardından kelime gelmeyen bir JSON içeriyorsa
+  (`Yanıt: {"durum":"ok"}`) o JSON bağlam sayılır ve kalıba girmez.
+- Bir Drain yaprağında 1 000 küme olunca ([değişken konumlar](nasil-calisir.md#değişken-konumlar))
+  hiçbir kümeye benzemeyen yeni mesajlar tek bir taşma kümesinde toplanır; kalıbı çoğu konumda
+  `<*>` olur.
 
 ## Parmak izi
 
@@ -102,24 +109,28 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
 - `--zaman-bicimi` yalnızca metin satırlarına uygulanır; JSON satırlarının zamanı ISO 8601
   olmalıdır. Saat dilimi kısaltmaları (`CET`, `EST`) ve adları (`Europe/Istanbul`) farka
   çevrilmez; o kayıtlar dilimi yazılmamış sayılır.
-- Bir desenle okumak daha yavaştır: her satır düzenli ifadeyle sınanır. 500 MB'lık bir log 7,7
-  yerine 10,3 saniyede okunur.
-- Bellek dosyanın boyuyla değil, farklı mesajların sayısıyla büyür
+- Bir desenle okumak daha yavaştır: her satır düzenli ifadeyle sınanır. 500 MB'lık bir log 3,8
+  yerine 6,4 saniyede okunur.
+- Bellek dosyanın boyuyla değil, farklı mesajların sayısı ve uzunluğuyla büyür
   ([akışlı okuma](nasil-calisir.md#akışlı-okuma-ve-bellek)). En kötü durum, maskelemenin hiçbir
   şeyini değiştiremediği, her mesajı başka olan bir logdur: her mesaj bir kez saklanır. Her
-  satırında başka bir kullanıcı adı olan 40 bin satırlık bir log 24 MB tutar.
+  satırında başka bir kullanıcı adı olan 40 bin satırlık bir log 23 MB tutar; her biri başka
+  bir toplu SQL sorgusu taşıyan 1 500 istisnalık 34 MB'lık bir log 208 MB.
 - 262 144'ten fazla farklı ham mesaj varsa "farklı mesaj" sayısı tahmindir (±%0,4); önünde
   `≈` yazar. Öteki bütün sayılar tamdır.
-- `--ani-artis` ile standart girdiden okurken girdi geçici bir dosyaya kopyalanır: girdi kadar
-  disk yeri gerekir. Dosya oluşturulur oluşturulmaz silinir; diskte kalmaz.
-- Bir satırın 256 MB'tan uzun kısmı okunmaz; bir kaydın devam satırlarının 256 MB'tan sonrası
-  saklanmaz ([akışlı okuma](nasil-calisir.md#akışlı-okuma-ve-bellek)). Gerçek loglarda
-  satırlar bunun çok altındadır.
+- `--ani-artis` ile borudan gelen standart girdi (`zcat ... | veylog -`) okunurken geçici bir
+  dosyaya kopyalanır: girdi kadar disk yeri gerekir. Dosya oluşturulur oluşturulmaz silinir;
+  diskte kalmaz. Dosyaya yönlendirilmiş standart girdi (`veylog - < laravel.log`) kopyalanmaz.
+- Bir satırın 256 MB'tan uzun kısmı okunmaz; bir başlık satırının ve bir JSON kaydının
+  mesajının ilk 1 MB'ı, bir mesajın ilk 64 KB'ı kullanılır; bir kaydın devam satırlarının
+  256 MB'tan ve bir milyon satırdan sonrası saklanmaz
+  ([akışlı okuma](nasil-calisir.md#akışlı-okuma-ve-bellek)). İlk 64 KB'ı aynı olan iki dev
+  mesaj aynı mesaj sayılır. Gerçek loglarda satırlar bunun çok altındadır.
 - Tek seferde bir log okunur. Birden çok dosya standart girdiden birleştirilebilir:
   `cat storage/logs/laravel-*.log | veylog -`.
 - `--son` ve yalnızca saat verilmiş filtre sınırları için log iki kez okunur: önce en yeni
-  kaydı bulmak için taranır. Standart girdi bu yüzden geçici bir dosyaya kopyalanır; girdi
-  kadar disk yeri gerekir.
+  kaydı bulmak için taranır. Borudan gelen standart girdi bu yüzden geçici bir dosyaya
+  kopyalanır; girdi kadar disk yeri gerekir, yer yoksa rapor çıkmaz.
 - Filtreler yalnızca seviyeye ve zamana göredir; mesaja, kanala ya da bağlama göre süzmek için
   JSON çıktısı `jq` ile süzülebilir.
 
@@ -138,9 +149,18 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
 - `copytruncate` ile döndürülen bir dosyaya, kesildikten sonra bir aralıkta eski boyundan
   fazlası yazılırsa döndürme fark edilmez ve okumaya eski konumdan devam edilir (`tail -f`'in
   de sınırı). Dosyayı yeniden adlandıran döndürmede (logrotate'in varsayılanı) bu olmaz.
+- `copytruncate`'te son okumayla kesme arasında yazılan kayıtlar okunmaz: kopyalanan dosyaya
+  giderler, izlenen dosyadan silinirler.
+- Dosyayı yeniden adlandıran döndürmede eski dosya, döndürme fark edilince bırakılır. Dosyayı
+  açık tutan süreçler (`queue:work` gibi uzun yaşayan işçiler) yeniden başlayana kadar eski
+  dosyaya yazar; bırakıldıktan sonra yazdıkları okunmaz. PHP-FPM her istekte dosyayı yeniden
+  açtığı için onun kayıtları yeni dosyaya gider.
+- Ağ üzerindeki bir dosya sisteminde (NFS, SMB) dosyanın boyu gecikmeyle güncellenebilir;
+  okunandan kısa görünürse dosya kesilmiş sayılır ve baştan okunur, kayıtlar iki kez sayılır.
 - Zaman filtreleri izlemede her çizimde yeniden uygulanır (kayan pencere); kalıplar, farklı
   mesaj sayısı ve saat dilimi sayıları ise o ana kadar okunan bütün kayıtlar içindir, yalnızca
-  penceredekiler için değil.
+  penceredekiler için değil. Pencere ve ani artışlar her çizimde kayıt sütunlarını dolaşır:
+  milyonlarca kayıtlık bir izlemede bir çizim onlarca milisaniye sürer.
 - Windows'ta döndürme oluşturulma zamanı ve boyla anlaşılır: yeniden adlandırılan dosyanın
   yerine açılan yeni dosya eskisinin oluşturulma zamanını alır ve eskisinden uzunsa fark
   edilmez. Unix'te düğüm numarasıyla kesin anlaşılır.
@@ -148,9 +168,13 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
   ikinci turda bölünen bir alt grubun ya da bir ani artışın örneği eski dosyadaysa, aynı
   kalıpta aynı seviyedeki ilk kaydın mesajı yazılır.
 - Standart girdide (`tail -f ... | veylog --izle -`) `--ani-artis` örnekleri için girdi geçici
-  bir dosyaya kopyalanır; kopya oluşturulamazsa örnekler depodakilerden seçilir.
-- Terminalde ekran ANSI kodlarıyla temizlenir; bunları tanımayan eski bir Windows
-  konsolunda (Windows Terminal ve PowerShell 7 tanır) çizimler art arda akar.
+  bir dosyaya kopyalanır. Kopya oluşturulamazsa, yazılamazsa ya da 256 MB'ı aşarsa bırakılır;
+  ondan sonraki örnekler depodakilerden seçilir. `/tmp` birçok dağıtımda bellekte olduğu
+  için kopya o kadar bellek de tutabilir.
+- Terminalde ekran ANSI kodlarıyla temizlenir. Windows'un eski konsolunda bu kodlar program
+  tarafından açılır; açılamazsa çizimler art arda akar.
+- Rapor ekrandan uzunsa başı yukarı kayar; durum satırı ve uyarılar en alttadır. Tablo
+  `--ilk` ile kısaltılabilir.
 
 ## Karşılaştırma ve ani artışlar
 

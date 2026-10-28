@@ -46,6 +46,10 @@ fn standart_girdi_adi() -> &'static str {
     dil::sec("<standart girdi>", "<standard input>")
 }
 
+/// JSON çıktısında standart girdinin adı: JSON dilden bağımsızdır, her dilde (0.1.0'daki gibi)
+/// bu yazılır.
+const STANDART_GIRDI_JSON: &str = "<standart girdi>";
+
 /// Okuma tamponunun boyu. Satırlar tampondan kopyalanmadan bulunur; büyük bir tampon daha az
 /// sistem çağrısı demektir.
 pub(crate) const TAMPON: usize = 1 << 16;
@@ -112,10 +116,13 @@ fn main() {
         return;
     }
 
-    let ozet = match ozet_cikar(&secenekler, standart_girdi, &yol_metni, &gosterilen_yol) {
+    let mut ozet = match ozet_cikar(&secenekler, standart_girdi, &yol_metni, &gosterilen_yol) {
         Ok(ozet) => ozet,
         Err(hata) => hata_bildir(hata, &gosterilen_yol),
     };
+    if standart_girdi && secenekler.bicim == Bicim::Json {
+        ozet.dosya = STANDART_GIRDI_JSON.to_owned();
+    }
 
     let mut cikti = BufWriter::new(io::stdout().lock());
     let yazildi = match secenekler.bicim {
@@ -211,11 +218,12 @@ fn hata_bildir(hata: Hata, gosterilen_yol: &str) -> ! {
 /// Girdi en fazla iki kez okunur. Logun sonuna göre çözülen bir filtre (`--son 2sa`,
 /// `--baslangic 15:00`) önce en yeni kaydı bilmeyi gerektirir: log bir kez taranır, sonra
 /// filtreyle okunur. Ani artışların ve bazı kalıpların örnekleri için de girdinin bir kısmı
-/// yeniden okunabilir. Dosya ise aynı dosya yeniden okunur. Standart girdi (ya da
-/// `<(zcat ...)` gibi bir boru) yalnızca bir kez okunabildiği için o zaman ilk okunuşunda
-/// geçici bir dosyaya kopyalanır. Ön tarama için kopya şarttır. Yalnızca ani artışlar için
-/// gerekiyorsa ve geçici dosya oluşturulamazsa girdi kopyalanmadan okunur: yeniden okunamayan
-/// kayıtların yerine aynı alt gruptaki ilk kaydın mesajı örnek olur.
+/// yeniden okunabilir. Dosya ise aynı dosya yeniden okunur; dosyaya yönlendirilmiş standart
+/// girdi (`veylog - < laravel.log`) de. Bir boru (`zcat ... | veylog -`, `<(zcat ...)`)
+/// yalnızca bir kez okunabildiği için o zaman ilk okunuşunda geçici bir dosyaya kopyalanır.
+/// Ön tarama için kopya şarttır. Yalnızca ani artışlar için gerekiyorsa ve kopya
+/// oluşturulamaz ya da yazılamazsa bir uyarı yazılır, girdi kopyasız okunur: yeniden
+/// okunamayan kayıtların yerine aynı alt gruptaki ilk kaydın mesajı örnek olur.
 fn ozet_cikar(
     secenekler: &Secenekler,
     standart_girdi: bool,
@@ -224,7 +232,7 @@ fn ozet_cikar(
 ) -> Result<Ozet, Hata> {
     let on_tarama = secenekler.rapor.filtre.sonu_gerekir();
     let dosya = if standart_girdi {
-        None
+        standart_girdi_dosyasi()
     } else {
         Some(dosyayi_ac(&secenekler.dosya).map_err(Hata::Okuma)?)
     };
@@ -257,7 +265,9 @@ fn ozet_cikar(
             let gecici = if on_tarama {
                 Some(GeciciDosya::olustur().map_err(Hata::Kopya)?)
             } else if secenekler.rapor.ani_artis.is_some() {
-                GeciciDosya::olustur().inspect_err(kopya_uyarisi).ok()
+                GeciciDosya::olustur()
+                    .inspect_err(|hata| eprintln!("{}", kopya_uyarisi(hata)))
+                    .ok()
             } else {
                 None
             };
@@ -281,11 +291,17 @@ fn ozet_cikar(
                             en_yeni,
                             BufReader::with_capacity(TAMPON, kopyasi),
                         )?;
+                        kopya = Some(gecici);
                     } else {
                         depo = depoyu_doldur(secenekler, None, &mut kopyalayan)?;
-                        kopyayi_bitir(kopyalayan)?;
+                        // Kopya yalnızca ani artışların örnekleri için: yazılamadıysa (disk
+                        // dolu) rapor yine çıkar, örnekler depodakilerden seçilir
+                        match kopyayi_bitir(kopyalayan) {
+                            Ok(()) => kopya = Some(gecici),
+                            Err(Hata::Kopya(hata)) => eprintln!("{}", kopya_uyarisi(&hata)),
+                            Err(hata) => return Err(hata),
+                        }
                     }
-                    kopya = Some(gecici);
                 }
                 None => depo = depoyu_doldur(secenekler, None, ic)?,
             }
@@ -293,12 +309,21 @@ fn ozet_cikar(
         }
     };
     if depo.gecersiz_utf8() {
-        gecersiz_utf8_uyarisi(gosterilen_yol);
+        eprintln!("{}", gecersiz_utf8_uyarisi(gosterilen_yol));
     }
     // Satır var ama hiçbiri bir kayıt başlatmıyor: büyük olasılıkla biçim uymuyor
     let sayilar = depo.sayilar();
     if sayilar.kayit == 0 && sayilar.satir > 0 {
-        kayit_yok_uyarisi(gosterilen_yol, &secenekler.rapor.satir_bicimi);
+        eprintln!(
+            "{}",
+            kayit_yok_uyarisi(gosterilen_yol, &secenekler.rapor.satir_bicimi)
+        );
+    }
+    if sayilar.taninmayan_seviye > 0 {
+        eprintln!(
+            "{}",
+            taninmayan_seviye_uyarisi(gosterilen_yol, sayilar.taninmayan_seviye)
+        );
     }
 
     let dizin = depo.dizin().clone();
@@ -375,50 +400,88 @@ fn kopyayi_bitir<R: io::BufRead, W: Write>(kopyalayan: Kopyalayan<R, W>) -> Resu
 }
 
 /// Satır var ama hiçbiri bir kayıt başlatmıyor: büyük olasılıkla biçim uymuyor.
-pub(crate) fn kayit_yok_uyarisi(gosterilen_yol: &str, bicim: &satir_bicimi::SatirBicimi) {
+pub(crate) fn kayit_yok_uyarisi(gosterilen_yol: &str, bicim: &satir_bicimi::SatirBicimi) -> String {
     match (dil::simdiki(), bicim.desenli(), bicim.zaman_bicimli()) {
-        (Dil::Tr, true, _) => eprintln!(
+        (Dil::Tr, true, _) => format!(
             "Uyarı: {gosterilen_yol} içinde --desen'e uyan satır yok; hiçbir kayıt okunmadı."
         ),
-        (Dil::Tr, false, true) => eprintln!(
+        (Dil::Tr, false, true) => format!(
             "Uyarı: {gosterilen_yol} içinde zamanı --zaman-bicimi'ne uyan kayıt yok; hiçbir kayıt okunmadı."
         ),
-        (Dil::Tr, false, false) => eprintln!(
+        (Dil::Tr, false, false) => format!(
             "Uyarı: {gosterilen_yol} içinde Laravel'in biçiminde kayıt yok; log başka bir biçimdeyse --desen ile tanıtılabilir."
         ),
-        (Dil::En, true, _) => eprintln!(
-            "Warning: no line in {gosterilen_yol} matches --pattern; no records were read."
-        ),
-        (Dil::En, false, true) => eprintln!(
+        (Dil::En, true, _) => {
+            format!("Warning: no line in {gosterilen_yol} matches --pattern; no records were read.")
+        }
+        (Dil::En, false, true) => format!(
             "Warning: no record in {gosterilen_yol} has a time matching --time-format; no records were read."
         ),
-        (Dil::En, false, false) => eprintln!(
+        (Dil::En, false, false) => format!(
             "Warning: {gosterilen_yol} has no records in Laravel's format; if the log has another format, describe it with --pattern."
         ),
     }
 }
 
-/// Girdide geçersiz UTF-8 baytları vardı.
-pub(crate) fn gecersiz_utf8_uyarisi(gosterilen_yol: &str) {
+/// `--desen`'e uyan bazı satırların seviyesi tanınmadı: bu satırlar kayıt sayılmadı.
+pub(crate) fn taninmayan_seviye_uyarisi(gosterilen_yol: &str, sayi: usize) -> String {
     match dil::simdiki() {
-        Dil::Tr => eprintln!(
+        Dil::Tr => format!(
+            "Uyarı: {gosterilen_yol} içinde --desen'e uyan {sayi} satırın seviyesi tanınmadı; bu satırlar kayıt sayılmadı. Seviye grubu DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY ya da bunların bilinen kısaltmalarından birini (WARN, ERR, FATAL...) yakalamalı."
+        ),
+        Dil::En => format!(
+            "Warning: the level of {} in {gosterilen_yol} matching --pattern was not recognized; they were not counted as records. The level group should capture DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY or a known abbreviation of them (WARN, ERR, FATAL...).",
+            dil::sayili(sayi, "satır", "line", "lines")
+        ),
+    }
+}
+
+/// Girdide geçersiz UTF-8 baytları vardı.
+pub(crate) fn gecersiz_utf8_uyarisi(gosterilen_yol: &str) -> String {
+    match dil::simdiki() {
+        Dil::Tr => format!(
             "Uyarı: {gosterilen_yol} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi."
         ),
-        Dil::En => eprintln!(
+        Dil::En => format!(
             "Warning: {gosterilen_yol} contains invalid UTF-8 bytes; they were replaced by �."
         ),
     }
 }
 
-/// Standart girdinin geçici kopyası tutulamıyor: girdi yeniden okunamayacak.
-pub(crate) fn kopya_uyarisi(hata: &io::Error) {
+/// Standart girdinin geçici kopyası oluşturulamadı ya da yazılamadı: girdi yeniden
+/// okunamayacak.
+pub(crate) fn kopya_uyarisi(hata: &io::Error) -> String {
     match dil::simdiki() {
-        Dil::Tr => eprintln!(
-            "Uyarı: girdinin geçici kopyası oluşturulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
+        Dil::Tr => format!(
+            "Uyarı: girdinin geçici kopyası tutulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
         ),
-        Dil::En => eprintln!(
+        Dil::En => format!(
             "Warning: cannot keep a temporary copy of the input ({hata}); the input cannot be read again, some samples will be the message of the first record with the same pattern and level."
         ),
+    }
+}
+
+/// Standart girdi düz bir dosyaysa (`veylog - < laravel.log`) ve başındaysa o dosya: akış gibi
+/// geçici bir kopyaya yazılmadan, dosya gibi yeniden okunabilir. Değilse (boru, terminal) ya
+/// da başında değilse (konumlar okunmaya başlanan yerden sayılır) None.
+fn standart_girdi_dosyasi() -> Option<File> {
+    #[cfg(unix)]
+    let sahip = {
+        use std::os::fd::AsFd;
+        io::stdin().as_fd().try_clone_to_owned().ok()?
+    };
+    #[cfg(windows)]
+    let sahip = {
+        use std::os::windows::io::AsHandle;
+        io::stdin().as_handle().try_clone_to_owned().ok()?
+    };
+    #[cfg(not(any(unix, windows)))]
+    return None;
+    #[cfg(any(unix, windows))]
+    {
+        let mut dosya = File::from(sahip);
+        let duz = dosya.metadata().ok()?.is_file() && dosya.stream_position().ok()? == 0;
+        duz.then_some(dosya)
     }
 }
 

@@ -35,7 +35,7 @@ use std::time::Duration;
 use crate::ani_artis::{EN_DUSUK_SEVIYE, EN_UZUN_DILIM};
 use crate::dil::{self, Dil, SECENEK_ADLARI};
 use crate::filtre::{milisaniye_ayristir, sure_ayristir};
-use crate::izle::{EN_KISA_ARALIK, VARSAYILAN_ARALIK, aralik_yaz};
+use crate::izle::{EN_KISA_ARALIK, EN_UZUN_ARALIK, VARSAYILAN_ARALIK, aralik_yaz};
 use crate::kayit::Seviye;
 use crate::parmak_izi::KonumTuru;
 use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
@@ -355,95 +355,37 @@ where
         };
 
         let (ad, bitisik) = ad_ve_bitisik_deger(&secenek);
-        match sadelestir(ad).as_str() {
-            "-e" | "--esik" | "--threshold" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.drain.benzerlik_esigi = esik_ayristir(ad, &deger)?;
-            }
-            "--konum" | "--location" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.konum_turu = konum_ayristir(ad, &deger)?;
-            }
-            "-n" | "--ilk" | "--top" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.ilk = Some(ilk_ayristir(ad, &deger)?);
-            }
-            "--hepsi" | "--all" => {
-                deger_almaz(ad, bitisik)?;
-                rapor.ilk = None;
-            }
-            "-s" | "--siralama" | "--sort" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.siralama = siralama_ayristir(ad, &deger)?;
-            }
-            "-b" | "--bicim" | "--format" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                bicim = bicim_ayristir(ad, &deger)?;
-                bicim_yazimi = Some(format!("{ad} {deger}"));
-            }
-            "-k" | "--karsilastir" | "--compare" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.karsilastir = Some(karsilastir_ayristir(ad, &deger)?);
-            }
-            "-a" | "--ani-artis" | "--spikes" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.ani_artis = Some(ani_artis_ayristir(ad, &deger)?);
-            }
-            "--seviye" | "--level" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.filtre.seviye = Some(seviye_ayristir(ad, &deger)?);
-            }
-            "--baslangic" | "--since" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.filtre.baslangic = Some(sinir_ayristir(ad, &deger)?);
-            }
-            "--bitis" | "--until" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.filtre.bitis = Some(sinir_ayristir(ad, &deger)?);
-            }
-            "--son" | "--last" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.filtre.son = Some(son_ayristir(ad, &deger)?);
-            }
-            "--saat-dilimi" | "--timezone" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                rapor.saat_dilimi = Some(saat_dilimi_ayristir(ad, &deger)?);
-            }
-            "--desen" | "--pattern" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                desen = Some((ad.to_owned(), deger));
-            }
-            "--zaman-bicimi" | "--time-format" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                zaman_bicimi = Some(
-                    ZamanBicimi::derle(&deger)
-                        .map_err(|hata| gecersiz(ad, &deger, hata.to_string()))?,
-                );
-            }
-            "--izle" | "--watch" => {
-                deger_almaz(ad, bitisik)?;
-                izle = true;
-            }
-            "--aralik" | "--interval" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                aralik = Some(aralik_ayristir(ad, &deger)?);
-            }
-            // Dil, ayrıştırmadan önce seçilir (`dil_bul`); burada yalnızca denetlenir
-            "--dil" | "--lang" => {
-                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
-                dil_ayristir(ad, &deger)?;
-            }
-            "-h" | "--yardim" | "--help" => {
-                deger_almaz(ad, bitisik)?;
-                return Ok(Komut::Yardim);
-            }
-            "-V" | "--surum" | "--version" => {
-                deger_almaz(ad, bitisik)?;
-                return Ok(Komut::Surum);
-            }
-            _ => {
-                let oneri = oneri_bul(ad);
-                return Err(SecenekHatasi::BilinmeyenSecenek { secenek, oneri });
+        let sonuc = secenek_isle(
+            &secenek,
+            ad,
+            bitisik,
+            &mut argumanlar,
+            &mut Durum {
+                rapor: &mut rapor,
+                bicim: &mut bicim,
+                bicim_yazimi: &mut bicim_yazimi,
+                desen: &mut desen,
+                zaman_bicimi: &mut zaman_bicimi,
+                izle: &mut izle,
+                aralik: &mut aralik,
+            },
+        );
+        match sonuc {
+            Ok(Some(komut)) => return Ok(komut),
+            Ok(None) => {}
+            // Tek tireyle yazılmış bir uzun seçenek (`-hepsi`) kısa seçenek ve değeri sayılıp
+            // yanlış bir hata verirdi ("-h değer almaz"): uzun seçeneği önerilir
+            Err(hata) => {
+                let uzun = (!secenek.starts_with("--") && secenek.chars().count() > 2)
+                    .then(|| oneri_bul(&format!("-{secenek}")))
+                    .flatten();
+                return Err(match uzun {
+                    Some(oneri) => SecenekHatasi::BilinmeyenSecenek {
+                        secenek,
+                        oneri: Some(oneri),
+                    },
+                    None => hata,
+                });
             }
         }
     }
@@ -501,6 +443,140 @@ where
     })))
 }
 
+/// Ayrıştırılırken biriken seçenekler: `ayristir`ın yerel değişkenleri.
+struct Durum<'a> {
+    rapor: &'a mut RaporAyarlari,
+    bicim: &'a mut Bicim,
+    /// `--bicim`in yazıldığı hali: `--izle` ile çelişirse hata mesajında
+    bicim_yazimi: &'a mut Option<String>,
+    desen: &'a mut Option<(String, String)>,
+    zaman_bicimi: &'a mut Option<ZamanBicimi>,
+    izle: &'a mut bool,
+    aralik: &'a mut Option<Duration>,
+}
+
+/// Bir seçeneği işler: `ad` seçeneğin adı, `bitisik` bitişik yazılmış değeri, `secenek`
+/// yazıldığı hali. Yardım ya da sürüm istendiyse o komut.
+fn secenek_isle(
+    secenek: &str,
+    ad: &str,
+    bitisik: Option<&str>,
+    argumanlar: &mut impl Iterator<Item = OsString>,
+    durum: &mut Durum<'_>,
+) -> Result<Option<Komut>, SecenekHatasi> {
+    match sadelestir(ad).as_str() {
+        "-e" | "--esik" | "--threshold" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.drain.benzerlik_esigi = esik_ayristir(ad, &deger)?;
+        }
+        "--konum" | "--location" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.konum_turu = konum_ayristir(ad, &deger)?;
+        }
+        "-n" | "--ilk" | "--top" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.ilk = Some(ilk_ayristir(ad, &deger)?);
+        }
+        "--hepsi" | "--all" => {
+            deger_almaz(ad, bitisik)?;
+            durum.rapor.ilk = None;
+        }
+        "-s" | "--siralama" | "--sort" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.siralama = siralama_ayristir(ad, &deger)?;
+        }
+        "-b" | "--bicim" | "--format" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            *durum.bicim = bicim_ayristir(ad, &deger)?;
+            *durum.bicim_yazimi = Some(format!("{ad} {deger}"));
+        }
+        "-k" | "--karsilastir" | "--compare" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.karsilastir = Some(karsilastir_ayristir(ad, &deger)?);
+        }
+        "-a" | "--ani-artis" | "--spikes" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.ani_artis = Some(ani_artis_ayristir(ad, &deger)?);
+        }
+        "--seviye" | "--level" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.filtre.seviye = Some(seviye_ayristir(ad, &deger)?);
+        }
+        "--baslangic" | "--since" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.filtre.baslangic = Some(sinir_ayristir(ad, &deger)?);
+        }
+        "--bitis" | "--until" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.filtre.bitis = Some(sinir_ayristir(ad, &deger)?);
+        }
+        "--son" | "--last" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.filtre.son = Some(son_ayristir(ad, &deger)?);
+        }
+        "--saat-dilimi" | "--timezone" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            durum.rapor.saat_dilimi = Some(saat_dilimi_ayristir(ad, &deger)?);
+        }
+        "--desen" | "--pattern" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            *durum.desen = Some((ad.to_owned(), deger));
+        }
+        "--zaman-bicimi" | "--time-format" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            *durum.zaman_bicimi = Some(
+                ZamanBicimi::derle(&deger)
+                    .map_err(|hata| gecersiz(ad, &deger, hata.to_string()))?,
+            );
+        }
+        "--izle" | "--watch" => {
+            deger_almaz(ad, bitisik)?;
+            *durum.izle = true;
+        }
+        "--aralik" | "--interval" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            *durum.aralik = Some(aralik_ayristir(ad, &deger)?);
+        }
+        // Dil, ayrıştırmadan önce seçilir (`dil_bul`); burada yalnızca denetlenir
+        "--dil" | "--lang" => {
+            let deger = deger_al(ad, bitisik, argumanlar)?;
+            dil_ayristir(ad, &deger)?;
+        }
+        "-h" | "--yardim" | "--help" => {
+            deger_almaz(ad, bitisik)?;
+            return Ok(Some(Komut::Yardim));
+        }
+        "-V" | "--surum" | "--version" => {
+            deger_almaz(ad, bitisik)?;
+            return Ok(Some(Komut::Surum));
+        }
+        _ => {
+            let oneri = oneri_bul(ad).or_else(|| kisa_oneri(ad));
+            return Err(SecenekHatasi::BilinmeyenSecenek {
+                secenek: secenek.to_owned(),
+                oneri,
+            });
+        }
+    }
+    Ok(None)
+}
+
+/// Kısa seçeneklerin adları.
+const KISA_SECENEKLER: [&str; 8] = ["-e", "-n", "-s", "-b", "-k", "-a", "-h", "-V"];
+
+/// Bilinmeyen bir kısa seçeneğin büyük ya da küçük harfle yazılmış hali bir kısa seçenekse o:
+/// `-v` → `-V`, `-N` → `-n`.
+fn kisa_oneri(ad: &str) -> Option<&'static str> {
+    let harf = ad.strip_prefix('-')?;
+    if harf.chars().count() != 1 {
+        return None;
+    }
+    KISA_SECENEKLER.into_iter().find(|kisa| {
+        let kisa = &kisa[1..];
+        kisa != harf && kisa.eq_ignore_ascii_case(harf)
+    })
+}
+
 /// `--yardim` ile gösterilen metin, seçili dilde. Varsayılan değerler ayarların kendisinden
 /// okunur; böylece yardım metni programla çelişemez.
 pub fn yardim_metni() -> String {
@@ -534,6 +610,7 @@ pub fn yardim_metni() -> String {
     let surum = env!("CARGO_PKG_VERSION");
     let kullanim = kullanim();
     let en_kisa_aralik = aralik_yaz(EN_KISA_ARALIK);
+    let en_uzun_aralik = aralik_yaz(EN_UZUN_ARALIK);
     let aralik = aralik_yaz(Izleme::default().aralik);
     let esik = ondalik(varsayilan.drain.benzerlik_esigi);
     let konum = varsayilan.konum_turu.gosterilen_ad();
@@ -595,7 +672,8 @@ Live watching (text format only; cannot be used with --compare):
                           start. On standard input the last report is written when the
                           input ends (tail -f laravel.log | veylog --watch -).
       --interval <dur>    Check the input this often; redraw at most this often. Duration
-                          as for --last, ms also works (500ms); at least {en_kisa_aralik}.
+                          as for --last, ms also works (500ms); between {en_kisa_aralik} and
+                          {en_uzun_aralik}.
                           [default: {aralik}]
 
       --lang <language>   Language of the interface: tr, en. The {DIL_DEGISKENI} environment
@@ -612,7 +690,7 @@ and the comparison; spikes are ordered by score. Times of --compare, --since and
 in the report's time zone. JSON output is the same in every language.
 
 Exit codes: 0 success, 1 the file could not be read or the output could not be written,
-2 usage error (including a comparison point outside the log).
+2 usage error (including a comparison point outside the log and an empty filter range).
 
 Examples:
   veylog --lang en storage/logs/laravel.log
@@ -689,7 +767,8 @@ Canlı izleme (yalnızca metin biçiminde; --karsilastir ile kullanılamaz):
                           Standart girdide girdi bitince son rapor yazılır ve çıkılır
                           (tail -f laravel.log | veylog --izle -).
       --aralik <süre>     Girdiye bu sıklıkla bak; raporu en sık bu kadarda bir çiz. Süre
-                          --son gibi, ms de olur (500ms); en az {en_kisa_aralik}.
+                          --son gibi, ms de olur (500ms); {en_kisa_aralik} ile {en_uzun_aralik}
+                          arası.
                           [varsayılan: {aralik}]
 
       --dil <dil>         Arayüzün dili: tr, en. {DIL_DEGISKENI} ortam değişkeniyle de
@@ -708,7 +787,7 @@ ani artışlar puanı en yüksek olan başta olacak şekilde dizilir. --karsilas
 ve --bitis zamanları raporun saat dilimindedir. JSON çıktısı her dilde aynıdır.
 
 Çıkış kodları: 0 başarılı, 1 dosya okunamadı ya da çıktı yazılamadı, 2 kullanım hatası
-(karşılaştırma noktasının logun dışında kalması da).
+(karşılaştırma noktasının logun dışında kalması ve boş bir filtre aralığı da).
 
 Örnekler:
   veylog storage/logs/laravel.log
@@ -730,7 +809,8 @@ ve --bitis zamanları raporun saat dilimindedir. JSON çıktısı her dilde ayn�
 }
 
 /// Seçeneği adına ve bitişik yazılmış değerine ayırır:
-/// `--esik=0,8` → (`--esik`, `0,8`), `-n20` → (`-n`, `20`), `--hepsi` → (`--hepsi`, yok)
+/// `--esik=0,8` → (`--esik`, `0,8`), `-n20` ve `-n=20` → (`-n`, `20`), `--hepsi` →
+/// (`--hepsi`, yok)
 fn ad_ve_bitisik_deger(secenek: &str) -> (&str, Option<&str>) {
     if secenek.starts_with("--") {
         match secenek.split_once('=') {
@@ -738,10 +818,17 @@ fn ad_ve_bitisik_deger(secenek: &str) -> (&str, Option<&str>) {
             None => (secenek, None),
         }
     } else {
-        // Kısa seçenek: "-" ve bir harf. Üçüncü karakterden sonrası değerdir. Harf sınırı
-        // `char_indices` ile bulunur; Türkçe harfler UTF-8'de birden fazla bayttır.
+        // Kısa seçenek: "-" ve bir harf. Üçüncü karakterden sonrası değerdir; uzun
+        // seçeneklerdeki gibi "=" ile de yazılabilir (`-n=20`). Harf sınırı `char_indices` ile
+        // bulunur; Türkçe harfler UTF-8'de birden fazla bayttır.
         match secenek.char_indices().nth(2) {
-            Some((konum, _)) => (&secenek[..konum], Some(&secenek[konum..])),
+            Some((konum, _)) => {
+                let deger = &secenek[konum..];
+                (
+                    &secenek[..konum],
+                    Some(deger.strip_prefix('=').unwrap_or(deger)),
+                )
+            }
             None => (secenek, None),
         }
     }
@@ -815,7 +902,7 @@ fn ilk_ayristir(ad: &str, deger: &str) -> Result<usize, SecenekHatasi> {
 
 /// `--siralama`: sıralamalardan birinin adı.
 fn siralama_ayristir(ad: &str, deger: &str) -> Result<Siralama, SecenekHatasi> {
-    Siralama::ayristir(&sadelestir(deger)).ok_or_else(|| {
+    Siralama::ayristir(&deger_sadelestir(deger)).ok_or_else(|| {
         let adlar: Vec<&str> = Siralama::HEPSI
             .iter()
             .map(|siralama| siralama.gosterilen_ad())
@@ -826,7 +913,7 @@ fn siralama_ayristir(ad: &str, deger: &str) -> Result<Siralama, SecenekHatasi> {
 
 /// `--konum`: konum türlerinden birinin adı.
 fn konum_ayristir(ad: &str, deger: &str) -> Result<KonumTuru, SecenekHatasi> {
-    KonumTuru::ayristir(&sadelestir(deger)).ok_or_else(|| {
+    KonumTuru::ayristir(&deger_sadelestir(deger)).ok_or_else(|| {
         let adlar: Vec<&str> = KonumTuru::HEPSI
             .iter()
             .map(|tur| tur.gosterilen_ad())
@@ -837,7 +924,7 @@ fn konum_ayristir(ad: &str, deger: &str) -> Result<KonumTuru, SecenekHatasi> {
 
 /// `--bicim`: biçimlerden birinin adı.
 fn bicim_ayristir(ad: &str, deger: &str) -> Result<Bicim, SecenekHatasi> {
-    Bicim::ayristir(&sadelestir(deger)).ok_or_else(|| {
+    Bicim::ayristir(&deger_sadelestir(deger)).ok_or_else(|| {
         let adlar: Vec<&str> = Bicim::HEPSI
             .iter()
             .map(|bicim| bicim.gosterilen_ad())
@@ -931,21 +1018,21 @@ fn son_ayristir(ad: &str, deger: &str) -> Result<u64, SecenekHatasi> {
     })
 }
 
-/// `--aralik`: bir süre, milisaniyeye kadar; en az `EN_KISA_ARALIK`.
+/// `--aralik`: bir süre, milisaniyeye kadar; `EN_KISA_ARALIK` ile `EN_UZUN_ARALIK` arası.
 fn aralik_ayristir(ad: &str, deger: &str) -> Result<Duration, SecenekHatasi> {
     match milisaniye_ayristir(&sadelestir(deger)).map(Duration::from_millis) {
-        Some(aralik) if aralik >= EN_KISA_ARALIK => Ok(aralik),
+        Some(aralik) if (EN_KISA_ARALIK..=EN_UZUN_ARALIK).contains(&aralik) => Ok(aralik),
         _ => {
-            let en_kisa = aralik_yaz(EN_KISA_ARALIK);
+            let (en_kisa, en_uzun) = (aralik_yaz(EN_KISA_ARALIK), aralik_yaz(EN_UZUN_ARALIK));
             Err(gecersiz(
                 ad,
                 deger,
                 match dil::simdiki() {
                     Dil::Tr => format!(
-                        "en az {en_kisa} olan bir süre olmalı (ör. 500ms, 2sn, 1dk; birimler: ms, sn, dk, sa, g)"
+                        "{en_kisa} ile {en_uzun} arasında bir süre olmalı (ör. 500ms, 2sn, 1dk; birimler: ms, sn, dk, sa, g)"
                     ),
                     Dil::En => format!(
-                        "must be a duration of at least {en_kisa} (e.g. 500ms, 2s, 1m; units: ms, s, m, h, d)"
+                        "must be a duration between {en_kisa} and {en_uzun} (e.g. 500ms, 2s, 1m; units: ms, s, m, h, d)"
                     ),
                 },
             ))
@@ -978,6 +1065,13 @@ fn gecersiz(secenek: &str, deger: &str, beklenen: impl Into<String>) -> SecenekH
         deger: deger.to_owned(),
         beklenen: beklenen.into(),
     }
+}
+
+/// Bir değerin adı küçük harfle ve Türkçe harfleri ASCII karşılıklarıyla: `JSON` → `json`,
+/// `ÖNEM` → `onem`, `SATIR` → `satir`. Değerler (`--seviye`, `--dil` gibi) büyük harfle de
+/// yazılabilir. `İ` ayrıca çevrilir: küçük hali `i` ve bir birleşik noktadır.
+fn deger_sadelestir(metin: &str) -> String {
+    sadelestir(&metin.replace('İ', "i").to_lowercase())
 }
 
 /// Türkçe harfleri ASCII karşılıklarına çevirir: `--sıralama` → `--siralama`, `önem` → `onem`.
@@ -1310,15 +1404,22 @@ mod testler {
             hata(&["--aralik", "1sn", "a.log"]),
             SecenekHatasi::Gerektirir("--aralik", "--izle")
         );
-        for deger in ["50ms", "0sn", "iki", "1.5sn"] {
+        // Sayının taşması da aralığın dışıdır
+        for deger in ["50ms", "0sn", "iki", "1.5sn", "2sa", "999999999999g"] {
             assert_eq!(
                 hata(&["--izle", "--aralik", deger, "a.log"]).to_string(),
                 format!(
-                    "--aralik için geçersiz değer \"{deger}\": en az 100 ms olan bir süre olmalı (ör. 500ms, 2sn, 1dk; birimler: ms, sn, dk, sa, g)"
+                    "--aralik için geçersiz değer \"{deger}\": 100 ms ile 1 sa arasında bir süre olmalı (ör. 500ms, 2sn, 1dk; birimler: ms, sn, dk, sa, g)"
                 ),
                 "{deger}"
             );
         }
+        assert_eq!(
+            ozet(&["--izle", "--aralik", "1sa", "a.log"]).izleme,
+            Some(Izleme {
+                aralik: Duration::from_secs(3_600)
+            })
+        );
         assert_eq!(
             hata(&["--izle", "--bicim", "json", "a.log"]).to_string(),
             "--bicim json ile --izle birlikte kullanılamaz: izleme yalnızca metin biçimindedir"
@@ -1360,6 +1461,9 @@ mod testler {
             &["--esik=0,8", "--ilk=20", "--siralama=adet", "a.log"],
             &["-e", "0,8", "-n", "20", "-s", "adet", "a.log"],
             &["-e0.8", "-n20", "-sadet", "a.log"],
+            &["-e=0.8", "-n=20", "-s=adet", "a.log"],
+            // Değerler büyük harfle de
+            &["-e", "0,8", "-n", "20", "-s", "ADET", "a.log"],
             &[
                 "a.log",
                 "--eşik",
@@ -1383,6 +1487,39 @@ mod testler {
             ozet(&["--siralama", "önem", "a.log"]).rapor.siralama,
             Siralama::Onem
         );
+        for (secenekler, beklenen) in [
+            (
+                &["--sıralama", "ÖNEM"][..],
+                (Siralama::Onem, Bicim::Metin, KonumTuru::Metot),
+            ),
+            (
+                &["-s", "Adet", "--bicim", "JSON"],
+                (Siralama::Adet, Bicim::Json, KonumTuru::Metot),
+            ),
+            (
+                &["--konum", "SATIR", "-b", "Markdown"],
+                (Siralama::Onem, Bicim::Markdown, KonumTuru::Satir),
+            ),
+            (
+                &["--bicim", "METİN", "--konum", "SATIR"],
+                (Siralama::Onem, Bicim::Metin, KonumTuru::Satir),
+            ),
+            (
+                &["--format", "TEXT", "--sort", "NEWEST"],
+                (Siralama::Yeni, Bicim::Metin, KonumTuru::Metot),
+            ),
+        ] {
+            let secenekler = ozet(&[secenekler, &["a.log"]].concat());
+            assert_eq!(
+                (
+                    secenekler.rapor.siralama,
+                    secenekler.bicim,
+                    secenekler.rapor.konum_turu
+                ),
+                beklenen,
+                "{secenekler:?}"
+            );
+        }
     }
 
     #[test]
@@ -1511,9 +1648,20 @@ mod testler {
             ("--treshold", Some("--threshold")),
             ("--watc", Some("--watch")),
             ("--timezon", Some("--timezone")),
+            // Tek tireyle yazılan uzun seçenekler kısa seçenek ve değeri sayılmaz
+            ("-hepsi", Some("--hepsi")),
+            ("-izle", Some("--izle")),
+            ("-son", Some("--son")),
+            ("-bicim", Some("--bicim")),
+            ("-desen", Some("--desen")),
+            // Kısa seçeneğin öteki harfi
+            ("-v", Some("-V")),
+            ("-N", Some("-n")),
+            ("-H", Some("-h")),
             // Hiçbir seçeneğe yakın olmayanlar
             ("--quiet", None),
             ("--xyz", None),
+            ("-x", None),
         ] {
             assert_eq!(
                 hata(&[yazilan, "a.log"]),
@@ -1842,7 +1990,7 @@ mod testler {
             ),
             (
                 &["--watch", "--interval", "50ms", "a.log"],
-                "invalid value \"50ms\" for --interval: must be a duration of at least 100 ms (e.g. 500ms, 2s, 1m; units: ms, s, m, h, d)",
+                "invalid value \"50ms\" for --interval: must be a duration between 100 ms and 1 h (e.g. 500ms, 2s, 1m; units: ms, s, m, h, d)",
             ),
             (
                 &["--spikes", "0", "a.log"],
@@ -1918,7 +2066,7 @@ mod testler {
             "[default: severity]",
             "[default: text]",
             "[default: 2 s]",
-            "at least 100 ms",
+            "between 100 ms and\n                          1 h.",
             "WARNING and above",
             "1 to 1440 minutes",
             "VEYLOG_DIL",

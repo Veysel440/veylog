@@ -5,6 +5,7 @@
 //! işlenir. Depo okuma durumunu çizimler arasında korur (`Depo::ara_durum`); Drain değişken
 //! bir konum bulduysa kayıtlar o çizimde yeniden kümelenir. Rapor (`Ozet`) her çizimde depodan
 //! yeniden üretilir; maliyeti alt grupların sayısıyla orantılıdır, dosyanın boyuyla değil.
+//! Zaman penceresi ve ani artışlar kayıt sütunlarını da dolaşır: onlarla kayıt sayısıyla.
 //!
 //! **Kayıt tamamlanma kuralı.** Bir kaydın devam satırları (yığın izi) başlığından sonra gelir
 //! ve yazan süreç onları birkaç yazma işlemiyle yazabilir. Okunan son kayıt bu yüzden hemen
@@ -26,18 +27,22 @@
 //!
 //! **Kayan pencere.** Zaman filtreleri (`--son 1sa`, `--baslangic 15:00`) okunurken değil her
 //! çizimde, o ana kadar okunan en yeni kayda göre uygulanır (`Depo::pencere`): rapor hep son bir
-//! saati gösterir. Seviye filtresi okunurken uygulanır; filtreye uymayan kayıt depoya girmez.
+//! saati gösterir. En yeni kayıt seviye filtresine uymayanlarla birlikte bulunur, toplu
+//! okumadaki gibi. Seviye filtresi okunurken uygulanır; filtreye uymayan kayıt depoya girmez.
+//! Log ilerledikçe aralık boşalabilir: o zaman pencerede kayıt kalmaz, izleme sürer.
 //!
 //! **Standart girdi.** Ayrı bir iş parçacığı okur; ana döngü parçaları bir kanaldan alır ve
 //! bir aralık boyunca parça gelmezse sessizlik sayar. Girdi bitince son rapor yazılır ve
 //! çıkılır (`tail -f laravel.log | veylog --izle -`). Dosya Ctrl+C'ye kadar izlenir.
 //!
-//! **Çizim.** Çıktı bir terminalse her çizimde ekran temizlenir; değilse (bir dosyaya ya da
-//! boruya yazılıyorsa) çizimler bir ayırıcı satırla art arda yazılır. Raporun başında bir
-//! durum satırı vardır; geri kalanı olağan metin raporudur.
+//! **Çizim.** Çıktı bir terminalse her çizimde ekran temizlenir, durum satırı ve uyarılar en
+//! alttadır; değilse (bir dosyaya ya da boruya yazılıyorsa) çizimler bir ayırıcı satırla art arda
+//! yazılır, durum satırı başlarındadır. Geri kalanı olağan metin raporudur.
 
 use std::collections::HashMap;
-use std::fs::{self, File};
+#[cfg(any(unix, test))]
+use std::fs;
+use std::fs::File;
 use std::io::{self, BufReader, BufWriter, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -56,6 +61,9 @@ use crate::{GeciciDosya, Hata, OkunamazKaynak, TAMPON, dosyayi_ac};
 
 /// `--aralik`ın en küçük değeri: daha sık bakmak işlemciyi boşuna yorar.
 pub const EN_KISA_ARALIK: Duration = Duration::from_millis(100);
+
+/// `--aralik`ın en büyük değeri: bir saatten seyrek bakan bir izleme izleme sayılmaz.
+pub const EN_UZUN_ARALIK: Duration = Duration::from_secs(3_600);
 
 /// `--aralik` verilmezse.
 pub const VARSAYILAN_ARALIK: Duration = Duration::from_secs(2);
@@ -190,10 +198,7 @@ impl SatirTamponu {
         } else if satir_sonu && baytlar.last() == Some(&b'\r') {
             baytlar = &baytlar[..baytlar.len() - 1];
         }
-        let metin = String::from_utf8_lossy(baytlar);
-        if let std::borrow::Cow::Owned(_) = metin {
-            self.gecersiz_utf8 = true;
-        }
+        let metin = crate::okuyucu::utf8_metin(baytlar, &mut self.gecersiz_utf8);
         satir(&metin, bas);
     }
 
@@ -261,16 +266,22 @@ pub enum Dondurme {
 }
 
 impl DosyaKaynagi {
+    #[cfg(test)]
     pub fn ac(yol: &Path) -> io::Result<DosyaKaynagi> {
-        let dosya = dosyayi_ac(yol)?;
-        Ok(DosyaKaynagi {
+        Ok(DosyaKaynagi::new(yol, dosyayi_ac(yol)?))
+    }
+
+    /// `yol`daki, zaten açılmış dosya. Dosya bir kez açılır: ikinci bir tutamaç döndürülen
+    /// dosyanın diskteki yerini program kapanana kadar tutardı.
+    pub fn new(yol: &Path, dosya: File) -> DosyaKaynagi {
+        DosyaKaynagi {
             yol: yol.to_path_buf(),
             #[cfg(unix)]
             kimlik: dosya.metadata().ok().map(|bilgi| Kimlik::new(&bilgi)),
             dosya,
             konum: 0,
             parca: vec![0; TAMPON],
-        })
+        }
     }
 
     /// Yoldaki dosya değişmiş (döndürülmüş) ya da kısalmış mı? Öyleyse baştan okumaya hazırlar.
@@ -427,6 +438,50 @@ impl OrnekKaynagi for CevrilmisKaynak<'_> {
     }
 }
 
+/// Örneklerin çizimler arasında saklandığı kaynak. Kayan bir pencerede (`--son 1sa`) ilk kaydı
+/// pencerenin dışında kalan her alt grubun örneği, pencerenin içindeki ilk kaydının mesajıdır
+/// ve girdiden yeniden okunur. Pencere her çizimde biraz kaydığı için istenenlerin çoğu bir
+/// önceki çizimde de istenmiştir: onlar yeniden okunmaz. Bir çizimde istenmeyenler unutulur;
+/// saklananlar en fazla bir çizimin istediği kadardır. Sıra numarası bir kaydı hep gösterir:
+/// döndürmeden önce okunanlar, eski dosya artık okunamasa da doğrudur.
+struct OnbellekliKaynak<'a> {
+    ic: &'a mut dyn OrnekKaynagi,
+    /// Önceki çizimde okunanlar.
+    onceki: &'a HashMap<usize, String>,
+    /// Bu çizimde istenenler.
+    simdiki: &'a mut HashMap<usize, String>,
+}
+
+impl OrnekKaynagi for OnbellekliKaynak<'_> {
+    fn mesajlar(&mut self, istekler: &[OrnekIstegi<'_>]) -> io::Result<HashMap<usize, String>> {
+        let mut bulunanlar = HashMap::with_capacity(istekler.len());
+        let mut eksikler = Vec::new();
+        for istek in istekler {
+            match self
+                .simdiki
+                .get(&istek.sira)
+                .or_else(|| self.onceki.get(&istek.sira))
+            {
+                Some(mesaj) => {
+                    bulunanlar.insert(istek.sira, mesaj.clone());
+                }
+                None => eksikler.push(*istek),
+            }
+        }
+        if !eksikler.is_empty() {
+            bulunanlar.extend(self.ic.mesajlar(&eksikler)?);
+        }
+        for (sira, mesaj) in &bulunanlar {
+            self.simdiki.insert(*sira, mesaj.clone());
+        }
+        Ok(bulunanlar)
+    }
+
+    fn degisti(&self) -> bool {
+        self.ic.degisti()
+    }
+}
+
 /// Döndürmeden sonraki örnek kaynağı: eski dosyanın kayıtları (sırası `ilk`ten küçük olanlar)
 /// yeni dosyadan okunamaz; onlar istenmez.
 struct SinirliKaynak<'a> {
@@ -470,9 +525,11 @@ pub struct Cizici {
 }
 
 impl Cizici {
-    /// Standart çıktıya çizer.
+    /// Standart çıktıya çizer. Windows'un eski konsolunda ekranı temizleyen kaçış dizileri
+    /// ancak açılırsa çalışır (`sanal_terminali_ac`); açılamazsa çıktı terminal değilmiş gibi
+    /// ayırıcıyla çizilir.
     pub fn standart_cikti() -> Cizici {
-        let terminal = io::stdout().is_terminal();
+        let terminal = io::stdout().is_terminal() && sanal_terminali_ac();
         Cizici::new(Box::new(BufWriter::new(io::stdout())), terminal)
     }
 
@@ -485,20 +542,64 @@ impl Cizici {
     }
 
     /// Durum satırını ve raporu yazar.
-    pub fn ciz(&mut self, durum: &str, ozet: &Ozet) -> io::Result<()> {
+    ///
+    /// Terminalde ekran ve kaydırma geçmişi temizlenir, durum satırı en alta yazılır: rapor
+    /// ekrandan uzunsa başı yukarı kayar, durum satırı hep görünür. Uyarılar da (standart
+    /// hataya yazılır yazılmaz ekran temizlendiği için) durum satırının üstünde tekrarlanır.
+    /// Başka bir çıktıda (dosya, boru) çizimler bir ayırıcıyla art arda yazılır, durum satırı
+    /// başlarındadır; uyarılar yalnızca standart hatadadır.
+    pub fn ciz(&mut self, durum: &str, uyarilar: &[String], ozet: &Ozet) -> io::Result<()> {
         let cikti = &mut self.cikti;
         if self.terminal {
-            // Ekranı temizle, imleci sol üste al
-            write!(cikti, "\x1b[2J\x1b[H")?;
-        } else if self.cizildi {
-            writeln!(cikti, "{AYIRICI}")?;
+            // İmleci sol üste al, ekranı ve kaydırma geçmişini temizle
+            write!(cikti, "\x1b[H\x1b[2J\x1b[3J")?;
+            rapor::metin_yaz(cikti, ozet)?;
+            writeln!(cikti)?;
+            for uyari in uyarilar {
+                writeln!(cikti, "{uyari}")?;
+            }
+            writeln!(cikti, "{durum}")?;
+        } else {
+            if self.cizildi {
+                writeln!(cikti, "{AYIRICI}")?;
+            }
+            writeln!(cikti, "{durum}")?;
+            rapor::metin_yaz(cikti, ozet)?;
         }
-        writeln!(cikti, "{durum}")?;
-        rapor::metin_yaz(cikti, ozet)?;
         cikti.flush()?;
         self.cizildi = true;
         Ok(())
     }
+}
+
+/// Windows'un konsolunda ekranı temizleyen kaçış dizilerini (sanal terminal işlemeyi) açar.
+/// Windows Terminal'de zaten açıktır; eski konsolda (conhost) program açmalıdır, yoksa
+/// `\x1b[2J` ekrana olduğu gibi yazılır. Açılamazsa false.
+#[cfg(windows)]
+fn sanal_terminali_ac() -> bool {
+    use std::os::windows::io::AsRawHandle;
+    type Tutamac = *mut std::ffi::c_void;
+    const SANAL_TERMINAL_ISLEME: u32 = 0x0004; // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetConsoleMode(konsol: Tutamac, kip: *mut u32) -> i32;
+        fn SetConsoleMode(konsol: Tutamac, kip: u32) -> i32;
+    }
+    let konsol = io::stdout().as_raw_handle();
+    let mut kip = 0u32;
+    // SAFETY: tutamaç standart çıktınındır ve program boyunca açıktır; `kip` yazılabilir bir
+    // u32'dir. İki işlev de başarısızlıkta 0 döndürür, belleğe başka bir şey yazmaz.
+    unsafe {
+        GetConsoleMode(konsol, &mut kip) != 0
+            && (kip & SANAL_TERMINAL_ISLEME != 0
+                || SetConsoleMode(konsol, kip | SANAL_TERMINAL_ISLEME) != 0)
+    }
+}
+
+/// Unix terminalleri kaçış dizilerini her zaman işler.
+#[cfg(not(windows))]
+fn sanal_terminali_ac() -> bool {
+    true
 }
 
 /// İzlemenin durumu: depo, toplanmakta olan kayıt, bekleyen satır ve çizim.
@@ -520,13 +621,28 @@ pub struct Izleyici<'a> {
     /// Girdiden en son bayt gelen an.
     son_veri: Instant,
     uyarildi: Uyarilar,
+    /// Yazılan uyarılar: terminalde her çizimde durum satırının üstünde tekrarlanır.
+    uyarilar: Vec<String>,
+    /// Önceki çizimde okunan örnekler (`OnbellekliKaynak`).
+    ornekler: HashMap<usize, String>,
+    /// Standart girdinin geçici kopyasına yazılan bayt sayısı ve en fazla yazılabilecek
+    /// (`KOPYA_SINIRI`; testlerde daha küçük).
+    kopyalanan: u64,
+    kopya_siniri: u64,
 }
+
+/// Standart girdi izlenirken geçici kopyanın en büyük boyu (256 MB). Kopya yalnızca ani
+/// artışların örnekleri için tutulur ve izleme sürdükçe büyür; `/tmp` birçok dağıtımda
+/// bellektedir. Sınır aşılınca kopya bırakılır: daha önce okunan örnekler saklanır, yenileri
+/// aynı kalıpta aynı seviyedeki ilk kaydın mesajı olur.
+const KOPYA_SINIRI: u64 = 256 << 20;
 
 /// Bir kez yazılan uyarılar.
 #[derive(Default)]
 struct Uyarilar {
     gecersiz_utf8: bool,
     kayit_yok: bool,
+    taninmayan_seviye: bool,
     kopya: bool,
 }
 
@@ -557,12 +673,15 @@ impl<'a> Izleyici<'a> {
             konum_turu: rapor.konum_turu,
         });
         let mut uyarildi = Uyarilar::default();
+        let mut uyarilar = Vec::new();
         let yeniden = match yeniden_okunabilir {
             Some(yol) => Yeniden::Dosya(yol.to_path_buf()),
             None if rapor.ani_artis.is_some() => match GeciciDosya::olustur() {
                 Ok(gecici) => Yeniden::Kopya(gecici),
                 Err(hata) => {
-                    kopya_uyarisi(&hata);
+                    let uyari = crate::kopya_uyarisi(&hata);
+                    eprintln!("{uyari}");
+                    uyarilar.push(uyari);
                     uyarildi.kopya = true;
                     Yeniden::Yok
                 }
@@ -584,7 +703,18 @@ impl<'a> Izleyici<'a> {
             son_cizilen: None,
             son_veri: Instant::now(),
             uyarildi,
+            uyarilar,
+            ornekler: HashMap::new(),
+            kopyalanan: 0,
+            kopya_siniri: KOPYA_SINIRI,
         }
+    }
+
+    /// Bir uyarı: standart hataya yazılır; terminalde ekran her çizimde temizlendiği için
+    /// çizimlerde de gösterilir.
+    fn uyari(&mut self, uyari: String) {
+        eprintln!("{uyari}");
+        self.uyarilar.push(uyari);
     }
 
     /// Girdiden gelen bir parçayı işler: tamamlanan satırlar kayıt toplayıcıya, tamamlanan
@@ -593,18 +723,32 @@ impl<'a> Izleyici<'a> {
         self.son_veri = Instant::now();
         // Kopyanın konumu örnekler okunurken (`YenidenOkuyucu`, aynı dosya tutamacı) değişir:
         // her parça dosyanın sonuna yazılır
-        if let Yeniden::Kopya(gecici) = &self.yeniden
-            && let Err(hata) = gecici
-                .dosya()
-                .seek(SeekFrom::End(0))
-                .and_then(|_| gecici.dosya().write_all(parca))
-        {
-            // Kopya yazılamıyor (disk dolu): bundan sonra örnekler depodakilerden seçilir
-            if !self.uyarildi.kopya {
-                kopya_uyarisi(&hata);
-                self.uyarildi.kopya = true;
+        if let Yeniden::Kopya(gecici) = &self.yeniden {
+            let sonuc = if self.kopyalanan + parca.len() as u64 > self.kopya_siniri {
+                Err(None)
+            } else {
+                gecici
+                    .dosya()
+                    .seek(SeekFrom::End(0))
+                    .and_then(|_| gecici.dosya().write_all(parca))
+                    .map_err(Some)
+            };
+            match sonuc {
+                Ok(()) => self.kopyalanan += parca.len() as u64,
+                // Kopya yazılamıyor (disk dolu) ya da sınırı aştı: bırakılır, bundan sonra
+                // örnekler depodakilerden seçilir
+                Err(hata) => {
+                    self.yeniden = Yeniden::Yok;
+                    if !self.uyarildi.kopya {
+                        self.uyarildi.kopya = true;
+                        let uyari = match hata {
+                            Some(hata) => crate::kopya_uyarisi(&hata),
+                            None => kopya_siniri_uyarisi(self.kopya_siniri),
+                        };
+                        self.uyari(uyari);
+                    }
+                }
             }
-            self.yeniden = Yeniden::Yok;
         }
         self.tampon.ekle(parca, |satir, konum| {
             self.toplayici.satir(satir, konum, &mut self.depo);
@@ -690,11 +834,17 @@ impl<'a> Izleyici<'a> {
             ic: kaynak.as_mut(),
             ilk: self.ilk_okunabilir,
         };
+        let onceki = std::mem::take(&mut self.ornekler);
+        let mut sinirli = OnbellekliKaynak {
+            ic: &mut sinirli,
+            onceki: &onceki,
+            simdiki: &mut self.ornekler,
+        };
         let ozet = if rapor.filtre.zaman_sinirli() {
-            let cozulmus = rapor
-                .filtre
-                .coz(self.depo.en_yeni())
-                .map_err(Hata::Filtre)?;
+            // Pencere okunan en yeni kayda göre çözülür, seviye filtresine uymasa da: toplu
+            // okumadaki ön tarama da bütün kayıtlara bakar. Log ilerledikçe aralık boşalabilir
+            // (`--bitis 2026-10-25`): o zaman pencerede kayıt yoktur, izleme sürer.
+            let cozulmus = rapor.filtre.coz_bos_olabilir(self.depo.okunan_en_yeni());
             // Deponun örnekleri önce tamamlanır: pencere onları paylaşır, bir kez okunur
             self.depo
                 .ornekleri_tamamla(&mut sinirli)
@@ -720,7 +870,9 @@ impl<'a> Izleyici<'a> {
         }
         .map_err(Hata::Ozet)?;
         let durum = self.durum_satiri();
-        self.cizici.ciz(&durum, &ozet).map_err(Hata::Yazma)?;
+        self.cizici
+            .ciz(&durum, &self.uyarilar, &ozet)
+            .map_err(Hata::Yazma)?;
         self.son_cizilen = Some(self.durum());
         Ok(())
     }
@@ -739,7 +891,7 @@ impl<'a> Izleyici<'a> {
             Dil::En => vec![format!("Watching: {yol}"), format!("every {aralik}")],
         };
         parcalar.push(dil::sayili(sayi, "kayıt", "record", "records"));
-        parcalar.push(match self.depo.en_yeni() {
+        parcalar.push(match self.depo.okunan_en_yeni() {
             Some(en_yeni) => format!("{} {en_yeni}", dil::sec("son kayıt", "last record")),
             None => dil::sec("henüz kayıt yok", "no records yet").to_owned(),
         });
@@ -749,16 +901,26 @@ impl<'a> Izleyici<'a> {
         parcalar.join(" · ")
     }
 
-    /// Bir kez yazılan uyarılar: geçersiz UTF-8, biçimi uymayan log.
+    /// Bir kez yazılan uyarılar: geçersiz UTF-8, biçimi uymayan log, seviyesi tanınmayan
+    /// satırlar.
     fn uyar(&mut self) {
         if self.depo.gecersiz_utf8() && !self.uyarildi.gecersiz_utf8 {
             self.uyarildi.gecersiz_utf8 = true;
-            crate::gecersiz_utf8_uyarisi(self.gosterilen_yol);
+            self.uyari(crate::gecersiz_utf8_uyarisi(self.gosterilen_yol));
         }
         let sayilar = self.depo.sayilar();
         if sayilar.kayit == 0 && sayilar.satir > 0 && !self.uyarildi.kayit_yok {
             self.uyarildi.kayit_yok = true;
-            crate::kayit_yok_uyarisi(self.gosterilen_yol, &self.secenekler.rapor.satir_bicimi);
+            let uyari =
+                crate::kayit_yok_uyarisi(self.gosterilen_yol, &self.secenekler.rapor.satir_bicimi);
+            self.uyari(uyari);
+        }
+        if sayilar.taninmayan_seviye > 0 && !self.uyarildi.taninmayan_seviye {
+            self.uyarildi.taninmayan_seviye = true;
+            self.uyari(crate::taninmayan_seviye_uyarisi(
+                self.gosterilen_yol,
+                sayilar.taninmayan_seviye,
+            ));
         }
     }
 
@@ -780,12 +942,14 @@ impl<'a> Izleyici<'a> {
             self.donduruldu();
             kaynak.oku(|parca| self.isle(parca)).map_err(Hata::Okuma)?;
         }
-        if ilk
-            && let Some(gecen) = kaynak.degismeden_gecen()
-            && let Some(degisti) = Instant::now().checked_sub(gecen)
-        {
-            // Dosya bir süredir değişmiyorsa sessizlik o zamandan sayılır
-            self.son_veri = self.son_veri.min(degisti);
+        if ilk && let Some(gecen) = kaynak.degismeden_gecen() {
+            match Instant::now().checked_sub(gecen) {
+                // Dosya bir süredir değişmiyorsa sessizlik o zamandan sayılır
+                Some(degisti) => self.son_veri = self.son_veri.min(degisti),
+                // Makine açılmadan önce değişmiş: `Instant` o kadar geriye gidemez, sessizlik
+                // çoktan doldu
+                None => self.bitir(),
+            }
         }
         self.sessizligi_denetle();
         if ilk || self.degisti() {
@@ -818,14 +982,15 @@ impl<'a> Izleyici<'a> {
     }
 }
 
-/// Standart girdinin geçici kopyası oluşturulamadı ya da yazılamıyor (disk dolu).
-fn kopya_uyarisi(hata: &io::Error) {
+/// Standart girdinin geçici kopyası sınırını (`KOPYA_SINIRI`) aştı.
+fn kopya_siniri_uyarisi(sinir: u64) -> String {
+    let mb = sinir >> 20;
     match dil::simdiki() {
-        Dil::Tr => eprintln!(
-            "Uyarı: girdinin geçici kopyası tutulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
+        Dil::Tr => format!(
+            "Uyarı: girdinin geçici kopyası {mb} MB'ı aştı ve bırakıldı; bundan sonraki bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
         ),
-        Dil::En => eprintln!(
-            "Warning: cannot keep a temporary copy of the input ({hata}); the input cannot be read again, some samples will be the message of the first record with the same pattern and level."
+        Dil::En => format!(
+            "Warning: the temporary copy of the input exceeded {mb} MB and was dropped; some later samples will be the message of the first record with the same pattern and level."
         ),
     }
 }
@@ -852,7 +1017,7 @@ pub fn calistir(
     }
     let dosya = dosyayi_ac(&secenekler.dosya).map_err(Hata::Okuma)?;
     if dosya.metadata().is_ok_and(|bilgi| bilgi.is_file()) {
-        let kaynak = DosyaKaynagi::ac(&secenekler.dosya).map_err(Hata::Okuma)?;
+        let kaynak = DosyaKaynagi::new(&secenekler.dosya, dosya);
         let izleyici = Izleyici::new(
             secenekler,
             izleme,
@@ -1312,11 +1477,21 @@ mod testler {
             &mut OkunamazKaynak,
         )
         .unwrap();
-        cizici.ciz("durum", &ozet).unwrap();
-        cizici.ciz("durum", &ozet).unwrap();
+        let uyarilar = ["Uyarı: bir şey".to_owned()];
+        cizici.ciz("durum", &[], &ozet).unwrap();
+        cizici.ciz("durum", &uyarilar, &ozet).unwrap();
         let metin = yazilan.metin();
-        assert!(metin.starts_with("\x1b[2J\x1b[Hdurum\n"), "{metin:?}");
-        assert_eq!(metin.matches("\x1b[2J\x1b[H").count(), 2);
+        // Ekran ve kaydırma geçmişi temizlenir; durum satırı en altta, uyarılar onun üstünde
+        let temizle = "\x1b[H\x1b[2J\x1b[3J";
+        assert!(metin.starts_with(temizle), "{metin:?}");
+        assert_eq!(metin.matches(temizle).count(), 2);
+        let (ilk, ikinci) = metin[temizle.len()..].split_once(temizle).unwrap();
+        assert!(ilk.starts_with("deneme.log: 0 satır\n"), "{ilk:?}");
+        assert!(ilk.ends_with("\n\ndurum\n"), "{ilk:?}");
+        assert!(
+            ikinci.ends_with("\n\nUyarı: bir şey\ndurum\n"),
+            "{ikinci:?}"
+        );
         assert!(!metin.contains(AYIRICI));
     }
 
@@ -1475,6 +1650,194 @@ mod testler {
             "{ikinci}"
         );
         assert!(ikinci.contains("· 3 kayıt ·"), "{ikinci}");
+    }
+
+    #[test]
+    fn pencere_seviyeye_uymayan_kayitlarla_da_kayar() {
+        // Toplu okumadaki gibi: `--son` logun en yeni kaydına göredir, seviyeye uymasa da
+        let secenekler = secenekler(&["--izle", "--seviye", "error", "--son", "1sa", "deneme.log"]);
+        let yazilan = Yazilan::default();
+        let mut izleyici = izleyici(&secenekler, &yazilan);
+        izleyici.isle(
+            "[2026-10-24 10:00:00] local.ERROR: Odeme alinamadi\n\
+             [2026-10-24 10:30:00] local.ERROR: Odeme alinamadi\n\
+             [2026-10-24 12:00:00] local.INFO: Kullanici girdi\n\
+             [2026-10-24 15:00:00] local.INFO: Kullanici girdi\n"
+                .as_bytes(),
+        );
+        izleyici.bitir();
+        izleyici.ciz().ok().unwrap();
+        let metin = yazilan.metin();
+        assert!(
+            metin.contains("ERROR ve üstü, 2026-10-24 14:00:00 ve sonrası (son 1 sa): 0 kayıt"),
+            "{metin}"
+        );
+        // Durum satırındaki son kayıt da logun son kaydı
+        assert!(metin.contains("· son kayıt 2026-10-24 15:00:00"), "{metin}");
+    }
+
+    #[test]
+    fn izlemede_bosalan_aralik_hata_degildir() {
+        let secenekler = secenekler(&[
+            "--izle",
+            "--baslangic",
+            "09:00",
+            "--bitis",
+            "2026-10-25",
+            "deneme.log",
+        ]);
+        let yazilan = Yazilan::default();
+        let mut izleyici = izleyici(&secenekler, &yazilan);
+        // Kayıt yokken sona göre sınır çözülmez: 1970'e göre bir tarih de yazılmaz
+        izleyici.ciz().ok().unwrap();
+        let ilk = yazilan.metin();
+        assert!(ilk.contains("2026-10-25 00:00:00 öncesi: 0 kayıt"), "{ilk}");
+        assert!(!ilk.contains("1970") && !ilk.contains("1969"), "{ilk}");
+        izleyici.isle("[2026-10-24 10:00:00] local.ERROR: dun\n".as_bytes());
+        izleyici.bitir();
+        izleyici.ciz().ok().unwrap();
+        // Log 25 Ekim'e geçti: başlangıç (25 Ekim 09:00) bitişten sonra, pencere boş
+        izleyici.isle("[2026-10-25 10:00:00] local.ERROR: bugun\n".as_bytes());
+        izleyici.bitir();
+        assert!(izleyici.ciz().is_ok());
+        let son = &yazilan.metin()[ilk.len()..];
+        assert!(
+            son.contains("2026-10-25 09:00:00 ile 2026-10-25 00:00:00 arası: 0 kayıt"),
+            "{son}"
+        );
+    }
+
+    #[test]
+    fn penceredeki_saat_dilimi_cumlesi_okunan_kayitlara_gore() {
+        // Kayıtların hiçbirinde dilim yazılmamış: pencerede de "yazılı değil" denir, okunan
+        // bütün kayıtların sayısı pencerenin kayıtlarınınkiyle karışmaz
+        let secenekler = secenekler(&[
+            "--izle",
+            "--son",
+            "1sa",
+            "--saat-dilimi",
+            "+03:00",
+            "deneme.log",
+        ]);
+        let yazilan = Yazilan::default();
+        let mut izleyici = izleyici(&secenekler, &yazilan);
+        let log: String = (0..60)
+            .map(|dakika| {
+                format!(
+                    "[2026-10-24 {:02}:{:02}:00] local.ERROR: Hata\n",
+                    8 + dakika / 6,
+                    dakika % 6 * 10
+                )
+            })
+            .collect();
+        izleyici.isle(log.as_bytes());
+        izleyici.bitir();
+        izleyici.ciz().ok().unwrap();
+        let metin = yazilan.metin();
+        assert!(
+            metin.contains("kayıtlarda saat dilimi yazılı değil, zamanlar logdaki gibi"),
+            "{metin}"
+        );
+    }
+
+    #[test]
+    fn izlemede_seviyesi_taninmayan_satirlar_uyarilir() {
+        let secenekler = secenekler(&[
+            "--izle",
+            "--desen",
+            r"(?P<zaman>\S+ \S+) \[(?P<seviye>\w+)\] (?P<mesaj>.*)",
+            "deneme.log",
+        ]);
+        let yazilan = Yazilan::default();
+        let mut izleyici = izleyici(&secenekler, &yazilan);
+        izleyici.isle(b"2026-10-24 10:00:00 [ERROR] Bir\n2026-10-24 10:00:01 [XYZ] Iki\n");
+        izleyici.bitir();
+        izleyici.ciz().ok().unwrap();
+        assert_eq!(izleyici.kayit_sayisi(), 1);
+        assert_eq!(izleyici.uyarilar.len(), 1, "{:?}", izleyici.uyarilar);
+        assert!(
+            izleyici.uyarilar[0].starts_with(
+                "Uyarı: deneme.log içinde --desen'e uyan 1 satırın seviyesi tanınmadı"
+            ),
+            "{:?}",
+            izleyici.uyarilar
+        );
+        // Uyarı bir kez yazılır
+        izleyici.isle(b"2026-10-24 10:00:02 [XYZ] Uc\n");
+        izleyici.bitir();
+        izleyici.ciz().ok().unwrap();
+        assert_eq!(izleyici.uyarilar.len(), 1);
+    }
+
+    #[test]
+    fn standart_girdinin_kopyasi_sinirda_birakilir() {
+        // Standart girdi ve ani artışlar: örnekler için girdinin geçici bir kopyası tutulur
+        let secenekler = secenekler(&["--izle", "--ani-artis", "1", "-"]);
+        let yazilan = Yazilan::default();
+        let mut izleyici = izleyici(&secenekler, &yazilan);
+        assert!(matches!(izleyici.yeniden, Yeniden::Kopya(_)));
+        let parca = KAYIT.len() as u64;
+        izleyici.kopya_siniri = 2 * parca;
+        izleyici.isle(KAYIT.as_bytes());
+        izleyici.isle(KAYIT.as_bytes());
+        // Sınıra kadar yazılır
+        assert!(matches!(izleyici.yeniden, Yeniden::Kopya(_)));
+        assert_eq!(izleyici.kopyalanan, 2 * parca);
+        assert!(izleyici.uyarilar.is_empty());
+        // Sınırı aşacak parça kopyayı bıraktırır; uyarı bir kez yazılır ve çizimde de görünür
+        izleyici.isle(KAYIT.as_bytes());
+        assert!(matches!(izleyici.yeniden, Yeniden::Yok));
+        izleyici.isle(KAYIT.as_bytes());
+        assert_eq!(izleyici.uyarilar.len(), 1);
+        assert!(
+            izleyici.uyarilar[0].starts_with("Uyarı: girdinin geçici kopyası 0 MB'ı aştı"),
+            "{:?}",
+            izleyici.uyarilar
+        );
+        // Kayıtlar okunmaya devam eder
+        izleyici.bitir();
+        assert_eq!(izleyici.kayit_sayisi(), 4);
+    }
+
+    #[test]
+    fn ornekler_cizimler_arasinda_saklanir() {
+        struct Sayan(usize);
+        impl OrnekKaynagi for Sayan {
+            fn mesajlar(
+                &mut self,
+                istekler: &[OrnekIstegi<'_>],
+            ) -> io::Result<HashMap<usize, String>> {
+                self.0 += istekler.len();
+                Ok(istekler
+                    .iter()
+                    .map(|istek| (istek.sira, format!("kayıt {}", istek.sira)))
+                    .collect())
+            }
+        }
+        let istek = |sira| OrnekIstegi {
+            sira,
+            maskeli: "x",
+            seviye: crate::kayit::Seviye::Error,
+        };
+        let mut ic = Sayan(0);
+        let mut onceki = HashMap::new();
+        for (cizim, siralar) in [[1, 2], [2, 3], [3, 4]].into_iter().enumerate() {
+            let mut simdiki = HashMap::new();
+            let mut kaynak = OnbellekliKaynak {
+                ic: &mut ic,
+                onceki: &onceki,
+                simdiki: &mut simdiki,
+            };
+            let istekler: Vec<OrnekIstegi<'_>> = siralar.iter().map(|&sira| istek(sira)).collect();
+            let bulunanlar = kaynak.mesajlar(&istekler).unwrap();
+            assert_eq!(bulunanlar.len(), 2);
+            assert_eq!(bulunanlar[&siralar[1]], format!("kayıt {}", siralar[1]));
+            // İlk çizimde ikisi de okunur, sonrakilerde yalnızca yenisi
+            assert_eq!(ic.0, 2 + cizim);
+            // Bu çizimde istenmeyenler unutulur
+            assert_eq!(simdiki.len(), 2);
+            onceki = simdiki;
+        }
     }
 
     #[test]

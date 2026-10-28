@@ -473,13 +473,22 @@ impl FiltreOzeti {
             (Some(bas), None, true) => parcalar.push(format!("from {bas}{son}")),
             (None, Some(bit), false) => parcalar.push(format!("{bit} öncesi")),
             (None, Some(bit), true) => parcalar.push(format!("before {bit}")),
-            (None, None, _) => {}
+            // Logda kayıt yoksa sona göre sınırlar çözülmez: yalnızca süre yazılır
+            (None, None, _) => {
+                if let Some(saniye) = self.son {
+                    parcalar.push(format!(
+                        "{} {}",
+                        dil::sec("son", "last"),
+                        sure_tam_yaz(saniye)
+                    ));
+                }
+            }
         }
-        format!(
-            "{}: {}",
-            parcalar.join(", "),
-            dil::sayili(self.kayit_sayisi, "kayıt", "record", "records")
-        )
+        let sayi = dil::sayili(self.kayit_sayisi, "kayıt", "record", "records");
+        if parcalar.is_empty() {
+            return sayi;
+        }
+        format!("{}: {sayi}", parcalar.join(", "))
     }
 }
 
@@ -492,7 +501,8 @@ pub struct SaatDilimiOzeti {
     pub verildi: bool,
     /// Kayıtların dilimleri: kaçı çevrildi, kaçında dilim yazılmamış.
     pub sayilar: DilimSayilari,
-    /// Rapordaki (filtre varsa filtreye uyan) kayıt sayısı.
+    /// Dilim sayılarının sayıldığı kayıtlar: rapordaki (filtre varsa filtreye uyan) kayıtlar;
+    /// canlı izlemenin zaman penceresinde okunan bütün kayıtlar.
     pub kayit_sayisi: usize,
 }
 
@@ -637,7 +647,7 @@ impl Ozet {
                 dilim,
                 verildi: depo.saat_dilimi_verildi(),
                 sayilar: depo.dilim_sayilari().clone(),
-                kayit_sayisi: depo.kayit_sayisi(),
+                kayit_sayisi: depo.dilim_kapsami(),
             }),
             seviyeler: depo.seviye_sayilari(),
             analiz,
