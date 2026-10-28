@@ -6,6 +6,7 @@ mod drain;
 mod farkli_sayac;
 mod filtre;
 mod istatistik;
+mod istisna_metni;
 mod json;
 mod json_okuyucu;
 mod karsilastirma;
@@ -16,8 +17,10 @@ mod maske;
 mod okuyucu;
 mod parmak_izi;
 mod rapor;
+mod satir_bicimi;
 mod sutunlar;
 mod zaman;
+mod zaman_bicimi;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -164,8 +167,12 @@ fn ozet_cikar(
         Some(dosya) if dosya.metadata().is_ok_and(|bilgi| bilgi.is_file()) => {
             let mut girdi = BufReader::with_capacity(TAMPON, dosya);
             let en_yeni = if on_tarama {
-                let en_yeni = okuyucu::en_yeni_zaman(&mut girdi, secenekler.rapor.saat_dilimi)
-                    .map_err(Hata::Okuma)?;
+                let en_yeni = okuyucu::en_yeni_zaman(
+                    &mut girdi,
+                    &secenekler.rapor.satir_bicimi,
+                    secenekler.rapor.saat_dilimi,
+                )
+                .map_err(Hata::Okuma)?;
                 girdi.seek(SeekFrom::Start(0)).map_err(Hata::Okuma)?;
                 en_yeni
             } else {
@@ -198,9 +205,12 @@ fn ozet_cikar(
                         Kopyalayan::new(ic, BufWriter::with_capacity(TAMPON, gecici.dosya()));
                     if on_tarama {
                         // Ön tarama girdiyi kopyalar; asıl okuma kopyadan yapılır
-                        let en_yeni =
-                            okuyucu::en_yeni_zaman(&mut kopyalayan, secenekler.rapor.saat_dilimi)
-                                .map_err(Hata::Okuma)?;
+                        let en_yeni = okuyucu::en_yeni_zaman(
+                            &mut kopyalayan,
+                            &secenekler.rapor.satir_bicimi,
+                            secenekler.rapor.saat_dilimi,
+                        )
+                        .map_err(Hata::Okuma)?;
                         kopyayi_bitir(kopyalayan)?;
                         let mut kopyasi = gecici.dosya();
                         kopyasi.seek(SeekFrom::Start(0)).map_err(Hata::Kopya)?;
@@ -225,20 +235,44 @@ fn ozet_cikar(
             "Uyarı: {gosterilen_yol} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi."
         );
     }
+    // Satır var ama hiçbiri bir kayıt başlatmıyor: büyük olasılıkla biçim uymuyor
+    let sayilar = depo.sayilar();
+    if sayilar.kayit == 0 && sayilar.satir > 0 {
+        let bicim = &secenekler.rapor.satir_bicimi;
+        if bicim.desenli() {
+            eprintln!(
+                "Uyarı: {gosterilen_yol} içinde --desen'e uyan satır yok; hiçbir kayıt okunmadı."
+            );
+        } else if bicim.zaman_bicimli() {
+            eprintln!(
+                "Uyarı: {gosterilen_yol} içinde zamanı --zaman-bicimi'ne uyan kayıt yok; hiçbir kayıt okunmadı."
+            );
+        } else {
+            eprintln!(
+                "Uyarı: {gosterilen_yol} içinde Laravel'in biçiminde kayıt yok; log başka bir biçimdeyse --desen ile tanıtılabilir."
+            );
+        }
+    }
 
     let dizin = depo.dizin().to_vec();
     let (filtre, dilim) = (depo.filtre().copied(), depo.saat_dilimi());
+    let bicim = depo.satir_bicimi().clone();
     let mut kaynak: Box<dyn OrnekKaynagi + '_> = match (girdi, &kopya) {
-        (Some(girdi), _) => Box::new(YenidenOkuyucu::new(girdi, dizin, filtre, dilim)),
+        (Some(girdi), _) => {
+            Box::new(YenidenOkuyucu::new(girdi, dizin, filtre, dilim).bicimle(bicim))
+        }
         (None, Some(gecici)) => {
             let mut dosya = gecici.dosya();
             dosya.seek(SeekFrom::Start(0)).map_err(Hata::Kopya)?;
-            Box::new(YenidenOkuyucu::new(
-                BufReader::with_capacity(TAMPON, dosya),
-                dizin,
-                filtre,
-                dilim,
-            ))
+            Box::new(
+                YenidenOkuyucu::new(
+                    BufReader::with_capacity(TAMPON, dosya),
+                    dizin,
+                    filtre,
+                    dilim,
+                )
+                .bicimle(bicim),
+            )
         }
         (None, None) => Box::new(OkunamazKaynak),
     };
@@ -274,6 +308,7 @@ fn depoyu_doldur(
         drain: rapor.drain.clone(),
         filtre,
         saat_dilimi: rapor.saat_dilimi,
+        satir_bicimi: rapor.satir_bicimi.clone(),
     };
     Depo::doldur(ayarlar, girdi).map_err(Hata::Okuma)
 }

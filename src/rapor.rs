@@ -31,6 +31,7 @@ use crate::karsilastirma::{
 use crate::kayit::Seviye;
 use crate::okuyucu::OrnekKaynagi;
 use crate::parmak_izi::ParmakIzi;
+use crate::satir_bicimi::SatirBicimi;
 use crate::zaman::{SaatDilimi, Zaman, ZamanNoktasi, sure_tam_yaz, sure_yaz};
 
 /// Tabloda varsayılan olarak gösterilecek satır sayısı.
@@ -116,6 +117,8 @@ pub struct RaporAyarlari {
     pub filtre: Filtre,
     /// Raporun saat dilimi (`--saat-dilimi`); None ise logda saat dilimi yazılı ilk kaydınki.
     pub saat_dilimi: Option<SaatDilimi>,
+    /// Satırların biçimi (`--desen`, `--zaman-bicimi`); varsayılanı Laravel'inki.
+    pub satir_bicimi: SatirBicimi,
 }
 
 impl Default for RaporAyarlari {
@@ -128,6 +131,7 @@ impl Default for RaporAyarlari {
             ani_artis: None,
             filtre: Filtre::default(),
             saat_dilimi: None,
+            satir_bicimi: SatirBicimi::default(),
         }
     }
 }
@@ -2366,7 +2370,12 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         ) -> Result<Ozet, OzetHatasi> {
             let filtre = &ayarlar.filtre;
             let en_yeni = if filtre.sonu_gerekir() {
-                crate::okuyucu::en_yeni_zaman(log_metni.as_bytes(), ayarlar.saat_dilimi).unwrap()
+                crate::okuyucu::en_yeni_zaman(
+                    log_metni.as_bytes(),
+                    &ayarlar.satir_bicimi,
+                    ayarlar.saat_dilimi,
+                )
+                .unwrap()
             } else {
                 None
             };
@@ -2374,6 +2383,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
                 drain: ayarlar.drain.clone(),
                 filtre: (!filtre.bos_mu()).then(|| filtre.coz(en_yeni).expect("geçerli filtre")),
                 saat_dilimi: ayarlar.saat_dilimi,
+                satir_bicimi: ayarlar.satir_bicimi.clone(),
             };
             let mut depo = Depo::doldur(depo_ayarlari, log_metni.as_bytes()).unwrap();
             let mut kaynak = YenidenOkuyucu::new(
@@ -2381,7 +2391,8 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
                 depo.dizin().to_vec(),
                 depo.filtre().copied(),
                 depo.saat_dilimi(),
-            );
+            )
+            .bicimle(depo.satir_bicimi().clone());
             Ozet::hesapla(dosya.to_owned(), &mut depo, ayarlar, &mut kaynak)
         }
     }

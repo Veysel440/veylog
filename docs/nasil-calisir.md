@@ -47,6 +47,11 @@ gider: başlık, devam ya da yetim.
   uyarı yazılır.
 - Dosya adı yerine `-` verilirse log standart girdiden okunur:
   `zcat laravel-2026-10-24.log.gz | veylog -`.
+- Uygulama Monolog'a başka bir satır ya da tarih biçimi verdiyse biçim `--desen` ve
+  `--zaman-bicimi` ile tanıtılır ([log biçimleri](#log-biçimleri)). Satırlardan hiçbiri bir
+  kayıt başlatmıyorsa bir uyarı yazılır.
+- Mesaj PHP'nin istisna metniyse (`Log::error($e)`) kaydın mesajı istisnanın mesajıdır
+  ([PHP istisna metni](#php-istisna-metni)).
 
 ## JSON satırları
 
@@ -121,6 +126,103 @@ bilinen fark var, ikisi de RFC'ye göre geçerli metinlerde: `f64`'e sığmayan 
 (`1E400`) serde_json çeviremediği için reddeder, veylog sayıları çevirmediği için kabul eder.
 Eşi olmayan bir vekil kaçışını (`"\ud800"`) serde_json reddeder, veylog `�` olarak okur.
 Monolog ikisini de yazmaz.
+
+## Log biçimleri
+
+Laravel'in satır biçimi ve Monolog'un JSON satırları kendiliğinden tanınır. Uygulama
+Monolog'a başka bir satır biçimi verdiyse veylog'a da aynısı verilir:
+
+```php
+// config/logging.php
+'single' => [
+    'driver' => 'single',
+    'path' => storage_path('logs/laravel.log'),
+    'formatter' => Monolog\Formatter\LineFormatter::class,
+    'formatter_with' => [
+        'format' => "%datetime% [%level_name%] %channel%: %message% %context% %extra%\n",
+        'dateFormat' => 'd.m.Y H:i:s',
+        'allowInlineLineBreaks' => true,
+        'includeStacktraces' => true,
+    ],
+],
+```
+
+```bash
+veylog --desen '%datetime% [%level_name%] %channel%: %message% %context% %extra%' \
+       --zaman-bicimi 'd.m.Y H:i:s' storage/logs/laravel.log
+```
+
+**Monolog'un biçim dizgesi** düzenli ifadeye çevrilir. Harfler olduğu gibi aranır (düzenli
+ifadede özel olan `[`, `.`, `(` kaçışlanır); `%datetime%` zamanı, `%level_name%` (ya da sayı
+olarak `%level%`) seviyeyi, `%channel%` kanalı yakalar; mesajdan önceki öteki yer tutucular
+(`%extra.istek_no%`) herhangi bir metne uyar. `%message%`'dan sonrası mesaja katılır: Monolog
+bağlamı ve ek alanları mesajın arkasına yazar, bağlam Laravel'in biçimindeki gibi ` {"` ile
+ayrılır. Yukarıdaki dizge şu ifadeye dönüşür:
+
+```text
+^(?:(?P<zaman>[0-9]{2}\.[0-9]{2}\.[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}) \[(?P<seviye>[A-Za-z]+)\] (?P<kanal>.*?): (?P<mesaj>.*))
+```
+
+**Düzenli ifade** doğrudan da verilebilir; Monolog'la yazılmamış loglar böyle okunur. `zaman`
+ve `mesaj` grupları gerekir; `seviye`, `baglam` ve `kanal` isteğe bağlıdır (İngilizce adları da
+olur: `time`, `message`, `level`, `context`, `channel`):
+
+```bash
+veylog --desen '(?P<zaman>\S+ \S+) (?P<seviye>\w+) +(?P<mesaj>.*)' app.log
+```
+
+- İfade satırın başına bağlanır. Uymayan satırlar bir önceki kaydın devamıdır (stack trace, çok
+  satırlı mesajlar), Laravel'in biçimindeki gibi. JSON satırları her biçimde tanınır.
+- Seviye büyük küçük harf ayrımı olmadan okunur; `WARN`, `ERR`, `CRIT`, `EMERG`, `FATAL`
+  (CRITICAL sayılır) ve `TRACE` (DEBUG) kısaltmaları ve Monolog'un sayıları (100 DEBUG …
+  600 EMERGENCY) da olur. Bilinmeyen bir seviye yakalayan satır kayıt sayılmaz. Seviye grubu
+  yoksa her kayıt INFO'dur.
+- Bağlam grubu yoksa bağlam mesajın sonundan ` {"` ile ayrılır.
+- Derlenemeyen bir ifade, eksik ya da bilinmeyen bir grup adı (`(?P<mesage>...)`) kullanım
+  hatasıdır.
+
+**Zaman biçimi** PHP'nin `date()` biçim dizgesidir, yani Monolog'un `dateFormat`'ı. Dizge bir
+kez derlenir: her harf bir parçaya dönüşür (`d` iki basamaklı gün, `j` bir ya da iki basamaklı
+gün, `M` ayın kısa adı, `P` saat dilimi...). Harf olmayan karakterler ve PHP'nin tanımadığı
+harfler olduğu gibi aranır, `\` kendinden sonrakini harf olmaktan çıkarır: PHP de böyle yazar.
+Kaydın zamanı bu parçalarla soldan sağa okunur ve zamanın tamamı okunmalıdır. Sonuç veylog'un
+iç biçimidir (`2026-10-27 14:03:11+03:00`): kayıt bundan sonra Laravel'in biçiminde yazılmış
+gibi işlenir. Okunan tarih takvimde var olmalıdır.
+
+| Harfler | Okunan |
+|---|---|
+| `Y`, `y` | Dört ya da iki basamaklı yıl (`y`: 00–69 2000'li, 70–99 1900'lü yıllar) |
+| `m`, `n`, `M`, `F` | Ay: iki ya da bir-iki basamaklı, kısa (`Oct`) ya da uzun (`October`) adıyla |
+| `d`, `j` | Gün |
+| `H`, `G`; `h`, `g` ve `A`, `a` | Saat: 24 saatlik ya da 12 saatlik (`AM`/`PM` ile) |
+| `i`, `s` | Dakika ve saniye; saniye yoksa 0 |
+| `u`, `v` | Saniyenin kesri: mikrosaniye, milisaniye |
+| `P`, `p`, `O`, `Z`, `T`, `e` | Saat dilimi: `+03:00`, `Z`, `+0300`, saniye (`10800`), kısaltma, ad |
+| `U` | Unix zamanı (UTC) |
+| `c`, `r` | ISO 8601 ve RFC 2822 biçimlerinin tamamı |
+| `D`, `l`, `S`, `N`, `w`, `z`, `W`, `t`, `L`, `o`, `B`, `I` | Okunur, kullanılmaz |
+
+Yıl, ay, gün, saat ve dakikadan biri eksikse (ya da `U` yoksa) ve 12 saatlik saatin yanında
+`A` yoksa dizge kullanım hatasıdır. PHP ay ve gün adlarını her zaman İngilizce yazar; adlar
+İngilizce okunur. Saat dilimi kısaltmalarından yalnızca `UTC`, `GMT` ve sayıyla yazılanlar
+(`+03`) çevrilir: `CET`, `EST` gibi kısaltmalar birden çok dilime karşılık gelebilir. Dilimin
+adı (`Europe/Istanbul`) yaz saatini bilmeden farka çevrilemez. İkisi de dilimi yazılmamış
+sayılır ([saat dilimleri](#saat-dilimleri)).
+
+Laravel'in satır biçimindeki ama tarih biçimi değiştirilmiş bir log için `--zaman-bicimi` yeter:
+`[27.10.2026 14:03:11] production.ERROR: ...`. Zaman biçimi verilince zamanlar yalnızca o
+biçimde okunur. JSON satırlarının zamanı ise hep ISO 8601'dir.
+
+Bir desenle okumak daha yavaştır: her satır düzenli ifadeyle sınanır. 500 MB'lık sentetik log
+Laravel'in biçimiyle 7,7, aynı biçimi tarif eden bir desenle 10,3 saniyede okunur. Başlığın
+parçalarının satırdaki yerleri saklanır; kayıt tamamlanınca başlık bunlardan kurulur, ifade
+satıra ikinci kez uygulanmaz.
+
+**Doğrulama.** Laravel 13 ile kurulan bir uygulamada aynı istisnalar üç kanala yazdırıldı:
+Laravel'in biçimi, `JsonFormatter` ve yukarıdaki özel biçim. Laravel'in biçimiyle özel biçimin
+raporu baştan sona aynıdır; JSON'un raporunda yalnızca devam satırı sayısı (JSON kaydı tek
+satırdır) ve saat dilimi satırı farklıdır, kalıp tablosu aynıdır. 500 MB'lık sentetik log,
+Laravel'in biçimini tarif eden bir desenle okununca da varsayılanla aynı raporu verir.
 
 ## Maskeleme
 
@@ -340,6 +442,65 @@ geliyorsa ayrı satırlarda görünür. Aynı yerden gelen farklı kalıplar ise
 çünkü bir yardımcı fonksiyondaki tek bir `throw` birbirinden bağımsız birçok hatanın ortak
 yeri olabilir.
 
+### PHP istisna metni
+
+`report($e)` ve yakalanmayan istisnalar bağlama yazılır. `Log::error($e)` ise istisnayı
+bağlama koymaz: Laravel onu metne çevirip mesaj olarak yazar. Metin PHP'nin
+`Throwable::__toString()`'idir (gerçek bir Laravel 13 logundan, yollar kısaltıldı):
+
+```text
+[2026-10-25 17:38:17] local.ERROR: RuntimeException: Dize olarak loglanan istisna in /var/www/magaza/routes/web.php:24
+Stack trace:
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/CallableDispatcher.php(39): Illuminate\Routing\RouteFileRegistrar->{closure}()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/Route.php(254): Illuminate\Routing\CallableDispatcher->dispatch()
+...
+#48 {main}
+```
+
+veylog bu metni şöyle okur:
+
+1. Kaydın satırlarında `Stack trace:` aranır; yoksa kayıt bir istisna metni değildir. Başka
+   hiçbir şey ayrıştırılmaz.
+2. `Stack trace:`'ten önceki satırın sonu ` in dosya:satır`'dır: istisnanın fırlatıldığı yer.
+   Mesaj ` in ` içerebilir, yer sondan aranır. Mesajı satır sonu içeren istisnalarda
+   (Laravel'in HTTP istemcisinin hataları) başlık birkaç satır sürer.
+3. Sınıf başlığın ilk satırındadır: `Sınıf: mesaj`. Mesaj boşsa başlık yalnızca `Sınıf in yer`
+   olur.
+4. İstisna başka bir istisnadan doğduysa PHP önce en içtekini yazar, sonra her birini boş bir
+   satır ve `Next` ile. Logu yazdıran istisna en sondadır; parmak izi ve mesaj ondan alınır.
+   Bağlamdaki istisnada da önceki istisnanın yığın izi okunmaz.
+5. Yığın izinin satırları bağlamdakiyle aynı biçimdedir (`#2 dosya(satır): çağrı`) ve aynı
+   kurallarla taranır.
+
+Kaydın mesajı istisnanın mesajıdır, `report($e)`'nin yazdığı gibi; aynı hata iki yolla
+loglansa da tek satırda birleşir:
+
+```text
+     2  ERROR      14:03:11  14:05:40  Ödeme alınamadı: sipariş <SAYI>
+                                       örnek: Ödeme alınamadı: sipariş 1047
+                                       konum: app/Services/OdemeServisi.php:64 (RuntimeException)
+```
+
+İstisnanın önüne bir açıklama da yazılabilir: `Log::error('Ödeme başarısız: ' . $e)`. PHP sınıf
+adlarına bir kısıt koymaz, `Ödeme` de bir sınıf adı olabilir; bu yüzden yalnızca istisna adı
+gibi görünen bir ad sınıf sayılır: ad alanı içeren (`App\Exceptions\OdemeHatasi`) ya da
+`Exception` veya `Error` ile biten (`RuntimeException`, `TypeError`). Satır böyle bir adla
+başlıyorsa açıklama yoktur; başlamıyorsa bir boşluktan sonra gelen ilk böyle ad sınıftır,
+öncesi açıklamadır. Kaydın mesajı açıklamayla istisnanın mesajıdır:
+`Ödeme başarısız: Bağlantı koptu`.
+
+Bağlamda `\` işareti JSON kaçışıyla `\\` diye yazılır, istisna metninde ise tektir
+(`App\Services\X`, `C:\Users\...`). Okunan her sınıf adı ve yol bu yüzden önce çözülür;
+parmak izleri çözülmüş halleriyle karşılaştırılır. Aynı hata hangi yolla loglanmış olursa olsun
+aynı parmak izini taşır. Kök de çözülmüş yollardan bulunur: istisna metnindeki bir kaydın
+vendor yolu, bağlamla loglanmış ve kendi yollarında vendor geçmeyen bir kaydın kökünü verir.
+
+Gerçek Laravel 13 çıktısıyla sınandı: aynı istisnalar (çok satırlı mesajı olan bir HTTP
+istemcisi hatası, önceki istisnası olan bir ödeme hatası, mesajsız bir istisna) bağlamla,
+`Log::error($e)` ile ve açıklamalı `Log::error('...' . $e)` ile loglandı. Bağlamla ve
+`Log::error($e)` ile loglananlar aynı satırda birleşti; açıklamalılar aynı yeri gösteren ayrı
+satırlar oldu.
+
 ### Middleware
 
 Bir route middleware'inden geçen her istekte, sonraki adımlarda oluşan her hatanın yığın
@@ -403,10 +564,10 @@ sınırına takılan 9 ölümcül hata tek satırda toplanıyor.
 ### Windows yolları
 
 Herd ya da Laragon'da yolların ayracı `\`'dir ve bağlam JSON olduğu için logda `\\` diye
-yazılır: `C:\\Users\\İrem\\Herd\\magaza\\vendor\\...`. Proje kökü `\\vendor\\`'dan da bulunur;
-konum gösterilirken kaçış çözülür ve ayraç `/` olur:
+yazılır: `C:\\Users\\İrem\\Herd\\magaza\\vendor\\...`. Yol okunurken kaçış çözülür, proje kökü
+`\vendor\`'dan da bulunur ve konum gösterilirken ayraç `/` olur:
 `database/migrations/2026_10_25_090000_create_kuponlar_table.php:11`. Giriş noktası da
-(`public\\index.php`) aynı yolla tanınır. Gerçek bir geliştirme logunda migration hatalarının
+(logda `public\\index.php`) aynı yolla tanınır. Gerçek bir geliştirme logunda migration hatalarının
 konumu böylece migration dosyası olarak bulundu; önceden vendor'daki `Connection.php:822`
 görünüyordu.
 

@@ -46,6 +46,7 @@ use crate::kayit::{Kayit, KayitAlici, KayitBilgisi, SatirSayilari, Seviye};
 use crate::maske::maskele;
 use crate::okuyucu::{self, DIZIN_ARALIGI, OkumaSonucu, OrnekIstegi, OrnekKaynagi};
 use crate::parmak_izi::{Istisna, IstisnaTaslagi, ParmakIzi};
+use crate::satir_bicimi::SatirBicimi;
 use crate::sutunlar::{KayitSutunlari, SutunOkuyucu};
 use crate::zaman::{DilimCevirici, KayitDilimi, SaatDilimi, Zaman};
 
@@ -148,6 +149,8 @@ pub struct Depo {
     filtre: Option<CozulmusFiltre>,
     /// Kayıt zamanlarını raporun saat dilimine çevirir.
     cevirici: DilimCevirici,
+    /// Satırların biçimi; kayıtlar yeniden okunurken de gerekir.
+    satir_bicimi: SatirBicimi,
     dilimler: DilimSayilari,
     sayilar: SatirSayilari,
     gecersiz_utf8: bool,
@@ -255,6 +258,8 @@ pub struct DepoAyarlari {
     pub filtre: Option<CozulmusFiltre>,
     /// Raporun saat dilimi (`--saat-dilimi`); None ise logda saat dilimi yazılı ilk kaydınki.
     pub saat_dilimi: Option<SaatDilimi>,
+    /// Satırların biçimi (`--desen`, `--zaman-bicimi`); varsayılanı Laravel'inki.
+    pub satir_bicimi: SatirBicimi,
 }
 
 impl Depo {
@@ -264,6 +269,7 @@ impl Depo {
             kumeleyici: Kumeleyici::new(ayarlar.drain),
             filtre: ayarlar.filtre,
             cevirici: DilimCevirici::new(ayarlar.saat_dilimi),
+            satir_bicimi: ayarlar.satir_bicimi,
             dilimler: DilimSayilari::default(),
             sayilar: SatirSayilari::default(),
             gecersiz_utf8: false,
@@ -288,7 +294,9 @@ impl Depo {
     /// Girdiyi baştan sona okuyup depoyu doldurur.
     pub fn doldur(ayarlar: DepoAyarlari, girdi: impl BufRead) -> io::Result<Depo> {
         let mut depo = Depo::new(ayarlar);
-        let sonuc = okuyucu::oku(girdi, &mut depo)?;
+        // Biçim depodan ödünç alınamaz: depo okuma boyunca alıcı olarak değişir
+        let bicim = depo.satir_bicimi.clone();
+        let sonuc = okuyucu::oku(girdi, &bicim, &mut depo)?;
         depo.okuma_bitti(sonuc);
         Ok(depo)
     }
@@ -296,6 +304,11 @@ impl Depo {
     /// Kayıtları süzen filtre; yoksa None.
     pub fn filtre(&self) -> Option<&CozulmusFiltre> {
         self.filtre.as_ref()
+    }
+
+    /// Satırların biçimi.
+    pub fn satir_bicimi(&self) -> &SatirBicimi {
+        &self.satir_bicimi
     }
 
     /// Okuma bitince satır sayılarını ve geçersiz UTF-8 bilgisini kaydeder. Drain ilk turda

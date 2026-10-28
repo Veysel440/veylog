@@ -8,6 +8,8 @@
 //! veylog --ani-artis 1 storage/logs/laravel.log
 //! veylog --seviye error --son 2sa storage/logs/laravel.log
 //! veylog --saat-dilimi +03:00 storage/logs/laravel.log
+//! veylog --desen '%datetime% [%level_name%] %message% %context%' storage/logs/app.log
+//! veylog --zaman-bicimi 'd.m.Y H:i:s' storage/logs/laravel.log
 //! zcat laravel-2026-10-24.log.gz | veylog -
 //! ```
 //!
@@ -28,13 +30,15 @@ use crate::ani_artis::{EN_DUSUK_SEVIYE, EN_UZUN_DILIM};
 use crate::filtre::sure_ayristir;
 use crate::kayit::Seviye;
 use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
+use crate::satir_bicimi::SatirBicimi;
 use crate::zaman::{SaatDilimi, ZamanNoktasi};
+use crate::zaman_bicimi::ZamanBicimi;
 
 /// Kısa kullanım satırı; hata mesajlarının altında da gösterilir.
 pub const KULLANIM: &str = "Kullanım: veylog [SEÇENEKLER] <log-dosyası>";
 
 /// Bilinen uzun seçenekler. Yazım hatası yapıldığında öneri bu listeden seçilir.
-const UZUN_SECENEKLER: [&str; 16] = [
+const UZUN_SECENEKLER: [&str; 18] = [
     "--esik",
     "--ilk",
     "--hepsi",
@@ -47,6 +51,8 @@ const UZUN_SECENEKLER: [&str; 16] = [
     "--bitis",
     "--son",
     "--saat-dilimi",
+    "--desen",
+    "--zaman-bicimi",
     "--yardim",
     "--surum",
     "--help",
@@ -186,6 +192,10 @@ where
     let mut rapor = RaporAyarlari::default();
     let mut bicim = Bicim::Metin;
     let mut dosya: Option<PathBuf> = None;
+    // Desen zaman biçimine bağlıdır (Monolog'un dizgesinde `%datetime%`): ikisi de okununca
+    // derlenir. Seçeneğin yazıldığı ad hata mesajı için saklanır.
+    let mut desen: Option<(String, String)> = None;
+    let mut zaman_bicimi: Option<ZamanBicimi> = None;
     let mut secenekler_bitti = false;
     let mut argumanlar = argumanlar.into_iter();
 
@@ -266,6 +276,17 @@ where
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
                 rapor.saat_dilimi = Some(saat_dilimi_ayristir(ad, &deger)?);
             }
+            "--desen" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                desen = Some((ad.to_owned(), deger));
+            }
+            "--zaman-bicimi" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                zaman_bicimi = Some(
+                    ZamanBicimi::derle(&deger)
+                        .map_err(|hata| gecersiz(ad, &deger, hata.to_string()))?,
+                );
+            }
             "-h" | "--yardim" | "--help" => {
                 deger_almaz(ad, bitisik)?;
                 return Ok(Komut::Yardim);
@@ -290,6 +311,11 @@ where
             return Err(SecenekHatasi::Celisen("--son", "--bitis"));
         }
     }
+    rapor.satir_bicimi = match &desen {
+        Some((ad, deger)) => SatirBicimi::new(Some(deger), zaman_bicimi)
+            .map_err(|hata| gecersiz(ad, deger, hata.to_string()))?,
+        None => SatirBicimi::new(None, zaman_bicimi).expect("desensiz biçim her zaman derlenir"),
+    };
     let dosya = dosya.ok_or(SecenekHatasi::DosyaYok)?;
     Ok(Komut::Ozet(Secenekler {
         dosya,
@@ -338,6 +364,17 @@ Seçenekler:
                           dilimi yazılı kayıtlar bu dilime çevrilir, yazılmamışlar bu dilimde
                           sayılır. Verilmezse logda saat dilimi yazılı ilk kaydınki.
 
+Log biçimi (verilmezse Laravel'inki; Monolog'un JSON satırları her zaman okunur):
+      --desen <desen>     Bir kaydı başlatan satırın biçimi: Monolog'un biçim dizgesi
+                          (\"[%datetime%] %level_name%: %message% %context%\") ya da
+                          adlandırılmış gruplu bir düzenli ifade: (?P<zaman>...) ve
+                          (?P<mesaj>...) gerekli, (?P<seviye>...) ve (?P<baglam>...) isteğe
+                          bağlı. Uymayan satırlar bir önceki kaydın devamıdır.
+      --zaman-bicimi <biçim>
+                          Zamanın biçimi, PHP'nin date() dizgesiyle (Monolog'un dateFormat'ı):
+                          \"d.m.Y H:i:s\", \"d/M/Y:H:i:s O\", \"U\". Verilmezse 2026-10-24 14:03:11
+                          ya da ISO 8601 (2026-10-24T14:03:11+03:00).
+
 Filtreler (raporu yalnızca uyan kayıtlarla çıkarır; satır ve kayıt sayıları dosyanındır):
       --seviye <seviye>   Bu seviye ve üstündekiler: {seviyeler}.
       --baslangic <zaman> Bu andan (dahil) sonraki kayıtlar.
@@ -353,7 +390,7 @@ Dosya yerine - verilirse log standart girdiden okunur. Seçenekler dosya adında
 sonra yazılabilir. Değer boşlukla ya da \"=\" ile verilir (--esik 0,8 ya da --esik=0,8), kısa
 seçeneklerde bitişik de yazılabilir (-n20); ondalık ayracı virgül de olabilir, nokta da.
 Türkçe karakterli yazımlar da geçerlidir (--eşik, --sıralama önem, --biçim, --karşılaştır,
---ani-artış). --ilk her biçimde ve her bölümde geçerlidir; JSON'da bütün satırlar için
+--ani-artış, --zaman-biçimi). --ilk her biçimde ve her bölümde geçerlidir; JSON'da bütün satırlar için
 --hepsi. --siralama kalıp tablosunun ve karşılaştırmanın sırasını belirler; ani artışlar
 puanı en yüksek olan başta olacak şekilde dizilir. --karsilastir, --baslangic ve --bitis
 zamanları raporun saat dilimindedir.
@@ -371,6 +408,8 @@ zamanları raporun saat dilimindedir.
   veylog --ani-artis 1 storage/logs/laravel.log
   veylog --seviye error --son 2sa storage/logs/laravel.log
   veylog --saat-dilimi +03:00 storage/logs/laravel.log
+  veylog --desen '%datetime% [%level_name%] %message% %context%' storage/logs/app.log
+  veylog --zaman-bicimi 'd.m.Y H:i:s' storage/logs/laravel.log
   zcat laravel-2026-10-24.log.gz | veylog -
 ",
         surum = env!("CARGO_PKG_VERSION"),

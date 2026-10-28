@@ -10,17 +10,22 @@
 //!
 //! Bir kaydın mesajı sonradan gerekirse (ani artışın örneği) kayıt yeniden okunur: her
 //! `DIZIN_ARALIGI` kayıtta bir, kaydın girdideki bayt konumu saklanır (seyrek dizin). Aranan
-//! kaydın bloğunun başına atlanır, oradan en fazla o kadar kayıt okunur. Bulunan kaydın maskeli
-//! mesajı ve seviyesi depodakiyle karşılaştırılır: girdi okunduktan sonra değiştiyse (ör. log
-//! döndürülürken `copytruncate` ile kesilip yeniden yazıldıysa) yanlış bir kayıt örnek olmaz.
+//! kaydın bloğunun başına atlanır, oradan en fazla o kadar kayıt okunur. Kayıtlar ilk okumadaki
+//! gibi, devam satırlarıyla birlikte toplanır: PHP'nin istisna metninde kaydın mesajı devam
+//! satırlarındadır. Bulunan kaydın maskeli mesajı ve seviyesi depodakiyle karşılaştırılır:
+//! girdi okunduktan sonra değiştiyse (ör. log döndürülürken `copytruncate` ile kesilip yeniden
+//! yazıldıysa) yanlış bir kayıt örnek olmaz.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 
 use crate::filtre::CozulmusFiltre;
-use crate::kayit::{Kayit, KayitAlici, KayitToplayici, SatirSayilari, Seviye, kayit_baslangici};
+use crate::kayit::{
+    Kayit, KayitAlici, KayitBilgisi, KayitToplayici, SatirSayilari, Seviye, kayit_baslangici,
+};
 use crate::maske::maskele;
+use crate::satir_bicimi::SatirBicimi;
 use crate::zaman::{DilimCevirici, SaatDilimi, Zaman};
 
 /// Bir satırın en fazla bu kadar baytı (256 MB) okunur; ötesi atlanır. Gerçek bir logda en
@@ -126,10 +131,15 @@ pub struct OkumaSonucu {
     pub gecersiz_utf8: bool,
 }
 
-/// Girdiyi baştan sona okur; her kaydı tamamlanınca `alici`ya verir.
-pub fn oku<R: BufRead, A: KayitAlici + ?Sized>(girdi: R, alici: &mut A) -> io::Result<OkumaSonucu> {
+/// Girdiyi baştan sona okur; her kaydı tamamlanınca `alici`ya verir. `bicim`: satırların
+/// biçimi.
+pub fn oku<R: BufRead, A: KayitAlici + ?Sized>(
+    girdi: R,
+    bicim: &SatirBicimi,
+    alici: &mut A,
+) -> io::Result<OkumaSonucu> {
     let mut okuyucu = SatirOkuyucu::new(girdi);
-    let mut toplayici = KayitToplayici::default();
+    let mut toplayici = KayitToplayici::new(bicim.clone());
     while let Some((satir, konum)) = okuyucu.sonraki()? {
         toplayici.satir(&satir, konum, alici);
     }
@@ -145,12 +155,16 @@ pub fn oku<R: BufRead, A: KayitAlici + ?Sized>(girdi: R, alici: &mut A) -> io::R
 ///
 /// Logun sonuna göre çözülen filtreler (`--son 2sa`, `--baslangic 15:00`) için bir ön taramadır.
 /// Kayıtlar toplanmaz: yalnızca bir kaydın başladığı satırlara bakılır.
-pub fn en_yeni_zaman<R: BufRead>(girdi: R, dilim: Option<SaatDilimi>) -> io::Result<Option<Zaman>> {
+pub fn en_yeni_zaman<R: BufRead>(
+    girdi: R,
+    bicim: &SatirBicimi,
+    dilim: Option<SaatDilimi>,
+) -> io::Result<Option<Zaman>> {
     let mut okuyucu = SatirOkuyucu::new(girdi);
     let mut cevirici = DilimCevirici::new(dilim);
     let mut en_yeni = None;
     while let Some((satir, _)) = okuyucu.sonraki()? {
-        if let Some(kayit) = kayit_baslangici(&satir) {
+        if let Some(kayit) = kayit_baslangici(bicim, &satir) {
             let (zaman, _) = cevirici.cevir(kayit.zaman());
             en_yeni = Some(en_yeni.map_or(zaman, |en_yeni: Zaman| en_yeni.max(zaman)));
         }
@@ -260,6 +274,8 @@ pub struct YenidenOkuyucu<R> {
     /// bulduğu dilimle başlar; dilim belliyken her kaydın zamanı yalnızca kendisine bağlıdır,
     /// logun ortasından okumaya başlamak sonucu değiştirmez.
     cevirici: DilimCevirici,
+    /// Satırların biçimi: ilk okumadaki gibi.
+    bicim: SatirBicimi,
     degisti: bool,
 }
 
@@ -276,8 +292,47 @@ impl<R: BufRead + Seek> YenidenOkuyucu<R> {
             dizin,
             filtre,
             cevirici: DilimCevirici::new(dilim),
+            bicim: SatirBicimi::default(),
             degisti: false,
         }
+    }
+
+    /// Satırları Laravel'inkinden başka bir biçimde okur (`--desen`, `--zaman-bicimi`).
+    pub fn bicimle(self, bicim: SatirBicimi) -> Self {
+        YenidenOkuyucu { bicim, ..self }
+    }
+}
+
+/// Bir bloğun kayıtlarını sırayla sayıp istenenleri bulan alıcı. Sıra numaraları yalnızca
+/// depoya giren kayıtlar arasındadır.
+struct Arayan<'b, 'i> {
+    filtre: Option<&'b CozulmusFiltre>,
+    cevirici: &'b mut DilimCevirici,
+    /// Bir sonraki kaydın sıra numarası.
+    siradaki: usize,
+    /// Bloktaki, henüz gelmemiş istekler; sıralı.
+    aranan: &'b [&'b OrnekIstegi<'i>],
+    bulunanlar: &'b mut HashMap<usize, String>,
+    degisti: &'b mut bool,
+}
+
+impl KayitAlici for Arayan<'_, '_> {
+    fn kayit(&mut self, kayit: &Kayit<'_>, _: KayitBilgisi) {
+        let Some((istek, kalan)) = self.aranan.split_first() else {
+            return;
+        };
+        if !depoda_mi(self.filtre, self.cevirici, kayit) {
+            return;
+        }
+        if self.siradaki == istek.sira {
+            if kayit.seviye() == istek.seviye && maskele(kayit.mesaj()) == istek.maskeli {
+                self.bulunanlar.insert(istek.sira, kayit.mesaj().to_owned());
+            } else {
+                *self.degisti = true;
+            }
+            self.aranan = kalan;
+        }
+        self.siradaki += 1;
     }
 }
 
@@ -307,29 +362,30 @@ impl<R: BufRead + Seek> OrnekKaynagi for YenidenOkuyucu<R> {
             };
             self.girdi.seek(SeekFrom::Start(konum))?;
             let mut okuyucu = SatirOkuyucu::konumdan(&mut self.girdi, konum);
-            let mut siradaki = numara * DIZIN_ARALIGI;
-            let mut aranan = blok.iter().peekable();
-            while let Some(&&istek) = aranan.peek() {
-                let Some((satir, _)) = okuyucu.sonraki()? else {
-                    // Girdi kısalmış
-                    self.degisti = true;
-                    break;
-                };
-                let Some(kayit) = kayit_baslangici(&satir) else {
-                    continue;
-                };
-                if !depoda_mi(self.filtre.as_ref(), &mut self.cevirici, &kayit) {
-                    continue;
-                }
-                if siradaki == istek.sira {
-                    if kayit.seviye() == istek.seviye && maskele(kayit.mesaj()) == istek.maskeli {
-                        bulunanlar.insert(istek.sira, kayit.mesaj().to_owned());
-                    } else {
-                        self.degisti = true;
+            let mut toplayici = KayitToplayici::new(self.bicim.clone());
+            // Alanlar ayrı ayrı ödünç alınır: okuyucu girdiyi, arayan çeviriciyi
+            let mut arayan = Arayan {
+                filtre: self.filtre.as_ref(),
+                cevirici: &mut self.cevirici,
+                siradaki: numara * DIZIN_ARALIGI,
+                aranan: blok,
+                bulunanlar: &mut bulunanlar,
+                degisti: &mut self.degisti,
+            };
+            // Bir kayıt, ardından gelen kayıt başlayınca tamamlanır: aranan son kayıttan
+            // sonraki kaydın başlığına kadar okunur
+            while !arayan.aranan.is_empty() {
+                match okuyucu.sonraki()? {
+                    Some((satir, konum)) => toplayici.satir(&satir, konum, &mut arayan),
+                    None => {
+                        toplayici.bitir(&mut arayan);
+                        // Girdi kısalmış
+                        if !arayan.aranan.is_empty() {
+                            *arayan.degisti = true;
+                        }
+                        break;
                     }
-                    aranan.next();
                 }
-                siradaki += 1;
             }
         }
         Ok(bulunanlar)
@@ -457,7 +513,7 @@ mod testler {
         let metin = "#1 yetim\n[2026-10-24 10:00:00] local.ERROR: Bir\nayrıntı\n\
                      [2026-10-24 10:00:01] local.INFO: İki";
         let mut kayitlar: Vec<ToplananKayit> = Vec::new();
-        let sonuc = oku(metin.as_bytes(), &mut kayitlar).unwrap();
+        let sonuc = oku(metin.as_bytes(), &SatirBicimi::default(), &mut kayitlar).unwrap();
         assert_eq!(
             sonuc.sayilar,
             SatirSayilari {
@@ -483,7 +539,7 @@ mod testler {
         girdi.extend_from_slice(b"\n[2026-10-24 10:00:01] local.INFO: b");
         let mut kopyalayan = Kopyalayan::new(io::BufReader::new(&girdi[..]), Vec::new());
         let mut kayitlar: Vec<ToplananKayit> = Vec::new();
-        oku(&mut kopyalayan, &mut kayitlar).unwrap();
+        oku(&mut kopyalayan, &SatirBicimi::default(), &mut kayitlar).unwrap();
         assert_eq!(kayitlar.len(), 2);
         assert_eq!(kopyalayan.bitir().unwrap(), girdi);
 
@@ -535,7 +591,7 @@ mod testler {
         kopyalayan.consume(0);
         assert_eq!(kopyalayan.ic.doldurma, 0);
         let mut kayitlar: Vec<ToplananKayit> = Vec::new();
-        oku(&mut kopyalayan, &mut kayitlar).unwrap();
+        oku(&mut kopyalayan, &SatirBicimi::default(), &mut kayitlar).unwrap();
         // `read_until` girdinin sonunu bir kez görür
         assert_eq!(kopyalayan.ic.doldurma, 1);
     }
@@ -561,7 +617,7 @@ mod testler {
     /// Bir logun kayıtlarını okur; seyrek dizini de kurar.
     fn dizinle_oku(metin: &str) -> (Vec<ToplananKayit>, Vec<u64>) {
         let mut kayitlar: Vec<ToplananKayit> = Vec::new();
-        oku(metin.as_bytes(), &mut kayitlar).unwrap();
+        oku(metin.as_bytes(), &SatirBicimi::default(), &mut kayitlar).unwrap();
         let dizin = kayitlar
             .iter()
             .filter(|kayit| kayit.bilgi.sira.is_multiple_of(DIZIN_ARALIGI))
@@ -635,7 +691,10 @@ mod testler {
 
     #[test]
     fn en_yeni_zaman_kayit_baslangiclarindan_bulunur() {
-        assert_eq!(en_yeni_zaman("".as_bytes(), None).unwrap(), None);
+        assert_eq!(
+            en_yeni_zaman("".as_bytes(), &SatirBicimi::default(), None).unwrap(),
+            None
+        );
         // Sırasız kayıtlar, JSON, BOM; bilinmeyen seviyeli satır ve devam satırları kayıt değil
         let metin = "#0 yetim\n\
                      [2026-10-24 10:00:05] local.INFO: a\n\
@@ -644,7 +703,7 @@ mod testler {
                      [2026-10-24 12:00:00] local.HATA: kayıt değil\n\
                      [2026-10-24 09:00:00] local.INFO: d";
         assert_eq!(
-            en_yeni_zaman(metin.as_bytes(), None).unwrap(),
+            en_yeni_zaman(metin.as_bytes(), &SatirBicimi::default(), None).unwrap(),
             Some(Zaman::kayittan("2026-10-24 11:00:00"))
         );
 
@@ -652,11 +711,16 @@ mod testler {
         let metin = "[2026-10-24T11:00:00+03:00] local.INFO: a\n\
                      [2026-10-24T09:30:00+00:00] local.INFO: b";
         assert_eq!(
-            en_yeni_zaman(metin.as_bytes(), None).unwrap(),
+            en_yeni_zaman(metin.as_bytes(), &SatirBicimi::default(), None).unwrap(),
             Some(Zaman::kayittan("2026-10-24 12:30:00"))
         );
         assert_eq!(
-            en_yeni_zaman(metin.as_bytes(), SaatDilimi::ayristir("Z")).unwrap(),
+            en_yeni_zaman(
+                metin.as_bytes(),
+                &SatirBicimi::default(),
+                SaatDilimi::ayristir("Z")
+            )
+            .unwrap(),
             Some(Zaman::kayittan("2026-10-24 09:30:00"))
         );
     }
@@ -812,5 +876,88 @@ mod testler {
         let mut kaynak = YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), dizin, None, None);
         assert_eq!(kaynak.mesajlar(&istekler).unwrap().len(), 2);
         assert!(!kaynak.degisti());
+    }
+
+    #[test]
+    fn istisna_metninin_mesaji_yeniden_okununca_da_ayni() {
+        // Her üçüncü kayıt `Log::error($e)` ile loglanmış: mesajı devam satırlarındaki
+        // dıştaki istisnanın mesajıdır. Bloğun son kaydının devamı bir sonraki bloğun
+        // başlığına kadar sürer; logun son kaydı girdi bitince tamamlanır.
+        let satirlar: Vec<String> = (0..2 * DIZIN_ARALIGI + 10)
+            .map(|sira| {
+                if sira % 3 == 0 {
+                    format!(
+                        "[2026-10-24 10:00:00] local.ERROR: PDOException: Bağlantı {sira} reddedildi in /var/www/magaza/vendor/a/B.php:3\n\
+                         Stack trace:\n#0 {{main}}\n\n\
+                         Next RuntimeException: Sorgu {sira} yapılamadı in /var/www/magaza/app/C.php:9\n\
+                         Stack trace:\n#0 {{main}}"
+                    )
+                } else {
+                    format!("[2026-10-24 10:00:00] local.INFO: Kayıt {sira}")
+                }
+            })
+            .collect();
+        let metin = satirlar.join("\n");
+        let (kayitlar, dizin) = dizinle_oku(&metin);
+        assert_eq!(kayitlar[0].mesaj, "Sorgu 0 yapılamadı");
+        let maskeliler = maskeliler(&kayitlar);
+        let son = 2 * DIZIN_ARALIGI + 9;
+        let aranan = [0, 3, DIZIN_ARALIGI - 1, DIZIN_ARALIGI + 2, son - 1, son];
+        let mut kaynak = YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), dizin, None, None);
+        let bulunan = kaynak
+            .mesajlar(&istekler(&aranan, &kayitlar, &maskeliler))
+            .unwrap();
+        for sira in aranan {
+            assert_eq!(bulunan[&sira], kayitlar[sira].mesaj, "{sira}");
+        }
+        assert_eq!(bulunan[&(DIZIN_ARALIGI - 1)], "Sorgu 1023 yapılamadı");
+        assert!(!kaynak.degisti());
+    }
+
+    #[test]
+    fn desenle_okunan_log_ayni_desenle_yeniden_okunur() {
+        use crate::zaman_bicimi::ZamanBicimi;
+        let bicim = SatirBicimi::new(
+            Some("%datetime% %level_name% %message%"),
+            Some(ZamanBicimi::derle("d.m.Y H:i:s").unwrap()),
+        )
+        .unwrap();
+        let satirlar: Vec<String> = (0..DIZIN_ARALIGI + 5)
+            .map(|sira| format!("24.10.2026 10:00:00 WARNING Kayıt {sira}\n  ayrıntı"))
+            .collect();
+        let metin = satirlar.join("\n");
+        let mut kayitlar: Vec<ToplananKayit> = Vec::new();
+        oku(metin.as_bytes(), &bicim, &mut kayitlar).unwrap();
+        assert_eq!(kayitlar.len(), DIZIN_ARALIGI + 5);
+        let dizin: Vec<u64> = kayitlar
+            .iter()
+            .filter(|kayit| kayit.bilgi.sira.is_multiple_of(DIZIN_ARALIGI))
+            .map(|kayit| kayit.bilgi.konum)
+            .collect();
+        let maskeliler = maskeliler(&kayitlar);
+        let istekler = istekler(&[1, DIZIN_ARALIGI + 4], &kayitlar, &maskeliler);
+        let mut kaynak =
+            YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), dizin.clone(), None, None)
+                .bicimle(bicim.clone());
+        let bulunan = kaynak.mesajlar(&istekler).unwrap();
+        assert_eq!(bulunan[&1], "Kayıt 1");
+        assert_eq!(
+            bulunan[&(DIZIN_ARALIGI + 4)],
+            format!("Kayıt {}", DIZIN_ARALIGI + 4)
+        );
+        assert!(!kaynak.degisti());
+        // Laravel'in biçimiyle okuyan bu logda kayıt bulamaz
+        let mut kaynak = YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), dizin, None, None);
+        assert!(kaynak.mesajlar(&istekler).unwrap().is_empty());
+        assert!(kaynak.degisti());
+        // Ön tarama da desenle okur
+        assert_eq!(
+            en_yeni_zaman(metin.as_bytes(), &bicim, None).unwrap(),
+            Some(Zaman::kayittan("2026-10-24 10:00:00"))
+        );
+        assert_eq!(
+            en_yeni_zaman(metin.as_bytes(), &SatirBicimi::default(), None).unwrap(),
+            None
+        );
     }
 }

@@ -55,6 +55,25 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
   JSON'daki kalıp zamanlarını logdaki yazılışıyla veriyordu (`2026-10-24T14:03:11.123456+03:00`).
 - Takvimde olmayan bir saat dilimi (`+25:00`) taşıyan satır kayıt başlığı sayılmaz.
 
+### Log biçimleri
+
+- `Log::error($e)` ile metne çevrilmiş istisnalar okunur: PHP'nin istisna metninden
+  (`RuntimeException: ... in dosya:satır`, `Stack trace:`, `Next`) sınıf, fırlatıldığı yer ve
+  yığın izi. Kaydın mesajı istisnanın mesajıdır; aynı hata `report($e)` ile loglanmış olsa da
+  aynı satırda birleşir. Önceki istisnalar `Next` ile yazıldığında logu yazdıran, en dıştaki
+  istisna alınır. Açıklamalı yazılış da tanınır: `Log::error('Ödeme başarısız: ' . $e)`.
+- `--desen`: kendi satır biçimi. Monolog'un biçim dizgesi (`config/logging.php`'deki
+  `format`) düzenli ifadeye çevrilir; adlandırılmış gruplu bir düzenli ifade de verilebilir
+  (`zaman`, `mesaj`; isteğe bağlı `seviye`, `baglam`, `kanal`). Seviye kısaltmaları (`WARN`,
+  `ERR`) ve Monolog'un sayıları (`%level%`) da okunur. JSON satırları her biçimde okunur.
+- `--zaman-bicimi`: zamanın biçimi, PHP'nin `date()` dizgesiyle (Monolog'un `dateFormat`'ı):
+  `d.m.Y H:i:s`, `d/M/Y:H:i:s O`, `U`. Laravel'in satır biçiminde de geçerlidir.
+- Satırlardan hiçbiri bir kayıt başlatmıyorsa bir uyarı yazılır.
+- Sınıf adları ve yollar okunurken JSON kaçışlarından çözülür: Windows'ta aynı hatanın
+  bağlamdaki (`\\`) ve istisna metnindeki (`\`) yazılışı aynı parmak izini verir.
+- Ani artışın örneği yeniden okunurken kayıt devam satırlarıyla birlikte toplanır: istisna
+  metninin mesajı devam satırlarındadır.
+
 ## [0.1.0] - 2026-10-26
 
 İlk sürüm.

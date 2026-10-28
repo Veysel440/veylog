@@ -1022,3 +1022,198 @@ fn view_hatalari_middleware_ve_kok() {
         "{stdout}"
     );
 }
+
+/// Aynı hata iki yolla loglanmış: `Log::error($e)` (PHP'nin istisna metni) ve `report($e)`
+/// (bağlamdaki istisna). İkisi tek satırda birleşmeli. İkincinin yollarında vendor yok: proje
+/// kökü birincinin yığın izinden bulunur.
+const IKI_YOLLA_LOGLANAN: &str = r#"[2026-10-27 14:03:11] production.ERROR: RuntimeException: Ödeme alınamadı: sipariş 1047 in /var/www/magaza/app/Services/OdemeServisi.php:64
+Stack trace:
+#0 /var/www/magaza/app/Http/Controllers/OdemeController.php(31): App\Services\OdemeServisi->tahsilEt()
+#1 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Routing/Controller.php(54): App\Http\Controllers\OdemeController->odeme()
+#2 /var/www/magaza/public/index.php(17): Illuminate\Foundation\Application->handleRequest()
+#3 {main}  
+[2026-10-27 14:05:40] production.ERROR: Ödeme alınamadı: sipariş 1052 {"exception":"[object] (RuntimeException(code: 0): Ödeme alınamadı: sipariş 1052 at /var/www/magaza/app/Services/OdemeServisi.php:64)
+[stacktrace]
+#0 /var/www/magaza/app/Http/Controllers/OdemeController.php(31): App\\Services\\OdemeServisi->tahsilEt()
+#1 {main}
+"} 
+"#;
+
+#[test]
+fn istisna_metni_baglamdaki_istisnayla_birlesir() {
+    let yol = gecici_dosya("istisna-metni.log", IKI_YOLLA_LOGLANAN.as_bytes());
+    let cikti = veylog(&["--hepsi", yol.to_str().unwrap()]);
+    let json = veylog(&["-b", "json", yol.to_str().unwrap()]);
+    fs::remove_file(&yol).ok();
+    let stdout = metin(&cikti.stdout);
+    assert!(cikti.status.success());
+    assert!(cikti.stderr.is_empty(), "{}", metin(&cikti.stderr));
+    assert!(
+        stdout.ends_with(
+            "  adet  seviye     ilk       son       kalıp\n     2  ERROR      14:03:11  14:05:40  Ödeme alınamadı: sipariş <SAYI>\n                                       örnek: Ödeme alınamadı: sipariş 1047\n                                       konum: app/Services/OdemeServisi.php:64 (RuntimeException)\n"
+        ),
+        "{stdout}"
+    );
+    let rapor: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let satir = &rapor["kaliplar"]["satirlar"][0];
+    assert_eq!(satir["adet"], 2);
+    assert_eq!(satir["istisna"]["sinif"], "RuntimeException");
+    assert_eq!(satir["istisna"]["dosya"], "app/Services/OdemeServisi.php");
+    assert_eq!(satir["istisna"]["satir"], 64);
+}
+
+/// `kuyruk_artisi`nin başka bir satır ve zaman biçiminde yazılmış hali:
+/// `24.10.2026 10:00:30 [WARNING] Kuyruk 1000 dolu`
+fn ozel_bicimde(log: &str) -> String {
+    log.lines()
+        .map(|satir| {
+            let (zaman, kalan) = satir[1..].split_once("] local.").unwrap();
+            let (seviye, mesaj) = kalan.split_once(": ").unwrap();
+            let (tarih, saat) = zaman.split_once(' ').unwrap();
+            let parcalar: Vec<&str> = tarih.split('-').collect();
+            format!(
+                "{}.{}.{} {saat} [{seviye}] {mesaj}",
+                parcalar[2], parcalar[1], parcalar[0]
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Raporun dosya adı dışındaki kısmı.
+fn adsiz(cikti: &Output) -> String {
+    let stdout = metin(&cikti.stdout);
+    stdout.split_once(": ").unwrap().1.to_string()
+}
+
+#[test]
+fn desen_ve_zaman_bicimiyle_okunur() {
+    let laravel = gecici_dosya("laravel-bicimi.log", kuyruk_artisi().as_bytes());
+    let ozel_log = ozel_bicimde(&kuyruk_artisi());
+    assert!(ozel_log.starts_with("24.10.2026 10:00:30 [WARNING] Kuyruk 1000 dolu\n"));
+    let ozel = gecici_dosya("ozel-bicim.log", ozel_log.as_bytes());
+    // Ön tarama (`--son`) ve yeniden okuma (ani artışın örneği) da aynı biçimle okumalı
+    let ortak = ["-a", "1", "--son", "1sa"];
+    let beklenen = veylog(&[&ortak[..], &[laravel.to_str().unwrap()]].concat());
+    assert!(adsiz(&beklenen).contains("örnek: Kuyruk 50 dolu\n"));
+    for desen in [
+        "%datetime% [%level_name%] %message%",
+        r"(?P<zaman>\S+ \S+) \[(?P<seviye>\w+)\] (?P<mesaj>.*)",
+    ] {
+        let cikti = veylog(
+            &[
+                &["--desen", desen, "--zaman-bicimi", "d.m.Y H:i:s"][..],
+                &ortak,
+                &[ozel.to_str().unwrap()],
+            ]
+            .concat(),
+        );
+        assert!(cikti.status.success(), "{desen}");
+        assert!(cikti.stderr.is_empty(), "{desen}: {}", metin(&cikti.stderr));
+        assert_eq!(adsiz(&cikti), adsiz(&beklenen), "{desen}");
+    }
+
+    // Standart girdiden: girdi geçici bir kopyadan iki kez okunur, ikisi de desenle
+    let gecici_klasor = std::env::temp_dir().join(format!("veylog-{}-desen", process::id()));
+    fs::create_dir_all(&gecici_klasor).unwrap();
+    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+        .args(["--desen", "%datetime% [%level_name%] %message%"])
+        .args(["--zaman-biçimi", "d.m.Y H:i:s"])
+        .args(ortak)
+        .arg("-")
+        .env("TMPDIR", &gecici_klasor)
+        .env("TMP", &gecici_klasor)
+        .env("TEMP", &gecici_klasor)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("veylog çalıştırılamadı");
+    surec
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(ozel_log.as_bytes())
+        .unwrap();
+    let cikti = surec.wait_with_output().unwrap();
+    assert!(cikti.stderr.is_empty(), "{}", metin(&cikti.stderr));
+    assert_eq!(adsiz(&cikti), adsiz(&beklenen));
+    fs::remove_dir_all(&gecici_klasor).ok();
+    fs::remove_file(&laravel).ok();
+    fs::remove_file(&ozel).ok();
+}
+
+#[test]
+fn desen_ve_zaman_bicimi_hatalari_kullanim_hatasidir() {
+    for (secenekler, beklenen) in [
+        (
+            &["--desen", "(?P<zaman>x"][..],
+            "veylog: --desen için geçersiz değer \"(?P<zaman>x\": düzenli ifade derlenemedi: unclosed group\n",
+        ),
+        (
+            &["--desen", r"(?P<zaman>\S+) (?P<msj>.*)"][..],
+            "veylog: --desen için geçersiz değer \"(?P<zaman>\\S+) (?P<msj>.*)\": \"msj\" grubu bilinmiyor; kullanılabilenler: zaman, seviye, mesaj, baglam, kanal\n",
+        ),
+        (
+            &["--desen", r"(?P<zaman>\S+ \S+)"][..],
+            "veylog: --desen için geçersiz değer \"(?P<zaman>\\S+ \\S+)\": (?P<mesaj>...) grubu yok; zaman ve mesaj grupları gerekli\n",
+        ),
+        (
+            &["--desen", "[%level_name%] %message%"][..],
+            "veylog: --desen için geçersiz değer \"[%level_name%] %message%\": %datetime% yok; zaman gerekli\n",
+        ),
+        (
+            &["--zaman-bicimi", "H:i"][..],
+            "veylog: --zaman-bicimi için geçersiz değer \"H:i\": zaman biçiminde yıl, ay ve gün yok; yıl (Y), ay (m), gün (d), saat (H) ve dakika (i) gerekir, ya da Unix zamanı (U)\n",
+        ),
+        (
+            &["--zaman-biçimi", "Y-m-d h:i"][..],
+            "veylog: --zaman-biçimi için geçersiz değer \"Y-m-d h:i\": 12 saatlik saat (h, g) öğleden önce/sonra işareti (A ya da a) olmadan okunamaz\n",
+        ),
+        (
+            &["--desn", "x"][..],
+            "veylog: bilinmeyen seçenek: --desn (bunu mu demek istediniz: --desen)\n",
+        ),
+    ] {
+        let cikti = veylog(&[secenekler, &["ornekler/laravel.log"]].concat());
+        assert_eq!(cikti.status.code(), Some(2), "{secenekler:?}");
+        assert!(cikti.stdout.is_empty());
+        let stderr = metin(&cikti.stderr);
+        assert!(stderr.starts_with(beklenen), "{secenekler:?}: {stderr}");
+    }
+}
+
+#[test]
+fn kayit_bulunamazsa_uyarilir() {
+    let yol = gecici_dosya("bicimsiz.log", ozel_bicimde(&kuyruk_artisi()).as_bytes());
+    let yol_metni = yol.to_str().unwrap();
+    for (secenekler, uyari) in [
+        (
+            &[][..],
+            "içinde Laravel'in biçiminde kayıt yok; log başka bir biçimdeyse --desen ile tanıtılabilir.\n",
+        ),
+        (
+            &["--desen", "%datetime% <%level_name%> %message%"][..],
+            "içinde --desen'e uyan satır yok; hiçbir kayıt okunmadı.\n",
+        ),
+        (
+            &["--zaman-bicimi", "Y.m.d H:i:s"][..],
+            "içinde zamanı --zaman-bicimi'ne uyan kayıt yok; hiçbir kayıt okunmadı.\n",
+        ),
+    ] {
+        let cikti = veylog(&[secenekler, &[yol_metni]].concat());
+        assert!(cikti.status.success(), "{secenekler:?}");
+        assert_eq!(
+            metin(&cikti.stderr),
+            format!("Uyarı: {yol_metni} {uyari}"),
+            "{secenekler:?}"
+        );
+        assert!(metin(&cikti.stdout).contains("  Kayıt         : 0\n"));
+    }
+    fs::remove_file(&yol).ok();
+    // Boş dosyada uyarı yok
+    let bos = gecici_dosya("bos-uyarisiz.log", b"");
+    let cikti = veylog(&[bos.to_str().unwrap()]);
+    fs::remove_file(&bos).ok();
+    assert!(cikti.stderr.is_empty(), "{}", metin(&cikti.stderr));
+}

@@ -28,9 +28,16 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
 
 - Parmak izi satır numarasını içerir: bir dağıtımda dosyanın üst kısmı değişirse aynı hata
   iki ayrı satırda görünebilir. Sentry gibi araçlar bu yüzden satır numarası kullanmaz.
-- Yalnızca Laravel'in istisna biçimi tanınır: yakalanmayan istisnalar, `report($e)` ve
-  `Log::error('...', ['exception' => $e])`; JSON satırlarında da bağlamın `exception` alanı.
-  İstisnayı metne çeviren `Log::error($e)` kullanımı (`Stack trace:` biçimi) tanınmaz.
+- İstisna üç yazılışla tanınır: bağlamda (yakalanmayan istisnalar, `report($e)`,
+  `Log::error('...', ['exception' => $e])`), JSON satırlarında bağlamın `exception` alanında
+  ve PHP'nin istisna metninde (`Log::error($e)`;
+  [ayrıntılar](nasil-calisir.md#php-istisna-metni)). Başka yazılışlar
+  (`Log::error($e->getMessage() . "\n" . $e->getTraceAsString())`) tanınmaz.
+- İstisna metni kaydın ilk satırında başlamalıdır: `Log::error("Hata:\n" . $e)` tanınmaz.
+- İstisna metninde sınıf, ad alanı içeren ya da `Exception` veya `Error` ile biten addır. Ad
+  alanı olmayan ve böyle bitmeyen bir sınıf (PHP'nin `SoapFault`'u) tanınmaz. Açıklamalı
+  metinde açıklamanın kendisi böyle bir adla başlıyorsa (`Log::error('Error: ' . $e)`,
+  `Log::error(static::class . ': ' . $e)`) sınıf o sayılır, asıl sınıf mesaja kalır.
 - Blade hatalarında şablondaki satır bilinmez: hata derlenmiş şablonda oluşur ve onun satırı
   Blade dosyasındaki satıra karşılık gelmez. Konum yalnızca şablon dosyasıdır.
 - Derlenmiş şablonlar Laravel'in varsayılan klasöründe (`storage/framework/views`) aranır;
@@ -59,6 +66,14 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
   değişikliğini kayıtlardaki farklar zaten taşır.
 - JSON satırlarında yalnızca Monolog'un alan adları tanınır (`message`, `level_name`,
   `datetime`); başka bir JSON şeması (ör. Elastic'in ECS'i, `@timestamp`) kayıt sayılmaz.
+  `--desen` yalnızca metin satırları içindir.
+- Bir logda tek bir metin biçimi okunur: `--desen` verilince Laravel'in biçimindeki satırlar
+  kayıt başlatmaz. JSON satırları her biçimde okunur.
+- `--zaman-bicimi` yalnızca metin satırlarına uygulanır; JSON satırlarının zamanı ISO 8601
+  olmalıdır. Saat dilimi kısaltmaları (`CET`, `EST`) ve adları (`Europe/Istanbul`) farka
+  çevrilmez; o kayıtlar dilimi yazılmamış sayılır.
+- Bir desenle okumak daha yavaştır: her satır düzenli ifadeyle sınanır. 500 MB'lık bir log 7,7
+  yerine 10,3 saniyede okunur.
 - Bellek dosyanın boyuyla değil, farklı mesajların sayısıyla büyür
   ([akışlı okuma](nasil-calisir.md#akışlı-okuma-ve-bellek)). En kötü durum, maskelemenin hiçbir
   şeyini değiştiremediği, her mesajı başka olan bir logdur: her mesaj bir kez saklanır. Her

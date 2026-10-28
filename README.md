@@ -81,7 +81,8 @@ biri kategori sayfasında, öteki ürün sayfasında oluşan iki ayrı hata.
   Vendor, giriş noktaları ve middleware'in `$next($request)` satırı atlanır; Blade
   hatalarında şablonun kendisi gösterilir. Aynı mesaj kodun farklı yerlerinden geliyorsa
   ayrı satırlara bölünür. Proje kökü yollardan silinir: sıfır kesintili dağıtımlarda
-  (Forge, Envoyer) klasör her seferinde değişse de aynı hata tek satırda kalır.
+  (Forge, Envoyer) klasör her seferinde değişse de aynı hata tek satırda kalır. İstisna
+  `report($e)` ile bağlamda da, `Log::error($e)` ile metin olarak da loglansa aynı hatadır.
 - **Dağıtımdan önce ve sonra.** `--karsilastir 15:00` logu ikiye böler ve o andan sonra yeni
   çıkan, kaybolan ve belirgin şekilde artan hataları listeler. Artışın tesadüf olmadığı
   kesin bir binom testiyle sınanır.
@@ -92,7 +93,8 @@ biri kategori sayfasında, öteki ürün sayfasında oluşan iki ayrı hata.
   issue'larına yapıştırmak için Markdown.
 - **Gerçek loglara dayanıklı.** Laravel'in metin biçimi ve Monolog'un JSON satırları (aynı
   dosyada karışık olsalar bile), ISO 8601 zamanlar, Windows yolları (Herd, Laragon),
-  standart girdi, UTF-8 BOM ve geçersiz UTF-8.
+  standart girdi, UTF-8 BOM ve geçersiz UTF-8. Uygulama Monolog'a başka bir satır ya da
+  tarih biçimi verdiyse aynı dizgeler `--desen` ve `--zaman-bicimi` ile verilir.
 - **Güvenli çıktı.** Log mesajlarındaki kontrol karakterleri (ESC, CR) terminale komut olarak
   ulaşmaz: logu yazabilen biri raporun ekranda nasıl göründüğünü değiştiremez.
 - **Tek bağımlılık.** Yalnızca [regex](https://crates.io/crates/regex). JSON okuyucu ve
@@ -181,6 +183,8 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `--bitis <zaman>` | Yalnızca bu andan (hariç) önceki kayıtlar. | |
 | `--son <süre>` | Yalnızca logun son kısmı: en yeni kayıttan bu kadar öncesinden bu yana. Süre: `30dk`, `2sa`, `1g`, `1sa30dk`. | |
 | `--saat-dilimi <dilim>` | Zamanları bu saat diliminde göster: `+03:00`, `-05:30`, `Z` (UTC). Saat dilimi yazılı kayıtlar bu dilime çevrilir. | logda yazılı ilk dilim |
+| `--desen <desen>` | Bir kaydı başlatan satırın biçimi: Monolog'un biçim dizgesi (`"%datetime% [%level_name%] %message% %context%"`) ya da adlandırılmış gruplu bir düzenli ifade. | Laravel'in biçimi |
+| `--zaman-bicimi <biçim>` | Zamanın biçimi, PHP'nin `date()` dizgesiyle: `"d.m.Y H:i:s"`, `"d/M/Y:H:i:s O"`, `"U"`. | ISO 8601 |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
 
@@ -203,6 +207,9 @@ veylog --baslangic "2026-10-23 14:00" --bitis "2026-10-23 16:00" storage/logs/la
 
 # UTC'de yazılmış bir log, Türkiye saatiyle
 veylog --saat-dilimi +03:00 storage/logs/laravel.log
+
+# Biçimi config/logging.php'de değiştirilmiş bir log: Monolog'un biçim ve tarih dizgeleri
+veylog --desen '%datetime% [%level_name%] %message% %context%' --zaman-bicimi 'd.m.Y H:i:s' storage/logs/laravel.log
 
 # Sıkıştırılmış bir günlük log ya da sunucudaki bir log: dosya yerine - standart girdidir
 zcat laravel-2026-10-24.log.gz | veylog -
@@ -239,6 +246,16 @@ yaz saatine geçişi kapsayan ya da saat dilimi değiştirilmiş bir uygulamanı
 Raporun dilimi `--saat-dilimi` ile verilir; verilmezse logda yazılı ilk dilimdir. Raporda
 `Saat dilimi` satırı kaç kaydın çevrildiğini söyler. Filtrelerin ve `--karsilastir`'ın zamanları
 da bu dilimdedir ([ayrıntılar](docs/nasil-calisir.md#saat-dilimleri)).
+
+Laravel'in satır biçimi ve Monolog'un JSON satırları kendiliğinden tanınır. `Log::error($e)`
+istisnayı bağlama koymaz, PHP'nin metni olarak yazar (`RuntimeException: ... in /yol:64` ve
+`Stack trace:`); veylog sınıfı, yeri ve mesajı bu metinden de okur: aynı hata `report($e)` ile
+loglanmış olsa da tek satırdır ([ayrıntılar](docs/nasil-calisir.md#php-istisna-metni)).
+Uygulama Monolog'a başka bir satır biçimi verdiyse (`formatter_with` ile `format` ve
+`dateFormat`) aynı dizgeler `--desen` ve `--zaman-bicimi` ile verilir. Monolog'la yazılmamış
+bir log adlandırılmış gruplu bir düzenli ifadeyle tanıtılır:
+`--desen '(?P<zaman>\S+ \S+) (?P<seviye>\w+): (?P<mesaj>.*)'`
+([ayrıntılar](docs/nasil-calisir.md#log-biçimleri)).
 
 Çıkış kodları betiklerin hatanın türünü ayırt edebilmesi içindir: `0` başarılı, `1` dosya
 okunamadı ya da çıktı yazılamadı, `2` kullanım hatası (bilinmeyen seçenek, geçersiz değer,
@@ -335,9 +352,10 @@ laravel.log
   → özet              metin, JSON ya da Markdown
 ```
 
-1. **Kayıtlara ayırma.** `[2026-10-24 14:03:11] production.ERROR: ...` başlığı ya da
-   Monolog'un bir JSON satırı yeni bir kayıt başlatır; stack trace gibi satırlar bir sonraki
-   başlığa kadar o kayda bağlanır.
+1. **Kayıtlara ayırma.** `[2026-10-24 14:03:11] production.ERROR: ...` başlığı (ya da
+   `--desen`'e uyan bir satır) veya Monolog'un bir JSON satırı yeni bir kayıt başlatır; stack
+   trace gibi satırlar bir sonraki başlığa kadar o kayda bağlanır. Mesaj PHP'nin istisna
+   metniyse (`Log::error($e)`) kaydın mesajı istisnanın mesajıdır.
 2. **Maskeleme.** URL, dosya yolu, e-posta, UUID, zaman, IP ve sayılar yer tutucu olur:
    `Kullanıcı 381 giriş yaptı` → `Kullanıcı <SAYI> giriş yaptı`.
 3. **Drain.** Maskelenmiş mesajlar sabit derinlikli bir ağaçta kümelenir; değişen konumlar
@@ -345,8 +363,9 @@ laravel.log
    `95ms`) ve bir konumun 100'den fazla farklı değer aldığı yaprakta (kullanıcı adları gibi).
 4. **Parmak izi.** Stack trace'ten istisna sınıfı ve uygulama kodundaki ilk satır çıkarılır
    ([Sentry](https://docs.sentry.io/concepts/data-management/event-grouping/) gibi hata
-   takip araçlarının yaptığının sade bir hali). Drain'in kalıplarını yalnızca böler: aynı
-   mesaj iki yerden geliyorsa iki ayrı hatadır.
+   takip araçlarının yaptığının sade bir hali). İstisna bağlamdan, JSON'dan ya da PHP'nin
+   istisna metninden okunur. Drain'in kalıplarını yalnızca böler: aynı mesaj iki yerden
+   geliyorsa iki ayrı hatadır.
 5. **İstatistik.** Karşılaştırmada iki Poisson sıklığını karşılaştıran koşullu binom testi;
    ani artışlarda dilim başına kayıt sayılarının medyanı ve MAD'ı.
 
@@ -379,6 +398,7 @@ okunur; bellek dosyanın boyuyla değil, farklı mesajların sayısıyla büyür
 | Sentetik 426 bin satır | 55 MB | 0,6 sn | 9 MB |
 | 30 günlük log, `--ani-artis 1` (43 195 dilim) | 92 MB, 524 bin satır | 0,6 sn | 9 MB |
 | Sentetik üretim logu | 500 MB, 1,5 milyon kayıt | 8 sn | 17 MB |
+| Aynısı, biçimi `--desen` ile tarif edilerek | 500 MB | 10 sn | 17 MB |
 | Aynısı, dört kat büyük | 2 GB, 6,3 milyon kayıt | 33 sn | 30 MB |
 | Her satırda başka bir kullanıcı adı | 40 bin satır | 0,3 sn | 24 MB |
 
@@ -391,7 +411,7 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
 
 ## Kalite
 
-- **Testler:** 255 birim testi her modülü ayrı ayrı, 34 uçtan uca test derlenmiş programı
+- **Testler:** 284 birim testi her modülü ayrı ayrı, 38 uçtan uca test derlenmiş programı
   çalıştırıp kullanıcının gördüğünü sınar: çıktı metinleri karakter karakter, JSON
   serde_json ile ayrıştırılarak, Markdown tablosu satır satır.
 - **Referans karşılaştırmaları:** yukarıdaki tabloda. Kümeleme gerçek ve sentetik loglarda
@@ -400,13 +420,15 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
   ([ayrıntılar](docs/nasil-calisir.md#değişken-konumlar)).
 - **Mutasyon testleri:** koda bilerek küçük hatalar yerleştirilip (bir karşılaştırmayı
   çevirmek, bir sınırı kaydırmak, bir kuralı silmek) testlerin yakaladığı denetlendi;
-  geliştirme adımlarında denenen 193 mutasyonun 192'si yakalandı. Kalan biri sonucu hiç
+  geliştirme adımlarında denenen 240 mutasyonun 239'u yakalandı. Kalan biri sonucu hiç
   değiştirmeyen (eşdeğer) bir mutasyondu.
 - **CI/CD:** `main` dalına her gönderimde ve her PR'da Linux, macOS ve Windows'ta testler;
   `rustfmt`, `clippy -D warnings` ve en düşük Rust sürümü (1.88). Her sürüm etiketinde dört
   sistem için programlar derlenir ve SHA-256 özetleriyle otomatik yayımlanır.
 - **Gerçek loglar:** iki kişisel Laravel projesinin geliştirme logları (13 MB'a kadar) ve
-  Laravel 13 ile gerçekten fırlatılan istisnalarla üretilmiş loglar. Örnek loglar
+  Laravel 13 ile gerçekten fırlatılan istisnalarla üretilmiş loglar: bağlamda ve
+  `Log::error($e)` ile metin olarak; Laravel'in biçiminde, JSON'da ve özel bir satır ve tarih
+  biçiminde. Üç biçimde de kalıp tablosu aynıdır. Örnek loglar
   (`ornekler/`) kurgusaldır; IP adresleri dokümantasyon aralıklarından, e-postalar `.test`
   uzantılıdır.
 
@@ -433,6 +455,8 @@ src/
 ├── komut_satiri.rs  seçenekler, yardım metni, hata mesajları, yazım hatasına öneri
 ├── okuyucu.rs       girdiyi satır satır okur; bir kaydı yeniden okumak için seyrek dizin
 ├── kayit.rs         satırları kayıtlara toplar: başlık ya da JSON satırı, seviye, mesaj
+├── satir_bicimi.rs  başlık satırının biçimi: Laravel'inki ya da --desen (Monolog dizgesi, düzenli ifade)
+├── zaman_bicimi.rs  --zaman-bicimi: PHP'nin date() dizgesiyle yazılmış zamanları okur
 ├── depo.rs          okunurken her kayıttan özet için gerekenler: alt gruplar, sütunlar, kökler
 ├── sutunlar.rs      kayıtların zamanları ve alt grupları, delta ve LEB128 ile sıkıştırılmış
 ├── farkli_sayac.rs  farklı mesaj sayacı: tam, çok sayıda farklı değerde HyperLogLog
@@ -440,6 +464,7 @@ src/
 ├── maske.rs         değişkenleri yer tutucularla değiştirir: <SAYI>, <IP>, <YOL>...
 ├── drain.rs         Drain: maskelenmiş mesajlardan kalıp çıkarır; esnek eşik, değişken konumlar
 ├── parmak_izi.rs    istisna sınıfı ve uygulama kodundaki ilk satır
+├── istisna_metni.rs PHP'nin istisna metni (Log::error($e)): sınıf, yer, yığın izi, Next
 ├── rapor.rs         özet ve kalıp tablosu; metin çıktısı, kontrol karakterlerinin temizlenmesi
 ├── karsilastirma.rs iki zaman aralığının karşılaştırılması
 ├── ani_artis.rs     dilimler, medyan ve MAD, değiştirilmiş z puanı, çift eşik
@@ -457,6 +482,7 @@ ornekler/            kurgusal örnek loglar
 - [x] Dosyayı satır satır okumak: bellek kullanımı dosyanın boyutundan bağımsız
 - [ ] Birden çok dosyayı ve `.gz` arşivlerini doğrudan okumak
 - [x] Saat dilimlerini hesaba katmak
+- [x] `Log::error($e)` ile metne çevrilmiş istisnalar; kendi satır ve tarih biçimleri
 
 Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md).
 
@@ -486,7 +512,10 @@ the template), compares two time ranges with an exact conditional binomial test,
 sudden spikes with median/MAD-based modified z-scores. It reads Laravel's text format and
 Monolog's JSON lines, handles Windows paths, and writes text, JSON or Markdown. Timestamps
 with UTC offsets are converted to a single report time zone, so logs that span a daylight
-saving change sort correctly. The file is streamed line by line into a compact store, so a
+saving change sort correctly. Exceptions logged as strings (`Log::error($e)`) are parsed from
+PHP's own text and grouped with the same exception logged through the context; custom line
+formats are given as a Monolog format string or a regex with named groups (`--desen`), and
+custom date formats as a PHP `date()` format (`--zaman-bicimi`). The file is streamed line by line into a compact store, so a
 2 GB log is summarized with 30 MB of memory. Its only dependency is `regex`; the JSON reader and writer, statistics and argument
 parser are hand-written and tested against serde_json, scipy and Drain3. Prebuilt binaries
 for Linux (static), macOS and Windows are on the

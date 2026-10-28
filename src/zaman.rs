@@ -51,6 +51,19 @@ impl Zaman {
         }
     }
 
+    /// Parçalarından bir an; takvimde yoksa (`2026-02-30`, `24:00:00`) None.
+    pub fn yeni(yil: u16, ay: u16, gun: u16, saat: u16, dakika: u16, saniye: u16) -> Option<Zaman> {
+        let zaman = Zaman {
+            yil,
+            ay,
+            gun,
+            saat,
+            dakika,
+            saniye,
+        };
+        (yil <= 9999 && zaman.takvimde_var_mi()).then_some(zaman)
+    }
+
     /// Takvimde var olan bir an mı? Ay 1–12, gün o ayın gün sayısı kadar (artık yıllar dahil),
     /// saat 0–23, dakika ve saniye 0–59.
     ///
@@ -160,6 +173,14 @@ impl SaatDilimi {
         i64::from(self.0)
     }
 
+    /// UTC'den farkı saniye olarak yazılmış bir dilim (PHP'nin `Z` biçimi: `10800`, `-18000`).
+    /// Fark tam dakika değilse ya da ±23:59'u aşıyorsa None.
+    pub fn saniyeden(saniye: i64) -> Option<SaatDilimi> {
+        let gecerli = saniye % 60 == 0 && saniye.abs() <= 23 * 3_600 + 59 * 60;
+        // Sınır denetlendi: fark i32'ye sığar
+        gecerli.then(|| SaatDilimi(i32::try_from(saniye).expect("±23:59 i32'ye sığar")))
+    }
+
     /// Saat ve dakikadan; saat 0–23, dakika 0–59 değilse None.
     fn saat_dakika(eksi: bool, saat: u16, dakika: u16) -> Option<SaatDilimi> {
         let fark = i32::from(saat) * 3_600 + i32::from(dakika) * 60;
@@ -207,11 +228,42 @@ impl fmt::Display for SaatDilimi {
     }
 }
 
+/// Kayıt zamanı iç biçimde ve geçerli mi? İki biçim kabul edilir:
+///
+/// - Laravel'in varsayılanı: `2026-10-24 14:03:11`
+/// - Monolog'un varsayılanı olan ISO 8601: `2026-10-24T14:03:11+03:00`
+///
+/// Saniyeden sonra kesir (`.123456`) ve saat dilimi (`Z`, `+03:00`, `+0300`) gelebilir
+/// (`zaman_eki`). `--zaman-bicimi` ile okunan zamanlar da bu biçime çevrilir.
+///
+/// Biçimi doğru ama takvimde olmayan bir zaman (`2026-02-30`, `25:00:00`) ya da saat dilimi
+/// (`+25:00`) reddedilir. Laravel böyle bir zaman yazmaz; ama mesajlar satır sonu içerebildiği
+/// için, loglanan bir kullanıcı girdisindeki satır bir başlık gibi görünebilir. Kabul edilseydi
+/// süre hesapları bozulurdu.
+pub fn kayit_zamani_mi(metin: &str) -> bool {
+    let baytlar = metin.as_bytes();
+    if baytlar.len() < 19 {
+        return false;
+    }
+    let (tarih_saat, ek) = baytlar.split_at(19);
+    let tarih_saat_gecerli = tarih_saat
+        .iter()
+        .enumerate()
+        .all(|(sira, &bayt)| match sira {
+            4 | 7 => bayt == b'-',
+            10 => bayt == b' ' || bayt == b'T',
+            13 | 16 => bayt == b':',
+            _ => bayt.is_ascii_digit(),
+        });
+    // `&&` kısa devre yapar: `Zaman::kayittan` yalnızca biçim doğruysa çağrılır
+    tarih_saat_gecerli && zaman_eki(ek).is_some() && Zaman::kayittan(metin).takvimde_var_mi()
+}
+
 /// Kayıt zamanının saniyeden sonraki kısmı: isteğe bağlı kesir (`.123456`), ardından isteğe
 /// bağlı saat dilimi (`Z`, `+03:00`, `+0300`). Geçersizse None; geçerliyse yazılmışsa saat
 /// dilimi: `""` → `Some(None)`, `".5+03:00"` → `Some(Some(+03:00))`, `"+25:00"` → None.
 ///
-/// Kayıt ayrıştırıcı (`kayit` modülü) bir zamanın geçerliliğini bununla denetler; saat dilimini
+/// Bir kayıt zamanının geçerliliği bununla denetlenir (`kayit_zamani_mi`); saat dilimini
 /// okuyan da (`SaatDilimi::kayittan`) bunu kullanır. Böylece kabul edilen her saat dilimi
 /// okunabilir.
 pub fn zaman_eki(ek: &[u8]) -> Option<Option<SaatDilimi>> {

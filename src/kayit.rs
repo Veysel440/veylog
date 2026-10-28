@@ -17,15 +17,24 @@
 //! {"message":"Mesaj","context":{},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-24T14:03:11.123456+00:00","extra":{}}
 //! ```
 //!
+//! Başlık satırının biçimi `satir_bicimi` modülündedir: varsayılan Laravel'inkidir, başkası
+//! `--desen` ile verilir.
+//!
 //! Satırlar akış halinde, teker teker gelir (`KayitToplayici`). Bir kaydın bittiği ancak bir
 //! sonraki kayıt başladığında ya da girdi bittiğinde anlaşılır; bellekte yalnızca o an
 //! toplanmakta olan kayıt durur. Tamamlanan kayıt bir `KayitAlici`ya verilir.
+//!
+//! Kaydın mesajı PHP'nin istisna metniyse (`Log::error($e)`; `istisna_metni` modülü) kaydın
+//! mesajı istisnanın mesajıdır: `report($e)` ile loglanan aynı hatanın mesajı gibi.
 
 use std::borrow::Cow;
+use std::iter;
 use std::mem;
 
+use crate::istisna_metni::{self, IstisnaMetni};
 use crate::json_okuyucu::{self, Deger};
-use crate::zaman::{self, Zaman};
+use crate::satir_bicimi::{Baslik, BaslikYeri, SatirBicimi};
+use crate::zaman;
 
 /// Laravel log seviyeleri. Sıralama önem sırasıdır: Debug en düşük, Emergency en yüksek.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -54,7 +63,7 @@ impl Seviye {
     ];
 
     /// Log dosyasındaki yazılışından seviyeye çevirir: "ERROR" → Seviye::Error
-    fn ayristir(metin: &str) -> Option<Seviye> {
+    pub(crate) fn ayristir(metin: &str) -> Option<Seviye> {
         Seviye::HEPSI
             .into_iter()
             .find(|seviye| seviye.ad() == metin)
@@ -78,34 +87,58 @@ impl Seviye {
 /// Tek bir log kaydı: başlık satırından (ya da JSON satırından) okunanlar ve ona ait devam
 /// satırları.
 ///
-/// `'a`: kayıt, satırların metnini kopyalamaz, onlardan ödünç alır. Tek istisna JSON
-/// satırlarındaki kaçışlı mesajlardır (`Trait \"X\" not found`): çözülmüş halleri kayda aittir.
+/// `'a`: kayıt, satırların metnini kopyalamaz, onlardan ödünç alır. İstisnalar kayda aittir
+/// (`Cow::Owned`): JSON satırlarındaki kaçışlı mesajların çözülmüş halleri
+/// (`Trait \"X\" not found`), `--zaman-bicimi` ile çevrilen zamanlar ve açıklamalı istisna
+/// metinlerinden kurulan mesajlar.
 ///
 /// Alanlar gizli, dışarıdan yalnızca okunabilir (aşağıdaki metotlarla). Böylece bir kayıt
 /// yalnızca bu modülde, denetlenerek oluşturulabilir.
 #[derive(Debug, PartialEq)]
 pub struct Kayit<'a> {
-    /// "2026-10-24 14:03:11"
-    zaman: &'a str,
+    /// İç biçimde: "2026-10-24 14:03:11", varsa kesir ve saat dilimiyle
+    zaman: Cow<'a, str>,
     seviye: Seviye,
-    /// Bağlam JSON'u olmadan mesajın kendisi: "Kullanıcı 381 giriş yaptı". Çoğu zaman satırdan
-    /// ödünç alınır (`Cow::Borrowed`); JSON satırındaki mesaj kaçış içeriyorsa çözülmüş hali
-    /// kayda aittir (`Cow::Owned`).
+    /// Bağlam JSON'u olmadan mesajın kendisi: "Kullanıcı 381 giriş yaptı". Mesaj PHP'nin istisna
+    /// metniyse istisnanın mesajı.
     mesaj: Cow<'a, str>,
     /// Başlık satırında mesajdan sonra gelen kısım: `{"ip":"203.0.113.24"}`. Yoksa ya da kayıt
     /// bir JSON satırıysa boş.
     baglam: &'a str,
+    /// Metin biçiminde başlıkta seviyeden sonra gelen her şey (mesaj ve bağlam); JSON
+    /// satırında çözülmüş mesajın tamamı. PHP'nin istisna metni burada başlar.
+    govde: Cow<'a, str>,
     /// Başlıktan sonra gelen satırlar: stack trace, çok satırlı mesajlar.
     devam_satirlari: Vec<&'a str>,
+    /// Kayıt bir JSON satırı mı?
+    json: bool,
     /// Kayıt bir JSON satırıysa bağlamdaki istisna: `{"class":"...","file":"/yol/X.php:26",...}`
     json_istisna: Option<Deger<'a>>,
+    /// Mesaj PHP'nin istisna metni mi (`Log::error($e)`)?
+    istisna_metni: bool,
 }
 
 impl<'a> Kayit<'a> {
-    /// Kaydın zamanı. İlk 19 karakteri her zaman takvimde var olan bir tarih-saattir
-    /// (`2026-10-24 14:03:11` ya da `2026-10-24T14:03:11`); `zaman_gecerli_mi` bunu denetler.
-    pub fn zaman(&self) -> &'a str {
-        self.zaman
+    /// Başlık satırından okunanlarla, devam satırları olmadan.
+    fn basliktan(baslik: Baslik<'a>) -> Kayit<'a> {
+        Kayit {
+            zaman: baslik.zaman,
+            seviye: baslik.seviye,
+            mesaj: Cow::Borrowed(baslik.mesaj),
+            baglam: baslik.baglam,
+            govde: Cow::Borrowed(baslik.govde),
+            devam_satirlari: Vec::new(),
+            json: false,
+            json_istisna: None,
+            istisna_metni: false,
+        }
+    }
+
+    /// Kaydın zamanı, iç biçimde. İlk 19 karakteri her zaman takvimde var olan bir
+    /// tarih-saattir (`2026-10-24 14:03:11` ya da `2026-10-24T14:03:11`);
+    /// `zaman::kayit_zamani_mi` bunu denetler.
+    pub fn zaman(&self) -> &str {
+        &self.zaman
     }
 
     pub fn seviye(&self) -> Seviye {
@@ -138,6 +171,48 @@ impl<'a> Kayit<'a> {
     /// nesne olarak yazar (`class`, `message`, `file`, belki `trace` ve `previous`).
     pub fn json_istisna(&self) -> Option<&Deger<'a>> {
         self.json_istisna.as_ref()
+    }
+
+    /// Mesaj PHP'nin istisna metniyse (`Log::error($e)`) en dıştaki istisna.
+    pub fn istisna_metni(&self) -> Option<IstisnaMetni<'_>> {
+        if !self.istisna_metni {
+            return None;
+        }
+        if self.json {
+            istisna_metni::ayristir(self.govde.lines())
+        } else {
+            istisna_metni::ayristir(
+                iter::once(&*self.govde).chain(self.devam_satirlari.iter().copied()),
+            )
+        }
+    }
+
+    /// Mesaj PHP'nin istisna metniyse kaydın mesajını istisnanın mesajı yapar. Metin
+    /// biçiminde istisna metni devam satırlarına uzanır: kayıt tamamlanınca çağrılır.
+    fn istisna_metnine_bak(&mut self) {
+        let mesaj = match &self.govde {
+            Cow::Borrowed(govde) if !self.json => {
+                // Satırlardan ödünç alınan parçalar kayda değil satırlara bağlıdır (`'a`)
+                let govde: &'a str = govde;
+                let Some(metin) = istisna_metni::ayristir(
+                    iter::once(govde).chain(self.devam_satirlari.iter().copied()),
+                ) else {
+                    return;
+                };
+                if metin.aciklama.is_empty() {
+                    Cow::Borrowed(metin.mesaj.trim())
+                } else {
+                    Cow::Owned(metin.kayit_mesaji())
+                }
+            }
+            // JSON satırı: istisna metni mesajın tamamındadır
+            govde => match istisna_metni::ayristir(govde.lines()) {
+                Some(metin) => Cow::Owned(metin.kayit_mesaji()),
+                None => return,
+            },
+        };
+        self.mesaj = mesaj;
+        self.istisna_metni = true;
     }
 }
 
@@ -191,12 +266,14 @@ const DEVAM_SATIR_SINIRI: usize = 16 << 20;
 /// BOM'u kendi ilk satırındadır.
 #[derive(Debug, Default)]
 pub struct KayitToplayici {
+    /// Satırların biçimi: hangi satır bir kaydı başlatır.
+    bicim: SatirBicimi,
     bekleyen: Bekleyen,
     /// Toplanmakta olan metin kaydının başlık satırı.
     baslik: String,
-    /// Toplanmakta olan JSON kaydının zamanı ve çözülmüş mesajı.
+    /// Toplanmakta olan JSON kaydının zamanı ve çözülmüş mesajının tamamı.
     json_zaman: String,
-    json_mesaj: String,
+    json_govde: String,
     /// Toplanmakta olan kaydın devam satırları art arda ve her birinin bittiği yer. Tamponlar
     /// kayıttan kayda yeniden kullanılır; her satır için ayrı bir bellek ayrılmaz. Konumlar
     /// `u32`: devam satırları `DEVAM_SINIRI`'nı geçmez.
@@ -215,9 +292,9 @@ pub struct KayitToplayici {
 enum Bekleyen {
     #[default]
     Yok,
-    /// Metin biçiminde bir kayıt; başlık satırı `baslik`ta. Başlık kayıt tamamlanınca yeniden
-    /// ayrıştırılır: ucuzdur ve böylece ayrıştırılmış hali satıra bağlı kalmaz.
-    Metin(KayitBilgisi),
+    /// Metin biçiminde bir kayıt; başlık satırı `baslik`ta, parçalarının yerleri burada. Kayıt
+    /// tamamlanınca başlık bunlardan kurulur; satır yeniden ayrıştırılmaz.
+    Metin(KayitBilgisi, BaslikYeri),
     /// İstisnası olmayan bir JSON kaydı; alanları `json_*`'da. Devam satırları beklenir:
     /// istisna onlarda olabilir.
     Json(KayitBilgisi, Seviye),
@@ -227,16 +304,26 @@ enum Bekleyen {
 }
 
 impl KayitToplayici {
+    /// Satırları verilen biçimde okuyan bir toplayıcı. `KayitToplayici::default()` Laravel'in
+    /// biçimini okur.
+    pub fn new(bicim: SatirBicimi) -> Self {
+        KayitToplayici {
+            bicim,
+            ..KayitToplayici::default()
+        }
+    }
+
     /// Bir satırı işler. `konum`: satırın girdideki bayt konumu.
     pub fn satir<A: KayitAlici + ?Sized>(&mut self, satir: &str, konum: u64, alici: &mut A) {
         self.sayilar.satir += 1;
         let satir = satir.strip_prefix('\u{feff}').unwrap_or(satir);
-        if baslik_ayristir(satir).is_some() {
+        if let Some(baslik) = self.bicim.baslik(satir) {
+            let yer = baslik.yeri(satir);
             self.bitir(alici);
             let bilgi = self.yeni_kayit(konum);
             self.baslik.clear();
             self.baslik.push_str(satir);
-            self.bekleyen = Bekleyen::Metin(bilgi);
+            self.bekleyen = Bekleyen::Metin(bilgi, yer);
         } else if let Some(kayit) = json_satiri_ayristir(satir) {
             self.bitir(alici);
             let bilgi = self.yeni_kayit(konum);
@@ -245,9 +332,9 @@ impl KayitToplayici {
                 self.bekleyen = Bekleyen::Verildi;
             } else {
                 self.json_zaman.clear();
-                self.json_zaman.push_str(kayit.zaman);
-                self.json_mesaj.clear();
-                self.json_mesaj.push_str(&kayit.mesaj);
+                self.json_zaman.push_str(&kayit.zaman);
+                self.json_govde.clear();
+                self.json_govde.push_str(&kayit.govde);
                 self.bekleyen = Bekleyen::Json(bilgi, kayit.seviye);
             }
         } else if matches!(self.bekleyen, Bekleyen::Yok) {
@@ -298,21 +385,25 @@ impl KayitToplayici {
             })
             .collect();
         match bekleyen {
-            Bekleyen::Metin(bilgi) => {
-                let mut kayit =
-                    baslik_ayristir(&self.baslik).expect("başlık olduğu satır gelince denetlendi");
+            Bekleyen::Metin(bilgi, yer) => {
+                let mut kayit = Kayit::basliktan(yer.baslik(&self.baslik));
                 kayit.devam_satirlari = devam_satirlari;
+                kayit.istisna_metnine_bak();
                 alici.kayit(&kayit, bilgi);
             }
             Bekleyen::Json(bilgi, seviye) => {
-                let kayit = Kayit {
-                    zaman: &self.json_zaman,
+                let mut kayit = Kayit {
+                    zaman: Cow::Borrowed(&self.json_zaman),
                     seviye,
-                    mesaj: Cow::Borrowed(&self.json_mesaj),
+                    mesaj: ilk_satir(&Cow::Borrowed(&self.json_govde)),
                     baglam: "",
+                    govde: Cow::Borrowed(&self.json_govde),
                     devam_satirlari,
+                    json: true,
                     json_istisna: None,
+                    istisna_metni: false,
                 };
+                kayit.istisna_metnine_bak();
                 alici.kayit(&kayit, bilgi);
             }
             Bekleyen::Verildi | Bekleyen::Yok => {}
@@ -338,36 +429,17 @@ impl KayitToplayici {
     }
 }
 
-/// Satır bir kaydın başlangıcıysa (metin biçiminde bir başlık ya da bir JSON kaydı) o kayıt;
+/// Satır bir kaydın başlangıcıysa (verilen biçimde bir başlık ya da bir JSON kaydı) o kayıt;
 /// devam satırları olmadan. Satırın başındaki BOM atılır.
 ///
-/// Toplayıcıyla aynı kararı verir; bir kayıt sonradan, başlık satırından yeniden okunurken
-/// kullanılır.
-pub fn kayit_baslangici(satir: &str) -> Option<Kayit<'_>> {
+/// Toplayıcıyla aynı kararı verir. Kaydın zamanı ve seviyesi kesindir; mesajı ise metin
+/// biçiminde PHP'nin istisna metniyse (o devam satırlarına uzanır) başlıktaki gibidir.
+pub fn kayit_baslangici<'a>(bicim: &SatirBicimi, satir: &'a str) -> Option<Kayit<'a>> {
     let satir = satir.strip_prefix('\u{feff}').unwrap_or(satir);
-    baslik_ayristir(satir).or_else(|| json_satiri_ayristir(satir))
-}
-
-/// Satır bir kayıt başlığıysa ondan yeni bir kayıt oluşturur (henüz devam satırı yok).
-fn baslik_ayristir(satir: &str) -> Option<Kayit<'_>> {
-    let geri = satir.strip_prefix('[')?; // "2026-10-24 14:03:11] production.ERROR: ..."
-    let (zaman, kalan) = geri.split_once("] ")?; // "2026-10-24 14:03:11" ve "production.ERROR: ..."
-    if !zaman_gecerli_mi(zaman) {
-        return None;
+    match bicim.baslik(satir) {
+        Some(baslik) => Some(Kayit::basliktan(baslik)),
+        None => json_satiri_ayristir(satir),
     }
-    let (kanal_seviye, mesaj_ve_baglam) = kalan.split_once(':')?; // "production.ERROR" ve " Mesaj {...}"
-    let (_, seviye_metni) = kanal_seviye.rsplit_once('.')?; // "ERROR"
-    let seviye = Seviye::ayristir(seviye_metni)?;
-    let (mesaj, baglam) = mesaji_ayir(mesaj_ve_baglam);
-
-    Some(Kayit {
-        zaman,
-        seviye,
-        mesaj: Cow::Borrowed(mesaj),
-        baglam,
-        devam_satirlari: Vec::new(),
-        json_istisna: None,
-    })
 }
 
 /// Satır Monolog'un JSON biçiminde bir kayıtsa ondan yeni bir kayıt oluşturur.
@@ -383,80 +455,39 @@ fn json_satiri_ayristir(satir: &str) -> Option<Kayit<'_>> {
     let deger = json_okuyucu::oku(satir).ok()?;
     // Zaman kaçış içeremez (rakamlar, `-`, `:`, `T`, `+`); ham hali doğrudan denetlenir
     let zaman = deger.alan("datetime")?.ham_metin()?;
-    if !zaman_gecerli_mi(zaman) {
+    if !zaman::kayit_zamani_mi(zaman) {
         return None;
     }
     let seviye = Seviye::ayristir(deger.alan("level_name")?.ham_metin()?)?;
-    let mesaj = ilk_satir(deger.alan("message")?.metin()?);
+    let govde = deger.alan("message")?.metin()?;
     let json_istisna = deger
         .alan("context")
         .and_then(|baglam| baglam.alan("exception"))
         .cloned();
 
-    Some(Kayit {
-        zaman,
+    let mut kayit = Kayit {
+        zaman: Cow::Borrowed(zaman),
         seviye,
-        mesaj,
+        mesaj: ilk_satir(&govde),
         baglam: "",
+        govde,
         devam_satirlari: Vec::new(),
+        json: true,
         json_istisna,
-    })
+        istisna_metni: false,
+    };
+    kayit.istisna_metnine_bak();
+    Some(kayit)
 }
 
 /// Mesajın ilk satırı, baştaki ve sondaki boşluklar atılmış olarak. Metin biçiminde çok
 /// satırlı bir mesajın da yalnızca ilk satırı başlıktadır; iki biçimde aynı mesaj böylece aynı
 /// kalıba düşer.
-fn ilk_satir(mesaj: Cow<'_, str>) -> Cow<'_, str> {
+fn ilk_satir<'a>(mesaj: &Cow<'a, str>) -> Cow<'a, str> {
     match mesaj {
         Cow::Borrowed(metin) => Cow::Borrowed(metin.lines().next().unwrap_or("").trim()),
         Cow::Owned(metin) => Cow::Owned(metin.lines().next().unwrap_or("").trim().to_owned()),
     }
-}
-
-/// Başlıkta seviyeden sonra gelen kısmı mesaj ve bağlam olarak ikiye ayırır.
-///
-/// Laravel, mesajın arkasına bağlam bilgisini JSON olarak ekler:
-/// ` Kullanıcı 381 giriş yaptı {"ip":"203.0.113.24"} `
-/// → `Kullanıcı 381 giriş yaptı` ve `{"ip":"203.0.113.24"}`
-///
-/// Bağlam ` {"` ile başlar; ondan öncesi mesajdır. Baştaki ve sondaki boşluklar atılır.
-fn mesaji_ayir(metin: &str) -> (&str, &str) {
-    let (mesaj, baglam) = match metin.find(" {\"") {
-        Some(konum) => metin.split_at(konum),
-        None => (metin, ""),
-    };
-    (mesaj.trim(), baglam.trim())
-}
-
-/// Kayıt zamanı geçerli mi? İki biçim kabul edilir:
-///
-/// - Laravel'in varsayılanı: `2026-10-24 14:03:11`
-/// - Monolog'un varsayılanı olan ISO 8601: `2026-10-24T14:03:11+03:00`
-///
-/// Saniyeden sonra kesir (`.123456`) ve saat dilimi (`Z`, `+03:00`, `+0300`) gelebilir
-/// (`zaman::zaman_eki`).
-///
-/// Biçimi doğru ama takvimde olmayan bir zaman (`2026-02-30`, `25:00:00`) ya da saat dilimi
-/// (`+25:00`) reddedilir. Laravel böyle bir zaman yazmaz; ama mesajlar satır sonu içerebildiği
-/// için, loglanan bir kullanıcı girdisindeki satır bir başlık gibi görünebilir. Kabul edilseydi
-/// süre hesapları bozulurdu.
-fn zaman_gecerli_mi(metin: &str) -> bool {
-    let baytlar = metin.as_bytes();
-    if baytlar.len() < 19 {
-        return false;
-    }
-    let (tarih_saat, ek) = baytlar.split_at(19);
-    let tarih_saat_gecerli = tarih_saat
-        .iter()
-        .enumerate()
-        .all(|(sira, &bayt)| match sira {
-            4 | 7 => bayt == b'-',
-            10 => bayt == b' ' || bayt == b'T',
-            13 | 16 => bayt == b':',
-            _ => bayt.is_ascii_digit(),
-        });
-    // `&&` kısa devre yapar: `Zaman::kayittan` yalnızca biçim doğruysa çağrılır
-    tarih_saat_gecerli && zaman::zaman_eki(ek).is_some() && Zaman::kayittan(metin).takvimde_var_mi()
 }
 
 /// Testlerde kayıtları toplamak için: her kaydın sahiplenilmiş bir kopyası.
@@ -495,8 +526,13 @@ pub mod deneme {
 
     /// Metni satır satır toplayıcıdan geçirir: kayıtlar ve satır sayıları.
     pub fn topla(metin: &str) -> (Vec<ToplananKayit>, SatirSayilari) {
+        topla_bicimle(metin, SatirBicimi::default())
+    }
+
+    /// `topla` gibi, satırları verilen biçimde okuyarak.
+    pub fn topla_bicimle(metin: &str, bicim: SatirBicimi) -> (Vec<ToplananKayit>, SatirSayilari) {
         let mut kayitlar = Vec::new();
-        let mut toplayici = KayitToplayici::default();
+        let mut toplayici = KayitToplayici::new(bicim);
         let mut konum = 0;
         // `split_inclusive`: satır sonları satırda kalır; konum onlarla birlikte ilerler
         for parca in metin.split_inclusive('\n') {
@@ -513,8 +549,14 @@ pub mod deneme {
 
 #[cfg(test)]
 mod testler {
-    use super::deneme::{ToplananKayit, topla};
+    use super::deneme::{ToplananKayit, topla, topla_bicimle};
     use super::*;
+    use crate::zaman_bicimi::ZamanBicimi;
+
+    /// Laravel'in biçimindeki bir başlık satırından kayıt, devam satırları olmadan.
+    fn baslik_ayristir(satir: &str) -> Option<Kayit<'_>> {
+        SatirBicimi::default().baslik(satir).map(Kayit::basliktan)
+    }
 
     #[test]
     fn baslik_alanlarina_ayrilir() {
@@ -522,12 +564,15 @@ mod testler {
         assert_eq!(
             kayit,
             Some(Kayit {
-                zaman: "2026-10-24 14:03:11",
+                zaman: Cow::Borrowed("2026-10-24 14:03:11"),
                 seviye: Seviye::Error,
                 mesaj: Cow::Borrowed("Saat 10:00 raporu"),
                 baglam: "",
+                govde: Cow::Borrowed("Saat 10:00 raporu"),
                 devam_satirlari: vec![],
+                json: false,
                 json_istisna: None,
+                istisna_metni: false,
             })
         );
     }
@@ -777,7 +822,13 @@ mod testler {
         assert_eq!(kayitlar[1].seviye, Seviye::Critical);
         assert_eq!(sayilar.yetim, 0);
         // Yeniden okurken de aynı karar verilir
-        assert!(kayit_baslangici("\u{feff}[2026-10-25 10:00:00] local.CRITICAL: x").is_some());
+        assert!(
+            kayit_baslangici(
+                &SatirBicimi::default(),
+                "\u{feff}[2026-10-25 10:00:00] local.CRITICAL: x"
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -928,5 +979,130 @@ mod testler {
                 .filter(|kayit| kayit.zaman.contains('T'))
                 .all(|kayit| kayit.devam.is_empty())
         );
+    }
+
+    /// `Log::error($e)` ile loglanmış, önceki istisnası olan bir hata
+    const ISTISNA_METNI: &str = r"[2026-10-27 14:03:11] production.ERROR: PDOException: SQLSTATE[HY000] [2002] Connection refused in /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connectors/Connector.php:66
+Stack trace:
+#0 /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connectors/Connector.php(66): PDO->__construct()
+#1 {main}
+
+Next Illuminate\Database\QueryException: SQLSTATE[HY000] [2002] Connection refused (Connection: mysql, SQL: select * from `urunler`) in /var/www/magaza/vendor/laravel/framework/src/Illuminate/Database/Connection.php:825
+Stack trace:
+#0 /var/www/magaza/app/Http/Controllers/UrunController.php(20): Illuminate\Database\Eloquent\Builder->get()
+#1 {main}  ";
+
+    #[test]
+    fn istisna_metninin_mesaji_distaki_istisnanin_mesajidir() {
+        let (kayitlar, _) = topla(&format!(
+            "{ISTISNA_METNI}\n[2026-10-27 14:03:12] production.INFO: Sonraki"
+        ));
+        assert_eq!(
+            kayitlar[0].mesaj,
+            "SQLSTATE[HY000] [2002] Connection refused (Connection: mysql, SQL: select * from `urunler`)"
+        );
+        assert_eq!(kayitlar[0].devam.len(), 8);
+        assert_eq!(kayitlar[1].mesaj, "Sonraki");
+
+        // Açıklamalı istisna metni; açıklama yoksa mesaj satırdan ödünç alınır
+        let mut toplanan = Vec::new();
+        let mut toplayici = KayitToplayici::default();
+        let metin = "[2026-10-27 14:03:11] production.ERROR: Ödeme başarısız: RuntimeException: Bağlantı koptu in /var/www/magaza/app/Services/Odeme.php:12\nStack trace:\n#0 {main}";
+        for satir in metin.lines() {
+            toplayici.satir(satir, 0, &mut toplanan);
+        }
+        toplayici.bitir(&mut toplanan);
+        assert_eq!(toplanan[0].mesaj, "Ödeme başarısız: Bağlantı koptu");
+
+        struct Odunc(Vec<bool>);
+        impl KayitAlici for Odunc {
+            fn kayit(&mut self, kayit: &Kayit<'_>, _: KayitBilgisi) {
+                self.0.push(matches!(kayit.mesaj, Cow::Borrowed(_)));
+                assert!(kayit.istisna_metni().is_some());
+            }
+        }
+        let mut odunc = Odunc(Vec::new());
+        let mut toplayici = KayitToplayici::default();
+        for satir in ISTISNA_METNI.lines() {
+            toplayici.satir(satir, 0, &mut odunc);
+        }
+        toplayici.bitir(&mut odunc);
+        assert_eq!(odunc.0, [true]);
+    }
+
+    #[test]
+    fn json_mesajindaki_istisna_metni() {
+        let mesaj = ISTISNA_METNI
+            .split_once("ERROR: ")
+            .unwrap()
+            .1
+            .replace('\\', "\\\\")
+            .replace('\n', "\\n");
+        let satir = format!(
+            r#"{{"message":"{mesaj}","context":{{}},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-27T14:03:11+03:00","extra":{{}}}}"#
+        );
+        let kayit = json_satiri_ayristir(&satir).unwrap();
+        assert_eq!(
+            kayit.mesaj,
+            "SQLSTATE[HY000] [2002] Connection refused (Connection: mysql, SQL: select * from `urunler`)"
+        );
+        let metin = kayit.istisna_metni().unwrap();
+        assert_eq!(metin.sinif, r"Illuminate\Database\QueryException");
+        // Toplayıcıda bekleyen JSON kaydı da aynı mesajı alır
+        let (kayitlar, _) = topla(&satir);
+        assert_eq!(kayitlar[0].mesaj, kayit.mesaj());
+        // İstisna metni olmayan kayıtta None
+        let kayit = baslik_ayristir("[2026-10-27 14:03:11] production.ERROR: x").unwrap();
+        assert_eq!(kayit.istisna_metni(), None);
+    }
+
+    #[test]
+    fn desenle_okunan_kayitlar() {
+        let bicim = SatirBicimi::new(
+            Some("%datetime% [%level_name%] %message% %context%"),
+            Some(ZamanBicimi::derle("d.m.Y H:i:s").unwrap()),
+        )
+        .unwrap();
+        let metin = [
+            "27.10.2026 14:03:11 [error] Ödeme alınamadı {\"siparis\":5}",
+            "  ayrıntı satırı",
+            "[2026-10-27 14:03:12] production.INFO: Laravel'in biçimi artık devam satırı",
+            r#"{"message":"JSON kaydı","level_name":"INFO","datetime":"2026-10-27T14:03:13+03:00"}"#,
+            "27.10.2026 14:03:14 [warn] Kuyruk dolu",
+        ]
+        .join("\n");
+        let (kayitlar, sayilar) = topla_bicimle(&metin, bicim.clone());
+        let ozet: Vec<(&str, Seviye, &str, &str)> = kayitlar
+            .iter()
+            .map(|kayit| {
+                (
+                    kayit.zaman.as_str(),
+                    kayit.seviye,
+                    kayit.mesaj.as_str(),
+                    kayit.baglam.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            ozet,
+            [
+                (
+                    "2026-10-27 14:03:11",
+                    Seviye::Error,
+                    "Ödeme alınamadı",
+                    "{\"siparis\":5}"
+                ),
+                ("2026-10-27T14:03:13+03:00", Seviye::Info, "JSON kaydı", ""),
+                ("2026-10-27 14:03:14", Seviye::Warning, "Kuyruk dolu", ""),
+            ]
+        );
+        assert_eq!(kayitlar[0].devam.len(), 2);
+        assert_eq!(sayilar.kayit, 3);
+        // Yeniden okurken de aynı biçim
+        assert!(kayit_baslangici(&bicim, "27.10.2026 14:03:14 [warn] x").is_some());
+        assert!(kayit_baslangici(&bicim, "[2026-10-27 14:03:12] production.INFO: x").is_none());
+        // Çevrilen zaman kayda aittir
+        let kayit = kayit_baslangici(&bicim, "27.10.2026 14:03:14 [warn] x").unwrap();
+        assert!(matches!(kayit.zaman, Cow::Owned(_)));
     }
 }
