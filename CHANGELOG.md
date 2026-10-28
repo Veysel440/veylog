@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-28
+
 ### Changed
 
 - **Breaking:** the interface is now in English by default. Turkish is selected with
@@ -346,6 +348,7 @@ First release.
 - A Turkish command line: decimal commas, option names with Turkish characters, typo
   suggestions, distinct exit codes.
 
-[Unreleased]: https://github.com/Veysel440/veylog/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Veysel440/veylog/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Veysel440/veylog/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Veysel440/veylog/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Veysel440/veylog/releases/tag/v0.1.0

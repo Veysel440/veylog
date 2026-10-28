@@ -590,7 +590,7 @@ about a minute and produced a 40,000-row table; now it yields a single pattern,
 
 ## Testing and quality
 
-- **Tests:** 385 unit tests cover each module on its own; 53 end-to-end tests run the compiled
+- **Tests:** 386 unit tests cover each module on its own; 54 end-to-end tests run the compiled
   binary and check what the user sees: output text character by character, JSON parsed with
   serde_json, Markdown tables line by line.
 - **Reference comparisons:** see the table above. On real and synthetic logs, the clustering
