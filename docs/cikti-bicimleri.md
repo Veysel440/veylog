@@ -9,6 +9,18 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
 | JSON | `--bicim json` | Betikler, `jq`, CI adımları |
 | Markdown | `--bicim markdown` | GitHub issue ve PR açıklamaları |
 
+Metin ve Markdown seçili dilde yazılır (`--dil en`: başlıklar, etiketler, ondalık ayracı,
+süre birimleri, `<SAYI>` yerine `<NUM>`). JSON her dilde aynıdır; alan adları ve yer
+tutucuları Türkçedir ([arayüz dili](nasil-calisir.md#arayüz-dili)).
+
+| Yer tutucu | İngilizcesi | Ne yerine |
+|---|---|---|
+| `<SAYI>` | `<NUM>` | sayı |
+| `<YOL>` | `<PATH>` | dosya yolu |
+| `<EPOSTA>` | `<EMAIL>` | e-posta adresi |
+| `<ZAMAN>` | `<TIME>` | tarih ve saat |
+| `<URL>`, `<UUID>`, `<IP>` | aynı | adres, UUID, IP adresi |
+
 Canlı izlemede (`--izle`) yalnızca metin biçimi vardır. Her çizim, olağan metin raporunun
 başına bir durum satırı eklenmiş halidir:
 

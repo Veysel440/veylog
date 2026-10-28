@@ -184,6 +184,15 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
 - Arka arkaya iki olay, aradaki dilimlerde sayı olağana inmezse tek bir artış olarak
   görünür.
 
+## Arayüz dili
+
+- Logun içeriği çevrilmez: Türkçe bir logun mesajları İngilizce raporda da Türkçedir.
+- JSON'un alan adları ve yer tutucuları her dilde Türkçedir (`kaliplar`, `<SAYI>`); bilerek:
+  JSON'u okuyan betikler dile bağlı olmasın.
+- Yalnızca Türkçe ve İngilizce vardır; dil ortamın yerel ayarından (`LANG`) seçilmez, Türkçe
+  bir terminalde de İngilizce ayarlı bir sistemde de varsayılan Türkçedir. `VEYLOG_DIL=en`
+  kalıcı bir seçimdir.
+
 ## Terminal
 
 - Yazı yönünü değiştiren Unicode karakterleri (ör. U+202E, "Trojan Source") temizlenmez.

@@ -13,6 +13,7 @@
 
 use std::fmt;
 
+use crate::dil::{self, Dil};
 use crate::kayit::Seviye;
 use crate::zaman::{Zaman, ZamanNoktasi};
 
@@ -112,10 +113,16 @@ pub enum FiltreHatasi {
 impl fmt::Display for FiltreHatasi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FiltreHatasi::BosAralik { baslangic, bitis } => write!(
-                f,
-                "filtre aralığı boş: başlangıç ({baslangic}) bitişten ({bitis}) önce olmalı"
-            ),
+            FiltreHatasi::BosAralik { baslangic, bitis } => match dil::simdiki() {
+                Dil::Tr => write!(
+                    f,
+                    "filtre aralığı boş: başlangıç ({baslangic}) bitişten ({bitis}) önce olmalı"
+                ),
+                Dil::En => write!(
+                    f,
+                    "the filter range is empty: the start ({baslangic}) must be before the end ({bitis})"
+                ),
+            },
         }
     }
 }
@@ -167,6 +174,26 @@ pub fn milisaniye_ayristir(metin: &str) -> Option<u64> {
 #[cfg(test)]
 mod testler {
     use super::*;
+
+    #[test]
+    fn bos_aralik_iki_dilde() {
+        let hata = Filtre {
+            baslangic: ZamanNoktasi::ayristir("15:00"),
+            bitis: ZamanNoktasi::ayristir("14:00"),
+            ..Filtre::default()
+        }
+        .coz(Some(Zaman::kayittan("2026-10-24 18:00:00")))
+        .unwrap_err();
+        assert_eq!(
+            hata.to_string(),
+            "filtre aralığı boş: başlangıç (2026-10-24 15:00:00) bitişten (2026-10-24 14:00:00) önce olmalı"
+        );
+        let _dil = dil::gecici(Dil::En);
+        assert_eq!(
+            hata.to_string(),
+            "the filter range is empty: the start (2026-10-24 15:00:00) must be before the end (2026-10-24 14:00:00)"
+        );
+    }
 
     fn zaman(metin: &str) -> Zaman {
         Zaman::kayittan(metin)

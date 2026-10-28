@@ -17,6 +17,8 @@
 use std::fmt;
 use std::ops::RangeInclusive;
 
+use crate::dil;
+
 /// Bir an: tarih ve saniye hassasiyetinde saat.
 ///
 /// `Ord` türetilince alanlar yazıldıkları sırayla karşılaştırılır: önce yıl, eşitse ay,
@@ -431,25 +433,32 @@ pub fn sure_yaz(saniye: usize) -> String {
     let (gun, kalan) = (saniye / 86_400, saniye % 86_400);
     let (saat, kalan) = (kalan / 3_600, kalan % 3_600);
     let (dakika, saniye) = (kalan / 60, kalan % 60);
+    let [g, sa, dk, sn] = birimler();
     if gun > 0 {
-        format!("{gun} gün {saat} sa")
+        format!("{gun} {g} {saat} {sa}")
     } else if saat > 0 {
-        format!("{saat} sa {dakika} dk")
+        format!("{saat} {sa} {dakika} {dk}")
     } else if dakika > 0 {
-        format!("{dakika} dk {saniye} sn")
+        format!("{dakika} {dk} {saniye} {sn}")
     } else {
-        format!("{saniye} sn")
+        format!("{saniye} {sn}")
     }
+}
+
+/// Sürelerin birimleri, seçili dilde: gün, saat, dakika, saniye.
+fn birimler() -> [&'static str; 4] {
+    dil::sec(["gün", "sa", "dk", "sn"], ["d", "h", "min", "s"])
 }
 
 /// Süreyi bütün bileşenleriyle yazar, sıfır olanları atlayarak: `30 dk`, `1 sa 30 dk`,
 /// `1 gün 2 sa 3 dk 4 sn`. Kullanıcının verdiği bir süreyi (`--son 1sa30dk`) geri yazmak için.
 pub fn sure_tam_yaz(saniye: u64) -> String {
+    let [g, sa, dk, sn] = birimler();
     let parcalar = [
-        (saniye / 86_400, "gün"),
-        (saniye % 86_400 / 3_600, "sa"),
-        (saniye % 3_600 / 60, "dk"),
-        (saniye % 60, "sn"),
+        (saniye / 86_400, g),
+        (saniye % 86_400 / 3_600, sa),
+        (saniye % 3_600 / 60, dk),
+        (saniye % 60, sn),
     ];
     let yazilanlar: Vec<String> = parcalar
         .iter()
@@ -457,7 +466,7 @@ pub fn sure_tam_yaz(saniye: u64) -> String {
         .map(|(sayi, birim)| format!("{sayi} {birim}"))
         .collect();
     if yazilanlar.is_empty() {
-        "0 sn".to_string()
+        format!("0 {sn}")
     } else {
         yazilanlar.join(" ")
     }
@@ -937,6 +946,17 @@ mod testler {
         assert_eq!(sure_yaz(12_668), "3 sa 31 dk");
         assert_eq!(sure_yaz(86_400), "1 gün 0 sa");
         assert_eq!(sure_yaz(2 * 86_400 + 3 * 3_600 + 59), "2 gün 3 sa");
+    }
+
+    #[test]
+    fn ingilizce_sureler() {
+        let _dil = dil::gecici(dil::Dil::En);
+        assert_eq!(sure_tam_yaz(5_400), "1 h 30 min");
+        assert_eq!(sure_tam_yaz(93_784), "1 d 2 h 3 min 4 s");
+        assert_eq!(sure_tam_yaz(0), "0 s");
+        assert_eq!(sure_yaz(12 * 60 + 5), "12 min 5 s");
+        assert_eq!(sure_yaz(21_602), "6 h 0 min");
+        assert_eq!(sure_yaz(2 * 86_400 + 3 * 3_600 + 59), "2 d 3 h");
     }
 
     #[test]

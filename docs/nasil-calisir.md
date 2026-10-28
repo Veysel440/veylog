@@ -1053,6 +1053,44 @@ gibi virgüllü ondalık sayıları (`0,8`) tanımıyor. Kendi ayrıştırıcım
   uzunlarda en fazla 2 harf farka izin verilir.
 - Okuma hataları Türkçe anlatılır: `dosya bulunamadı`, `okuma izni yok`, bir klasör
   verildiyse `bu bir klasör; log dosyasını verin`.
+- Her uzun seçeneğin İngilizce adı da her dilde geçerlidir (`--threshold`, `--last`,
+  `--watch`); değer adlarının da (`--sort count`, `--format text`, `--location line`).
+  Öneriler iki dilin adları arasından seçilir; eşit yakınlıkta seçili dildeki ad önerilir:
+  `--sor` Türkçede `--son`, İngilizcede `--sort` olur.
+
+### Arayüz dili
+
+`--dil en` (`--lang en`) ya da `VEYLOG_DIL=en` ortam değişkeni arayüzü İngilizceye çevirir:
+yardım, rapor, Markdown, uyarılar ve hata mesajları. İkisi birden verilirse `--dil` geçerlidir.
+
+Dil, argümanlar ayrıştırılmadan önce seçilir: `veylog --esk 1 --lang en x.log` gibi
+`--lang`'dan önce gelen bir yanlışlığın mesajı da İngilizcedir. Seçilen dil iş parçacığına
+yazılır ve metin üreten her yer onu oradan okur; böylece hata türlerinin `Display`'i ve
+sayıları yazan küçük işlevler bir dil parametresi taşımaz. Çıktı yalnızca ana iş
+parçacığında üretilir; testler kendi iş parçacıklarında çalıştığı için bir testin seçtiği dil
+ötekileri etkilemez.
+
+İki dil arasındaki farklar yalnızca metinde değildir:
+
+- Ondalık ayracı: `eşik 0,7` ↔ `threshold 0.7`; yüzde işareti: `%1` ↔ `1%`; kat: `15,4 kat`
+  ↔ `15.4×`. Komut satırı iki ayracı da her dilde kabul eder.
+- Süre birimleri: `2 sa 30 dk` ↔ `2 h 30 min`; `--son` ve `--aralik` iki dilin birimlerini
+  de okur (`2sa`, `2h`).
+- Tekil ve çoğul: Türkçede sayıdan sonra ad çekimsizdir (`1 kayıt`, `3 kayıt`), İngilizcede
+  değildir (`1 record`, `3 records`).
+- Yer tutucular: kalıplar depoda Türkçe adlarla (`<SAYI>`) saklanır ve kümelenir; metin ve
+  Markdown çıktısı onları İngilizcede `<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>` diye gösterir.
+
+JSON çıktısı her dilde aynıdır: alan adları, değerler (`"konum": "metot"`) ve yer tutucular
+değişmez. JSON'u okuyan bir betik, onu çalıştıranın dilinden bağımsız çalışmalıdır. Seviye
+adları (`ERROR`) ve zamanlar zaten iki dilde aynıdır. Logun kendi içeriği (mesajlar, örnekler)
+çevrilmez.
+
+Doğrulama: İngilizce çıktıların her bölümü birim testlerinde karakter karakter denetlenir.
+Bir uçtan uca test de İngilizce içerikli bir logu bütün bölümlerle (karşılaştırma, ani
+artışlar, filtreler, saat dilimi, izleme, hatalar, yardım) İngilizce özetler ve çıktıda tek bir
+Türkçe harf ya da arayüz kelimesi kalmadığını denetler; JSON'un iki dilde bayt bayt aynı
+olduğu da sınanır.
 
 ## Terminal güvenliği
 

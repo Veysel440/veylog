@@ -2,6 +2,7 @@
 
 mod ani_artis;
 mod depo;
+mod dil;
 mod drain;
 mod farkli_sayac;
 mod filtre;
@@ -26,6 +27,7 @@ mod zaman_bicimi;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -33,13 +35,16 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use depo::{Depo, DepoAyarlari};
+use dil::Dil;
 use filtre::FiltreHatasi;
-use komut_satiri::{Bicim, KULLANIM, Komut, Secenekler};
+use komut_satiri::{Bicim, DIL_DEGISKENI, Komut, Secenekler};
 use okuyucu::{Kopyalayan, OrnekIstegi, OrnekKaynagi, YenidenOkuyucu};
 use rapor::{Ozet, OzetHatasi, gorunur};
 
 /// Dosya adı yerine `-` verilince raporda gösterilen ad.
-const STANDART_GIRDI: &str = "<standart girdi>";
+fn standart_girdi_adi() -> &'static str {
+    dil::sec("<standart girdi>", "<standard input>")
+}
 
 /// Okuma tamponunun boyu. Satırlar tampondan kopyalanmadan bulunur; büyük bir tampon daha az
 /// sistem çağrısı demektir.
@@ -49,7 +54,9 @@ fn main() {
     // `args_os`: argümanları işletim sisteminin verdiği ham haliyle alır. `args` ise geçerli
     // UTF-8 olmayan bir argümanda (Linux'ta dosya adları herhangi bir bayt dizisi olabilir)
     // programı çökertir. `skip(1)`: ilk argüman programın kendi adıdır.
-    let secenekler = match komut_satiri::ayristir(env::args_os().skip(1)) {
+    let argumanlar: Vec<OsString> = env::args_os().skip(1).collect();
+    dil_sec(&argumanlar);
+    let secenekler = match komut_satiri::ayristir(argumanlar) {
         Ok(Komut::Ozet(secenekler)) => *secenekler,
         Ok(Komut::Yardim) => {
             yazma_sonucunu_denetle(io::stdout().write_all(komut_satiri::yardim_metni().as_bytes()));
@@ -68,15 +75,21 @@ fn main() {
             // çağıran bir betik hatanın türünü ayırt edebilir. Mesaj kullanıcının yazdığı
             // argümanları içerebilir; içlerindeki kontrol karakterleri terminale ham gitmesin.
             eprintln!("veylog: {}", gorunur(&hata.to_string()));
-            eprintln!("{KULLANIM}");
-            eprintln!("Ayrıntılar için: veylog --yardim");
+            eprintln!("{}", komut_satiri::kullanim());
+            eprintln!(
+                "{}",
+                dil::sec(
+                    "Ayrıntılar için: veylog --yardim",
+                    "For details: veylog --lang en --help"
+                )
+            );
             process::exit(2);
         }
     };
     // `-` standart girdidir: `zcat laravel-2026-10-24.log.gz | veylog -`
     let standart_girdi = secenekler.dosya.as_os_str() == "-";
     let yol = if standart_girdi {
-        Path::new(STANDART_GIRDI)
+        Path::new(standart_girdi_adi())
     } else {
         secenekler.dosya.as_path()
     };
@@ -115,6 +128,27 @@ fn main() {
     yazma_sonucunu_denetle(yazildi.and_then(|()| cikti.flush()));
 }
 
+/// Arayüzün dilini seçer: `--dil` (`--lang`), yoksa `VEYLOG_DIL`, yoksa Türkçe. Ortam
+/// değişkeninin değeri tanınmıyorsa ve `--dil` verilmediyse iki dilde bir uyarı yazılır:
+/// değişkeni yazan büyük olasılıkla İngilizce bekliyordu.
+fn dil_sec(argumanlar: &[OsString]) {
+    let arguman_dili = komut_satiri::dil_bul(argumanlar);
+    let ortam = env::var(DIL_DEGISKENI)
+        .ok()
+        .filter(|deger| !deger.trim().is_empty());
+    let ortam_dili = ortam.as_deref().and_then(Dil::ayristir);
+    dil::ayarla(arguman_dili.or(ortam_dili).unwrap_or_default());
+    if arguman_dili.is_none()
+        && ortam_dili.is_none()
+        && let Some(deger) = ortam
+    {
+        eprintln!(
+            "Uyarı / Warning: {DIL_DEGISKENI}=\"{}\" tanınmadı / not recognized; tr, en",
+            gorunur(&deger)
+        );
+    }
+}
+
 /// Özet çıkarılırken olabilecek hatalar.
 pub(crate) enum Hata {
     /// Girdi okunamadı.
@@ -132,21 +166,26 @@ pub(crate) enum Hata {
 fn hata_bildir(hata: Hata, gosterilen_yol: &str) -> ! {
     match hata {
         Hata::Okuma(hata) => {
-            eprintln!(
-                "veylog: {gosterilen_yol} okunamadı: {}",
-                okuma_hatasi(&hata)
-            );
+            let neden = okuma_hatasi(&hata);
+            match dil::simdiki() {
+                Dil::Tr => eprintln!("veylog: {gosterilen_yol} okunamadı: {neden}"),
+                Dil::En => eprintln!("veylog: cannot read {gosterilen_yol}: {neden}"),
+            }
             process::exit(1);
         }
         Hata::Kopya(hata) => {
-            eprintln!("veylog: girdi geçici bir dosyaya kopyalanamadı: {hata}");
+            match dil::simdiki() {
+                Dil::Tr => eprintln!("veylog: girdi geçici bir dosyaya kopyalanamadı: {hata}"),
+                Dil::En => eprintln!("veylog: cannot copy the input to a temporary file: {hata}"),
+            }
             process::exit(1);
         }
         Hata::Ozet(OzetHatasi::Okuma(hata)) => {
-            eprintln!(
-                "veylog: {gosterilen_yol} yeniden okunamadı: {}",
-                okuma_hatasi(&hata)
-            );
+            let neden = okuma_hatasi(&hata);
+            match dil::simdiki() {
+                Dil::Tr => eprintln!("veylog: {gosterilen_yol} yeniden okunamadı: {neden}"),
+                Dil::En => eprintln!("veylog: cannot read {gosterilen_yol} again: {neden}"),
+            }
             process::exit(1);
         }
         // Karşılaştırma noktası logun dışındaysa ya da filtrenin aralığı boşsa bu, seçeneğin
@@ -218,13 +257,7 @@ fn ozet_cikar(
             let gecici = if on_tarama {
                 Some(GeciciDosya::olustur().map_err(Hata::Kopya)?)
             } else if secenekler.rapor.ani_artis.is_some() {
-                GeciciDosya::olustur()
-                    .inspect_err(|hata| {
-                        eprintln!(
-                            "Uyarı: girdinin geçici kopyası oluşturulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
-                        );
-                    })
-                    .ok()
+                GeciciDosya::olustur().inspect_err(kopya_uyarisi).ok()
             } else {
                 None
             };
@@ -260,9 +293,7 @@ fn ozet_cikar(
         }
     };
     if depo.gecersiz_utf8() {
-        eprintln!(
-            "Uyarı: {gosterilen_yol} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi."
-        );
+        gecersiz_utf8_uyarisi(gosterilen_yol);
     }
     // Satır var ama hiçbiri bir kayıt başlatmıyor: büyük olasılıkla biçim uymuyor
     let sayilar = depo.sayilar();
@@ -300,9 +331,14 @@ fn ozet_cikar(
     )
     .map_err(Hata::Ozet)?;
     if kaynak.degisti() {
-        eprintln!(
-            "Uyarı: {gosterilen_yol} özetlenirken değişti (ör. log döndürüldü); yeniden okunamayan örneklerin yerine aynı kalıpta aynı seviyedeki ilk kaydın mesajı yazıldı."
-        );
+        match dil::simdiki() {
+            Dil::Tr => eprintln!(
+                "Uyarı: {gosterilen_yol} özetlenirken değişti (ör. log döndürüldü); yeniden okunamayan örneklerin yerine aynı kalıpta aynı seviyedeki ilk kaydın mesajı yazıldı."
+            ),
+            Dil::En => eprintln!(
+                "Warning: {gosterilen_yol} changed while being summarized (e.g. the log was rotated); samples that could not be read again were replaced by the message of the first record with the same pattern and level."
+            ),
+        }
     }
     Ok(ozet)
 }
@@ -340,18 +376,49 @@ fn kopyayi_bitir<R: io::BufRead, W: Write>(kopyalayan: Kopyalayan<R, W>) -> Resu
 
 /// Satır var ama hiçbiri bir kayıt başlatmıyor: büyük olasılıkla biçim uymuyor.
 pub(crate) fn kayit_yok_uyarisi(gosterilen_yol: &str, bicim: &satir_bicimi::SatirBicimi) {
-    if bicim.desenli() {
-        eprintln!(
+    match (dil::simdiki(), bicim.desenli(), bicim.zaman_bicimli()) {
+        (Dil::Tr, true, _) => eprintln!(
             "Uyarı: {gosterilen_yol} içinde --desen'e uyan satır yok; hiçbir kayıt okunmadı."
-        );
-    } else if bicim.zaman_bicimli() {
-        eprintln!(
+        ),
+        (Dil::Tr, false, true) => eprintln!(
             "Uyarı: {gosterilen_yol} içinde zamanı --zaman-bicimi'ne uyan kayıt yok; hiçbir kayıt okunmadı."
-        );
-    } else {
-        eprintln!(
+        ),
+        (Dil::Tr, false, false) => eprintln!(
             "Uyarı: {gosterilen_yol} içinde Laravel'in biçiminde kayıt yok; log başka bir biçimdeyse --desen ile tanıtılabilir."
-        );
+        ),
+        (Dil::En, true, _) => eprintln!(
+            "Warning: no line in {gosterilen_yol} matches --pattern; no records were read."
+        ),
+        (Dil::En, false, true) => eprintln!(
+            "Warning: no record in {gosterilen_yol} has a time matching --time-format; no records were read."
+        ),
+        (Dil::En, false, false) => eprintln!(
+            "Warning: {gosterilen_yol} has no records in Laravel's format; if the log has another format, describe it with --pattern."
+        ),
+    }
+}
+
+/// Girdide geçersiz UTF-8 baytları vardı.
+pub(crate) fn gecersiz_utf8_uyarisi(gosterilen_yol: &str) {
+    match dil::simdiki() {
+        Dil::Tr => eprintln!(
+            "Uyarı: {gosterilen_yol} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi."
+        ),
+        Dil::En => eprintln!(
+            "Warning: {gosterilen_yol} contains invalid UTF-8 bytes; they were replaced by �."
+        ),
+    }
+}
+
+/// Standart girdinin geçici kopyası tutulamıyor: girdi yeniden okunamayacak.
+pub(crate) fn kopya_uyarisi(hata: &io::Error) {
+    match dil::simdiki() {
+        Dil::Tr => eprintln!(
+            "Uyarı: girdinin geçici kopyası oluşturulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
+        ),
+        Dil::En => eprintln!(
+            "Warning: cannot keep a temporary copy of the input ({hata}); the input cannot be read again, some samples will be the message of the first record with the same pattern and level."
+        ),
     }
 }
 
@@ -415,7 +482,10 @@ impl GeciciDosya {
         }
         Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            "geçici dosya için boş bir ad bulunamadı",
+            dil::sec(
+                "geçici dosya için boş bir ad bulunamadı",
+                "no free name for a temporary file",
+            ),
         ))
     }
 
@@ -440,11 +510,13 @@ impl Drop for GeciciDosya {
 /// Okuma hatasının açıklaması: sık görülenler Türkçe, ötekiler işletim sisteminin mesajıyla.
 fn okuma_hatasi(hata: &io::Error) -> Cow<'static, str> {
     match hata.kind() {
-        io::ErrorKind::NotFound => "dosya bulunamadı".into(),
-        io::ErrorKind::PermissionDenied => "okuma izni yok".into(),
-        io::ErrorKind::IsADirectory => {
-            "bu bir klasör; log dosyasını verin (ör. storage/logs/laravel.log)".into()
-        }
+        io::ErrorKind::NotFound => dil::sec("dosya bulunamadı", "file not found").into(),
+        io::ErrorKind::PermissionDenied => dil::sec("okuma izni yok", "permission denied").into(),
+        io::ErrorKind::IsADirectory => dil::sec(
+            "bu bir klasör; log dosyasını verin (ör. storage/logs/laravel.log)",
+            "this is a directory; give the log file (e.g. storage/logs/laravel.log)",
+        )
+        .into(),
         _ => hata.to_string().into(),
     }
 }
@@ -457,7 +529,10 @@ fn yazma_sonucunu_denetle(sonuc: io::Result<()>) {
     if let Err(hata) = sonuc
         && hata.kind() != io::ErrorKind::BrokenPipe
     {
-        eprintln!("veylog: çıktı yazılamadı: {hata}");
+        match dil::simdiki() {
+            Dil::Tr => eprintln!("veylog: çıktı yazılamadı: {hata}"),
+            Dil::En => eprintln!("veylog: cannot write the output: {hata}"),
+        }
         process::exit(1);
     }
 }

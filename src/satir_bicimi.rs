@@ -30,6 +30,7 @@ use std::ops::Range;
 
 use regex::Regex;
 
+use crate::dil::{self, Dil};
 use crate::kayit::Seviye;
 use crate::zaman;
 use crate::zaman_bicimi::ZamanBicimi;
@@ -147,6 +148,30 @@ pub enum DesenHatasi {
 
 impl fmt::Display for DesenHatasi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if dil::simdiki() == Dil::En {
+            return match self {
+                DesenHatasi::Gecersiz(aciklama) => {
+                    write!(f, "the regular expression cannot be compiled: {aciklama}")
+                }
+                DesenHatasi::GrupYok(ad) => write!(
+                    f,
+                    "there is no (?P<{}>...) group; the time and message groups are required",
+                    grup_ingilizce(ad)
+                ),
+                DesenHatasi::BilinmeyenGrup(ad) => write!(
+                    f,
+                    "unknown group \"{ad}\"; available: time, level, message, context, channel"
+                ),
+                DesenHatasi::IkiKez(alan) => {
+                    write!(f, "two groups for {}", grup_ingilizce(alan))
+                }
+                DesenHatasi::ZamanYok => write!(f, "no %datetime%; the time is required"),
+                DesenHatasi::ZamanMesajdanSonra => write!(
+                    f,
+                    "%datetime% comes after %message%; the message takes the rest of the line, the time must come before %message%"
+                ),
+            };
+        }
         match self {
             DesenHatasi::Gecersiz(aciklama) => {
                 write!(f, "düzenli ifade derlenemedi: {aciklama}")
@@ -166,6 +191,18 @@ impl fmt::Display for DesenHatasi {
                 "%datetime% %message%'dan sonra; mesaj satırın geri kalanını alır, zaman %message%'dan önce olmalı"
             ),
         }
+    }
+}
+
+/// Bir grubun İngilizce adı: `zaman` → `time`. Gruplar iki adla da yazılabilir.
+fn grup_ingilizce(ad: &str) -> &str {
+    match ad {
+        "zaman" => "time",
+        "seviye" => "level",
+        "mesaj" => "message",
+        "baglam" => "context",
+        "kanal" => "channel",
+        diger => diger,
     }
 }
 

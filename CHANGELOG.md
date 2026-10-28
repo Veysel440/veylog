@@ -144,6 +144,22 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 - `--izle` yalnızca metin biçimindedir; `--bicim json`, `--bicim markdown` ve `--karsilastir`
   ile kullanım hatası verir.
 
+### Arayüz dili
+
+- `--dil en` (`--lang en`) ya da `VEYLOG_DIL=en`: yardım, metin raporu, Markdown, uyarılar
+  ve hata mesajları İngilizce. İngilizcede ondalık ayracı nokta (`0.7`), yüzde işareti sonda
+  (`1%`), süreler `2 h 30 min`; sayıya göre tekil ya da çoğul (`1 record`, `3 records`).
+  Kalıplardaki yer tutucular İngilizce gösterilir: `<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>`.
+- Her uzun seçeneğin İngilizce adı her dilde geçerli: `--threshold`, `--location`, `--top`,
+  `--all`, `--sort`, `--format`, `--compare`, `--spikes`, `--level`, `--since`, `--until`,
+  `--last`, `--timezone`, `--pattern`, `--time-format`, `--watch`, `--interval`, `--lang`.
+  Değerlerin de: `severity`, `count`, `newest`, `text`, `method`, `line`. Yazım hatası
+  önerileri iki dilin adlarından seçilir.
+- Dil argümanlar ayrıştırılmadan önce seçilir: `--lang`'dan önce gelen bir yanlışlığın mesajı
+  da seçilen dildedir. Tanınmayan bir `VEYLOG_DIL` değeri iki dilde uyarılır.
+- JSON çıktısı her dilde bayt bayt aynıdır: alan adları, değerler ve yer tutucular değişmez.
+- Türkçe yardım metninin başında İngilizce yardımın nasıl açılacağı yazar.
+
 ## [0.1.0] - 2026-10-26
 
 İlk sürüm.

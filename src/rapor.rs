@@ -23,6 +23,7 @@ use std::io::{self, Write};
 
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_DUSUK_SEVIYE, ESIK};
 use crate::depo::{AltGrup, Depo, DilimSayilari};
+use crate::dil::{self, Dil};
 use crate::drain::{Ayarlar, cekirdek};
 use crate::filtre::Filtre;
 use crate::karsilastirma::{
@@ -40,8 +41,6 @@ pub const VARSAYILAN_ILK: usize = 10;
 pub const KALIP_GENISLIGI: usize = 80;
 /// Bir `<*>` konumu için gösterilecek en fazla değer sayısı; kalanı "+N başka" olur.
 pub const EN_COK_DEGER: usize = 5;
-/// Metin çıktısında "değerler: " başlığının genişliği; taşan satırlar bu kadar içeriden başlar.
-const DEGERLER_GENISLIGI: usize = 10;
 
 /// Tablonun sırası.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +57,7 @@ impl Siralama {
     /// Bütün sıralamalar. Yardım metni ve hata mesajları bu listeden üretilir.
     pub const HEPSI: [Siralama; 3] = [Siralama::Onem, Siralama::Adet, Siralama::Yeni];
 
-    /// Komut satırındaki adı.
+    /// Komut satırındaki Türkçe adı; JSON'da da bu yazılır.
     pub fn ad(self) -> &'static str {
         match self {
             Siralama::Onem => "onem",
@@ -67,22 +66,40 @@ impl Siralama {
         }
     }
 
-    /// Yardım metnindeki açıklaması.
-    pub fn aciklama(self) -> &'static str {
+    /// Komut satırındaki İngilizce adı.
+    pub fn ingilizce_ad(self) -> &'static str {
         match self {
-            Siralama::Onem => "önce seviye, sonra adet",
-            Siralama::Adet => "önce adet, sonra seviye",
-            Siralama::Yeni => "ilk görülme zamanı en yeni olan önce",
+            Siralama::Onem => "severity",
+            Siralama::Adet => "count",
+            Siralama::Yeni => "newest",
         }
     }
 
-    /// Komut satırındaki adından sıralamaya çevirir: "adet" → Siralama::Adet
+    /// Seçili dildeki adı: yardım metni ve hata mesajları için.
+    pub fn gosterilen_ad(self) -> &'static str {
+        dil::sec(self.ad(), self.ingilizce_ad())
+    }
+
+    /// Yardım metnindeki açıklaması.
+    pub fn aciklama(self) -> &'static str {
+        match self {
+            Siralama::Onem => dil::sec("önce seviye, sonra adet", "level first, then count"),
+            Siralama::Adet => dil::sec("önce adet, sonra seviye", "count first, then level"),
+            Siralama::Yeni => dil::sec(
+                "ilk görülme zamanı en yeni olan önce",
+                "most recently first seen first",
+            ),
+        }
+    }
+
+    /// Komut satırındaki adından (Türkçe ya da İngilizce) sıralamaya çevirir: "adet" →
+    /// Siralama::Adet
     ///
-    /// Adlar `ad` metodundan alınır; böylece ad yalnızca bir yerde yazılır.
+    /// Adlar `ad` ve `ingilizce_ad` metotlarından alınır; böylece ad yalnızca bir yerde yazılır.
     pub fn ayristir(ad: &str) -> Option<Siralama> {
         Siralama::HEPSI
             .into_iter()
-            .find(|siralama| siralama.ad() == ad)
+            .find(|siralama| siralama.ad() == ad || siralama.ingilizce_ad() == ad)
     }
 
     /// Satırların sırasını bu sıralamaya göre dizer: `sira`, `satirlar` içindeki sıra
@@ -433,23 +450,36 @@ pub struct FiltreOzeti {
 
 impl FiltreOzeti {
     /// Metin ve Markdown'daki açıklaması:
-    /// "WARNING ve üstü, 2026-10-24 16:31:07 ve sonrası (son 2 sa 0 dk): 12 kayıt"
+    /// "WARNING ve üstü, 2026-10-24 16:31:07 ve sonrası (son 2 sa): 12 kayıt"; İngilizcede
+    /// "WARNING and above, from 2026-10-24 16:31:07 (last 2 h): 12 records"
     pub fn aciklama(&self) -> String {
+        let ingilizce = dil::simdiki() == Dil::En;
         let mut parcalar = Vec::new();
         if let Some(seviye) = self.seviye {
-            parcalar.push(format!("{} ve üstü", seviye.ad()));
+            parcalar.push(format!(
+                "{} {}",
+                seviye.ad(),
+                dil::sec("ve üstü", "and above")
+            ));
         }
         let son = self
             .son
-            .map(|saniye| format!(" (son {})", sure_tam_yaz(saniye)))
+            .map(|saniye| format!(" ({} {})", dil::sec("son", "last"), sure_tam_yaz(saniye)))
             .unwrap_or_default();
-        match (self.baslangic, self.bitis) {
-            (Some(bas), Some(bit)) => parcalar.push(format!("{bas} ile {bit} arası")),
-            (Some(bas), None) => parcalar.push(format!("{bas} ve sonrası{son}")),
-            (None, Some(bit)) => parcalar.push(format!("{bit} öncesi")),
-            (None, None) => {}
+        match (self.baslangic, self.bitis, ingilizce) {
+            (Some(bas), Some(bit), false) => parcalar.push(format!("{bas} ile {bit} arası")),
+            (Some(bas), Some(bit), true) => parcalar.push(format!("{bas} to {bit}")),
+            (Some(bas), None, false) => parcalar.push(format!("{bas} ve sonrası{son}")),
+            (Some(bas), None, true) => parcalar.push(format!("from {bas}{son}")),
+            (None, Some(bit), false) => parcalar.push(format!("{bit} öncesi")),
+            (None, Some(bit), true) => parcalar.push(format!("before {bit}")),
+            (None, None, _) => {}
         }
-        format!("{}: {} kayıt", parcalar.join(", "), self.kayit_sayisi)
+        format!(
+            "{}: {}",
+            parcalar.join(", "),
+            dil::sayili(self.kayit_sayisi, "kayıt", "record", "records")
+        )
     }
 }
 
@@ -470,8 +500,9 @@ impl SaatDilimiOzeti {
     /// Metin ve Markdown'daki açıklaması:
     /// "+03:00 (--saat-dilimi); 1534597 kayıt +00:00 diliminden çevrildi"
     pub fn aciklama(&self) -> String {
+        let ingilizce = dil::simdiki() == Dil::En;
         let mut parcalar = vec![if self.verildi {
-            format!("{} (--saat-dilimi)", self.dilim)
+            format!("{} ({})", self.dilim, dil::secenek("--saat-dilimi"))
         } else {
             self.dilim.to_string()
         }];
@@ -482,42 +513,52 @@ impl SaatDilimiOzeti {
                 .iter()
                 .map(ToString::to_string)
                 .collect();
-            parcalar.push(match dilimler.as_slice() {
-                [dilim] => format!("{} kayıt {dilim} diliminden çevrildi", sayilar.cevrilen),
-                _ => format!(
-                    "{} kayıt başka dilimlerden çevrildi ({})",
-                    sayilar.cevrilen,
+            let cevrilen = dil::sayili(sayilar.cevrilen, "kayıt", "record", "records");
+            parcalar.push(match (dilimler.as_slice(), ingilizce) {
+                ([dilim], false) => format!("{cevrilen} {dilim} diliminden çevrildi"),
+                ([dilim], true) => format!("{cevrilen} converted from {dilim}"),
+                (_, false) => format!(
+                    "{cevrilen} başka dilimlerden çevrildi ({})",
+                    liste_yaz(&dilimler, 3)
+                ),
+                (_, true) => format!(
+                    "{cevrilen} converted from other time zones ({})",
                     liste_yaz(&dilimler, 3)
                 ),
             });
         }
         if sayilar.yazilmamis > 0 {
-            parcalar.push(if sayilar.yazilmamis == self.kayit_sayisi {
-                "kayıtlarda saat dilimi yazılı değil, zamanlar logdaki gibi".to_string()
-            } else {
-                format!(
+            parcalar.push(match (sayilar.yazilmamis == self.kayit_sayisi, ingilizce) {
+                (true, false) => {
+                    "kayıtlarda saat dilimi yazılı değil, zamanlar logdaki gibi".to_string()
+                }
+                (true, true) => "the records have no time zone; times as in the log".to_string(),
+                (false, false) => format!(
                     "{} kaydın saat dilimi yazılmamış, bu dilimde sayıldı",
                     sayilar.yazilmamis
-                )
+                ),
+                (false, true) => format!(
+                    "{} without a time zone, counted in this one",
+                    dil::sayili(sayilar.yazilmamis, "kayıt", "record", "records")
+                ),
             });
         }
         parcalar.join("; ")
     }
 }
 
-/// Bir listeyi Türkçe yazar: "a", "a ve b", "a, b ve c". `sinir`'dan fazla öge varsa ilk
-/// `sinir` tanesi ve kalanların sayısı: "a, b, c ve 2 dilim daha". Yalnızca bir öge fazlaysa
-/// o da yazılır; "1 dilim daha" demek onu yazmaktan uzundur.
+/// Saat dilimlerinin listesi: "a", "a ve b", "a, b ve c". `sinir`'dan fazla öge varsa ilk
+/// `sinir` tanesi ve kalanların sayısı: "a, b, c ve 2 dilim daha" ("a, b, c and 2 more").
+/// Yalnızca bir öge fazlaysa o da yazılır; "1 dilim daha" demek onu yazmaktan uzundur.
 fn liste_yaz(ogeler: &[String], sinir: usize) -> String {
-    match ogeler {
-        [] => String::new(),
-        [tek] => tek.clone(),
-        _ if ogeler.len() > sinir + 1 => format!(
-            "{} ve {} dilim daha",
-            ogeler[..sinir].join(", "),
-            ogeler.len() - sinir
-        ),
-        [bas @ .., son] => format!("{} ve {son}", bas.join(", ")),
+    if ogeler.len() > sinir + 1 {
+        let kalan = ogeler.len() - sinir;
+        match dil::simdiki() {
+            Dil::Tr => format!("{} ve {kalan} dilim daha", ogeler[..sinir].join(", ")),
+            Dil::En => format!("{} and {kalan} more", ogeler[..sinir].join(", ")),
+        }
+    } else {
+        dil::liste(ogeler)
     }
 }
 
@@ -647,14 +688,28 @@ impl Ozet {
     pub fn kalip_cumlesi(&self) -> String {
         let analiz = &self.analiz;
         let yaklasik = if analiz.ham_mesaj_yaklasik { "≈" } else { "" };
-        format!(
-            "{yaklasik}{} farklı mesaj → maskeleyince {} → Drain ile {} kalıp (eşik {}) → parmak iziyle {} grup",
-            analiz.ham_mesaj_sayisi,
-            analiz.maskeli_mesaj_sayisi,
-            analiz.kalip_sayisi,
-            ondalik(self.ayarlar.drain.benzerlik_esigi),
-            analiz.satirlar.len()
-        )
+        let esik = ondalik(self.ayarlar.drain.benzerlik_esigi);
+        match dil::simdiki() {
+            Dil::Tr => format!(
+                "{yaklasik}{} farklı mesaj → maskeleyince {} → Drain ile {} kalıp (eşik {esik}) → parmak iziyle {} grup",
+                analiz.ham_mesaj_sayisi,
+                analiz.maskeli_mesaj_sayisi,
+                analiz.kalip_sayisi,
+                analiz.satirlar.len()
+            ),
+            Dil::En => format!(
+                "{yaklasik}{} → {} after masking → {} (threshold {esik}) → {} by fingerprint",
+                dil::sayili(
+                    analiz.ham_mesaj_sayisi,
+                    "",
+                    "distinct message",
+                    "distinct messages"
+                ),
+                analiz.maskeli_mesaj_sayisi,
+                dil::sayili(analiz.kalip_sayisi, "", "Drain pattern", "Drain patterns"),
+                dil::sayili(analiz.satirlar.len(), "", "group", "groups")
+            ),
+        }
     }
 }
 
@@ -665,25 +720,46 @@ impl Ozet {
 pub fn metin_yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     writeln!(
         cikti,
-        "{}: {} satır",
+        "{}: {}",
         gorunur(&ozet.dosya),
-        ozet.satir_sayisi
+        dil::sayili(ozet.satir_sayisi, "satır", "line", "lines")
     )?;
-    writeln!(cikti, "  Kayıt         : {}", ozet.kayit_sayisi)?;
-    writeln!(cikti, "  Devam satırı  : {}", ozet.devam_satiri_sayisi)?;
-    writeln!(cikti, "  Yetim satır   : {}", ozet.yetim_satir_sayisi)?;
+    // Etiketler 14 karakter genişliğinde: iki nokta alt alta gelsin
+    let etiket = |tr, en| format!("  {:<14}: ", dil::sec(tr, en));
+    writeln!(cikti, "{}{}", etiket("Kayıt", "Records"), ozet.kayit_sayisi)?;
+    writeln!(
+        cikti,
+        "{}{}",
+        etiket("Devam satırı", "Continuations"),
+        ozet.devam_satiri_sayisi
+    )?;
+    writeln!(
+        cikti,
+        "{}{}",
+        etiket("Yetim satır", "Orphan lines"),
+        ozet.yetim_satir_sayisi
+    )?;
     if let Some(filtre) = &ozet.filtre {
-        writeln!(cikti, "  Filtre        : {}", filtre.aciklama())?;
+        writeln!(cikti, "{}{}", etiket("Filtre", "Filter"), filtre.aciklama())?;
     }
     if let Some((en_eski, en_yeni)) = &ozet.zaman_araligi {
-        writeln!(cikti, "  Zaman aralığı : {en_eski} → {en_yeni}")?;
+        writeln!(
+            cikti,
+            "{}{en_eski} → {en_yeni}",
+            etiket("Zaman aralığı", "Time range")
+        )?;
     }
     if let Some(dilim) = &ozet.saat_dilimi {
-        writeln!(cikti, "  Saat dilimi   : {}", dilim.aciklama())?;
+        writeln!(
+            cikti,
+            "{}{}",
+            etiket("Saat dilimi", "Time zone"),
+            dilim.aciklama()
+        )?;
     }
 
     writeln!(cikti)?;
-    writeln!(cikti, "Seviyeler:")?;
+    writeln!(cikti, "{}", dil::sec("Seviyeler:", "Levels:"))?;
     // Sayılar sağa yaslanır; sütun en az 4, en uzun sayı kadar geniştir
     let genislik = ozet
         .seviyeler
@@ -695,7 +771,12 @@ pub fn metin_yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     }
 
     writeln!(cikti)?;
-    writeln!(cikti, "Kalıplar: {}", ozet.kalip_cumlesi())?;
+    writeln!(
+        cikti,
+        "{} {}",
+        dil::sec("Kalıplar:", "Patterns:"),
+        ozet.kalip_cumlesi()
+    )?;
 
     let satirlar = ozet.gosterilecek_satirlar();
     let gosterim = ozet.zaman_gosterimi();
@@ -704,7 +785,7 @@ pub fn metin_yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
             .iter()
             .map(|satir| [satir.adet.to_string()])
             .collect();
-        let (baslik, sayilar) = sayi_sutunlari(["adet"], &hucreler);
+        let (baslik, sayilar) = sayi_sutunlari([dil::sec("adet", "count")], &hucreler);
         baslik_yaz(cikti, &baslik, gosterim)?;
         for (satir, sayilar) in satirlar.iter().zip(&sayilar) {
             satir_yaz(
@@ -736,30 +817,35 @@ fn karsilastirma_yaz(
     gosterim: ZamanGosterimi,
 ) -> io::Result<()> {
     writeln!(cikti)?;
-    writeln!(
-        cikti,
-        "Karşılaştırma: {} öncesi ve sonrası",
-        karsilastirma.nokta
-    )?;
+    writeln!(cikti, "{}", karsilastirma_basligi(karsilastirma))?;
     for (ad, pencere) in [
-        ("önce", &karsilastirma.once),
-        ("sonra", &karsilastirma.sonra),
+        (dil::sec("önce", "before"), &karsilastirma.once),
+        (dil::sec("sonra", "after"), &karsilastirma.sonra),
     ] {
-        writeln!(
-            cikti,
-            "  {ad:<6}: {} → {}   {:<11}{:>5} kayıt, saatte {}",
+        let saatlik = ondalik_kisa(pencere.saatlik(pencere.kayit_sayisi));
+        let (bas, bit) = (
             zaman_goster(pencere.baslangic, gosterim),
             zaman_goster(pencere.bitis, gosterim),
-            sure_yaz(pencere.saniye),
-            pencere.kayit_sayisi,
-            ondalik_kisa(pencere.saatlik(pencere.kayit_sayisi))
-        )?;
+        );
+        let sure = sure_yaz(pencere.saniye);
+        let sayi = pencere.kayit_sayisi;
+        match dil::simdiki() {
+            Dil::Tr => writeln!(
+                cikti,
+                "  {ad:<6}: {bas} → {bit}   {sure:<11}{sayi:>5} kayıt, saatte {saatlik}"
+            )?,
+            Dil::En => writeln!(
+                cikti,
+                "  {ad:<6}: {bas} → {bit}   {sure:<11}{sayi:>5} {}, {saatlik} per hour",
+                if sayi == 1 { "record" } else { "records" }
+            )?,
+        }
     }
 
     for (baslik, degisimler) in karsilastirma_bolumleri(karsilastirma) {
         writeln!(cikti)?;
         if degisimler.is_empty() {
-            writeln!(cikti, "{baslik}: yok")?;
+            writeln!(cikti, "{baslik}: {}", dil::sec("yok", "none"))?;
             continue;
         }
         writeln!(cikti, "{baslik}: {}", degisimler.len())?;
@@ -768,13 +854,21 @@ fn karsilastirma_yaz(
             .iter()
             .map(|degisim| [degisim.once.to_string(), degisim.sonra.to_string()])
             .collect();
-        let (sutun_basligi, sayilar) = sayi_sutunlari(["önce", "sonra"], &hucreler);
+        let (sutun_basligi, sayilar) = sayi_sutunlari(
+            [dil::sec("önce", "before"), dil::sec("sonra", "after")],
+            &hucreler,
+        );
         baslik_yaz(cikti, &sutun_basligi, gosterim)?;
         for (degisim, sayilar) in gosterilenler.iter().zip(&sayilar) {
             let satir = &ozet.analiz.satirlar[degisim.satir];
             // Artanlarda sıklığın nasıl değiştiği de yazılır
-            let artis = (degisim.once > 0 && degisim.sonra > 0)
-                .then(|| artis_yaz(degisim, &karsilastirma.once, &karsilastirma.sonra));
+            let artis = (degisim.once > 0 && degisim.sonra > 0).then(|| {
+                format!(
+                    "{}: {}",
+                    dil::sec("artış", "increase"),
+                    artis_yaz(degisim, &karsilastirma.once, &karsilastirma.sonra)
+                )
+            });
             satir_yaz(
                 cikti,
                 sayilar,
@@ -789,37 +883,64 @@ fn karsilastirma_yaz(
     Ok(())
 }
 
+/// Karşılaştırma bölümünün başlığı: "Karşılaştırma: 2026-10-24 15:00:00 öncesi ve sonrası".
+/// Metin ve Markdown aynı başlığı kullanır.
+pub fn karsilastirma_basligi(karsilastirma: &Karsilastirma) -> String {
+    let nokta = karsilastirma.nokta;
+    match dil::simdiki() {
+        Dil::Tr => format!("Karşılaştırma: {nokta} öncesi ve sonrası"),
+        Dil::En => format!("Comparison: before and after {nokta}"),
+    }
+}
+
 /// Karşılaştırmanın üç bölümü, başlıklarıyla. Metin ve Markdown aynı başlıkları kullanır.
 pub fn karsilastirma_bolumleri(karsilastirma: &Karsilastirma) -> [(String, &[Degisim]); 3] {
+    // Eşikler sabitlerden okunur; metin onlarla çelişemez
+    let (kat, anlamlilik) = (
+        ondalik(ARTIS_KATI),
+        dil::yuzde(&ondalik(ANLAMLILIK * 100.0)),
+    );
+    let ingilizce = dil::simdiki() == Dil::En;
     [
         (
-            "Yeni çıkanlar (yalnızca sonra)".to_string(),
+            dil::sec("Yeni çıkanlar (yalnızca sonra)", "New (only after)").to_string(),
             karsilastirma.yeni.as_slice(),
         ),
         (
-            "Kaybolanlar (yalnızca önce)".to_string(),
+            dil::sec("Kaybolanlar (yalnızca önce)", "Gone (only before)").to_string(),
             karsilastirma.kaybolan.as_slice(),
         ),
         (
-            // Eşikler sabitlerden okunur; metin onlarla çelişemez
-            format!(
-                "Artanlar (sonra ≥ {} kat sık, tesadüf ihtimali < %{})",
-                ondalik(ARTIS_KATI),
-                ondalik(ANLAMLILIK * 100.0)
-            ),
+            if ingilizce {
+                format!("Increased (after ≥ {kat}× as frequent, chance < {anlamlilik})")
+            } else {
+                format!("Artanlar (sonra ≥ {kat} kat sık, tesadüf ihtimali < {anlamlilik})")
+            },
             karsilastirma.artan.as_slice(),
         ),
     ]
 }
 
-/// Bir artışın açıklaması: "saatte 0,1 → 2,1 (15,4 kat)"
+/// Bir artışın açıklaması: "saatte 0,1 → 2,1 (15,4 kat)"; İngilizcede
+/// "0.1 → 2.1 per hour (15.4×)"
 pub fn artis_yaz(degisim: &Degisim, once: &Pencere, sonra: &Pencere) -> String {
-    format!(
-        "saatte {} → {} ({} kat)",
+    let (once, sonra, kat) = (
         ondalik_kisa(once.saatlik(degisim.once)),
         ondalik_kisa(sonra.saatlik(degisim.sonra)),
-        ondalik_kisa(degisim.kat)
-    )
+        kat_yaz(degisim.kat),
+    );
+    match dil::simdiki() {
+        Dil::Tr => format!("saatte {once} → {sonra} ({kat})"),
+        Dil::En => format!("{once} → {sonra} per hour ({kat})"),
+    }
+}
+
+/// Kaç kat: "15,4 kat"; İngilizcede "15.4×".
+pub fn kat_yaz(kat: f64) -> String {
+    match dil::simdiki() {
+        Dil::Tr => format!("{} kat", ondalik_kisa(kat)),
+        Dil::En => format!("{}×", ondalik_kisa(kat)),
+    }
 }
 
 /// Ani artış bölümü: puanı en yüksek olan artışlar. Satırın seviyesi, ilk ve son zamanı ve
@@ -846,15 +967,27 @@ fn ani_artis_yaz(
             ]
         })
         .collect();
-    let (baslik, sayilar) = sayi_sutunlari(["zirve", "olağan", "puan"], &hucreler);
+    let (baslik, sayilar) = sayi_sutunlari(
+        [
+            dil::sec("zirve", "peak"),
+            dil::sec("olağan", "usual"),
+            dil::sec("puan", "score"),
+        ],
+        &hucreler,
+    );
     baslik_yaz(cikti, &baslik, gosterim)?;
     for (artis, sayilar) in gosterilenler.iter().zip(&sayilar) {
+        let aciklama = format!(
+            "{}: {}",
+            dil::sec("artış", "spike"),
+            ani_artis_aciklamasi(artis, gosterim)
+        );
         satir_yaz(
             cikti,
             sayilar,
             &ozet.analiz.satirlar[artis.satir],
             &Hucreler::artistan(artis),
-            Some(&ani_artis_aciklamasi(artis, gosterim)),
+            Some(&aciklama),
             gosterim,
         )?;
     }
@@ -863,50 +996,72 @@ fn ani_artis_yaz(
 
 /// Ani artış bölümünün başlığı; metin ve Markdown aynı başlığı kullanır. Eşikler sabitlerden
 /// okunur:
-/// "Ani artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1"
+/// "Ani artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1"; İngilizcede
+/// "Spikes (WARNING and above, 59 slices of 10 min, score > 3.5): 1"
 pub fn ani_artis_basligi(ani_artislar: &AniArtislar) -> String {
-    let kapsam = format!(
-        "{} ve üstü, {} dakikalık",
-        EN_DUSUK_SEVIYE.ad(),
-        ani_artislar.dilim_dakika
-    );
+    let seviye = EN_DUSUK_SEVIYE.ad();
+    let dakika = ani_artislar.dilim_dakika;
     let dilim_sayisi = ani_artislar.dilim_sayisi;
+    let esik = ondalik(ESIK);
+    let ingilizce = dil::simdiki() == Dil::En;
     if ani_artislar.aralik.is_none() {
         let neden = if ani_artislar.filtreli {
-            "filtreye uyan kayıt yok"
+            dil::sec("filtreye uyan kayıt yok", "no records match the filter")
         } else {
-            "logda kayıt yok"
+            dil::sec("logda kayıt yok", "no records in the log")
         };
-        format!("Ani artışlar ({kapsam} dilimler): {neden}")
+        if ingilizce {
+            format!("Spikes ({seviye} and above, {dakika}-minute slices): {neden}")
+        } else {
+            format!("Ani artışlar ({seviye} ve üstü, {dakika} dakikalık dilimler): {neden}")
+        }
     } else if !ani_artislar.yeterli() {
-        format!(
-            "Ani artışlar ({kapsam} {dilim_sayisi} dilim): olağan seviyeyi ölçmek için en az {EN_AZ_DILIM} dilim gerekir"
-        )
+        if ingilizce {
+            format!(
+                "Spikes ({seviye} and above, {} of {dakika} min): at least {EN_AZ_DILIM} slices are needed to measure the usual level",
+                dil::sayili(dilim_sayisi, "", "slice", "slices")
+            )
+        } else {
+            format!(
+                "Ani artışlar ({seviye} ve üstü, {dakika} dakikalık {dilim_sayisi} dilim): olağan seviyeyi ölçmek için en az {EN_AZ_DILIM} dilim gerekir"
+            )
+        }
     } else {
         let sonuc = match ani_artislar.artislar.len() {
-            0 => "yok".to_string(),
+            0 => dil::sec("yok", "none").to_string(),
             sayi => sayi.to_string(),
         };
-        format!(
-            "Ani artışlar ({kapsam} {dilim_sayisi} dilim, puan > {}): {sonuc}",
-            ondalik(ESIK)
-        )
+        if ingilizce {
+            format!(
+                "Spikes ({seviye} and above, {} of {dakika} min, score > {esik}): {sonuc}",
+                dil::sayili(dilim_sayisi, "", "slice", "slices")
+            )
+        } else {
+            format!(
+                "Ani artışlar ({seviye} ve üstü, {dakika} dakikalık {dilim_sayisi} dilim, puan > {esik}): {sonuc}"
+            )
+        }
     }
 }
 
 /// Bir artışın açıklaması: "16:10–16:20 arası 6 kayıt". Artış birden çok dilime yayılıyorsa
-/// zirvesi de yazılır: "16:10–16:40 arası 3 dilimde 25 kayıt, zirve 16:20–16:30"
+/// zirvesi de yazılır: "16:10–16:40 arası 3 dilimde 25 kayıt, zirve 16:20–16:30". İngilizcede
+/// "6 records in 16:10–16:20", "25 records in 16:10–16:40 (3 slices), peak 16:20–16:30".
 fn ani_artis_aciklamasi(artis: &AniArtis, gosterim: ZamanGosterimi) -> String {
     let aralik = dilim_araligi(artis.baslangic, artis.bitis, gosterim);
+    let kayit = dil::sayili(artis.kayit_sayisi, "kayıt", "record", "records");
     if artis.dilim_sayisi == 1 {
-        format!("{aralik} arası {} kayıt", artis.kayit_sayisi)
+        match dil::simdiki() {
+            Dil::Tr => format!("{aralik} arası {kayit}"),
+            Dil::En => format!("{kayit} in {aralik}"),
+        }
     } else {
-        format!(
-            "{aralik} arası {} dilimde {} kayıt, zirve {}",
-            artis.dilim_sayisi,
-            artis.kayit_sayisi,
-            dilim_araligi(artis.zirve_baslangic, artis.zirve_bitis, gosterim)
-        )
+        let zirve = dilim_araligi(artis.zirve_baslangic, artis.zirve_bitis, gosterim);
+        let dilim = artis.dilim_sayisi;
+        match dil::simdiki() {
+            Dil::Tr => format!("{aralik} arası {dilim} dilimde {kayit}, zirve {zirve}"),
+            Dil::En => format!("{kayit} in {aralik} ({dilim} slices), peak {zirve}"),
+        }
     }
 }
 
@@ -973,8 +1128,11 @@ fn baslik_yaz(cikti: &mut impl Write, sayilar: &str, gosterim: ZamanGosterimi) -
     let zaman_genisligi = gosterim.genislik();
     writeln!(
         cikti,
-        "  {sayilar}  {:<9}  {:<zaman_genisligi$}  {:<zaman_genisligi$}  kalıp",
-        "seviye", "ilk", "son"
+        "  {sayilar}  {:<9}  {:<zaman_genisligi$}  {:<zaman_genisligi$}  {}",
+        dil::sec("seviye", "level"),
+        dil::sec("ilk", "first"),
+        dil::sec("son", "last"),
+        dil::sec("kalıp", "pattern")
     )
 }
 
@@ -1035,31 +1193,34 @@ fn satir_yaz(
         zaman_goster(hucreler.ilk, gosterim),
         zaman_goster(hucreler.son, gosterim),
         // Önce temizle, sonra kısalt: genişlik ekranda görünen karakterlerle sayılsın
-        kisalt(&gorunur(&satir.kalip), KALIP_GENISLIGI)
+        kisalt(&dil::yer_tutucular(&gorunur(&satir.kalip)), KALIP_GENISLIGI)
     )?;
     if let Some(aciklama) = aciklama {
-        writeln!(cikti, "{girinti}artış: {aciklama}")?;
+        writeln!(cikti, "{girinti}{aciklama}")?;
     }
     // Kalıp maskelenmiş ya da <*> içeriyorsa arkasındaki gerçek değerleri göster
     if hucreler.ornek != satir.kalip {
+        let etiket = dil::sec("örnek: ", "sample: ");
         writeln!(
             cikti,
-            "{girinti}örnek: {}",
-            kisalt(&gorunur(hucreler.ornek), KALIP_GENISLIGI - 7)
+            "{girinti}{etiket}{}",
+            kisalt(
+                &gorunur(hucreler.ornek),
+                KALIP_GENISLIGI - etiket.chars().count()
+            )
         )?;
     }
     // <*> konumlarının en sık değerleri: hangi işler, olaylar, kullanıcılar. Liste kalıp
-    // genişliğine sığmıyorsa değerler bölünmeden alt satırlara taşar.
-    const DEGERLER: &str = "değerler: ";
-    let satirlar = degerler_satirlari(
-        &satir.degiskenler,
-        KALIP_GENISLIGI - DEGERLER.chars().count(),
-    );
+    // genişliğine sığmıyorsa değerler bölünmeden alt satırlara taşar; taşan satırlar etiketin
+    // genişliği kadar içeriden başlar.
+    let etiket = dil::sec("değerler: ", "values: ");
+    let etiket_genisligi = etiket.chars().count();
+    let satirlar = degerler_satirlari(&satir.degiskenler, KALIP_GENISLIGI - etiket_genisligi);
     for (sira, parca) in satirlar.iter().enumerate() {
         if sira == 0 {
-            writeln!(cikti, "{girinti}{DEGERLER}{parca}")?;
+            writeln!(cikti, "{girinti}{etiket}{parca}")?;
         } else {
-            writeln!(cikti, "{girinti}{:DEGERLER_GENISLIGI$}{parca}", "")?;
+            writeln!(cikti, "{girinti}{:etiket_genisligi$}{parca}", "")?;
         }
     }
     // Kayıtlar bir istisnadan geliyorsa nerede oluştuğunu göster. Dosya yolu kısaltılmaz:
@@ -1067,7 +1228,8 @@ fn satir_yaz(
     if let Some(parmak_izi) = &satir.parmak_izi {
         writeln!(
             cikti,
-            "{girinti}konum: {}",
+            "{girinti}{}{}",
+            dil::sec("konum: ", "location: "),
             gorunur(&parmak_izi.to_string())
         )?;
     }
@@ -1087,7 +1249,9 @@ pub fn degerler_metni(degiskenler: &[DegiskenKonum], bicimle: impl Fn(&str) -> S
 pub fn degerler_satirlari(degiskenler: &[DegiskenKonum], genislik: usize) -> Vec<String> {
     let mut satirlar: Vec<String> = Vec::new();
     let mut satir = String::new();
-    for parca in deger_parcalari(degiskenler, |deger| gorunur(deger).into_owned()) {
+    for parca in deger_parcalari(degiskenler, |deger| {
+        dil::yer_tutucular(&gorunur(deger)).into_owned()
+    }) {
         let parca = parca.trim_end();
         let parca = kisalt(parca, genislik);
         let uzunluk = satir.chars().count();
@@ -1118,7 +1282,7 @@ fn deger_parcalari(degiskenler: &[DegiskenKonum], bicimle: impl Fn(&str) -> Stri
             .map(|(deger, adet)| format!("{} ×{adet}", bicimle(deger)))
             .collect();
         if degisken.baska > 0 {
-            konumun.push(format!("+{} başka", degisken.baska));
+            konumun.push(format!("+{} {}", degisken.baska, dil::sec("başka", "more")));
         }
         let son = konumun.len() - 1;
         for (sira, mut parca) in konumun.into_iter().enumerate() {
@@ -1139,17 +1303,25 @@ fn deger_parcalari(degiskenler: &[DegiskenKonum], bicimle: impl Fn(&str) -> Stri
 /// Gösterilmeyen satırlar varsa söyler; yoksa kullanıcı tablonun bittiğini sanır.
 fn gizlenen_yaz(cikti: &mut impl Write, gizlenen: usize) -> io::Result<()> {
     if gizlenen > 0 {
-        writeln!(
-            cikti,
-            "  … {gizlenen} satır daha; tümünü görmek için --hepsi"
-        )?;
+        match dil::simdiki() {
+            Dil::Tr => writeln!(
+                cikti,
+                "  … {gizlenen} satır daha; tümünü görmek için --hepsi"
+            )?,
+            Dil::En => writeln!(
+                cikti,
+                "  … {gizlenen} more {}; use --all to see them all",
+                if gizlenen == 1 { "row" } else { "rows" }
+            )?,
+        }
     }
     Ok(())
 }
 
-/// Ondalık sayıyı Türkçedeki gibi virgülle yazar: 0.7 → "0,7"
+/// Ondalık sayıyı seçili dilde yazar: Türkçedeki gibi virgülle (0.7 → "0,7"), İngilizcede
+/// noktayla.
 pub fn ondalik(sayi: f64) -> String {
-    sayi.to_string().replace('.', ",")
+    dil::ondalik_ayraci(sayi.to_string())
 }
 
 /// Ondalık sayıyı virgülden sonra tek basamakla yazar: 15.43 → "15,4"
@@ -1164,7 +1336,7 @@ pub fn ondalik_kisa(sayi: f64) -> String {
     } else {
         1
     };
-    format!("{sayi:.basamak$}").replace('.', ",")
+    dil::ondalik_ayraci(format!("{sayi:.basamak$}"))
 }
 
 /// Tabloda zamanın nasıl gösterileceği; logun kapsadığı süreye göre seçilir
@@ -1662,6 +1834,274 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             ani_artis_aciklamasi(&artis, ZamanGosterimi::Saat),
             "16:10–16:40 arası 3 dilimde 25 kayıt, zirve 16:20–16:30"
         );
+    }
+
+    #[test]
+    fn ingilizce_rapor_ornek_log() {
+        let _dil = dil::gecici(Dil::En);
+        let metin = metin_raporu(ORNEK_LOG, &RaporAyarlari::default());
+        assert!(
+            metin.starts_with(
+                "ornek.log: 205 lines\n  Records       : 59\n  Continuations : 143\n  Orphan lines  : 3\n  Time range    : 2026-10-24 08:59:58 → 2026-10-24 18:31:07\n\nLevels:\n  CRITICAL     2\n"
+            ),
+            "{metin}"
+        );
+        assert!(metin.contains(
+            "\nPatterns: 45 distinct messages → 27 after masking → 23 Drain patterns (threshold 0.7) → 24 groups by fingerprint\n  count  level      first     last      pattern\n"
+        ));
+        // Yer tutucular İngilizce adlarıyla; etiketler İngilizce, hizaları aynı
+        let beklenen = "
+      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<NUM>]
+                                        sample: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
+                                        location: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)
+";
+        assert!(metin.contains(beklenen), "{metin}");
+        assert!(metin.contains(
+            "                                        values: Ayşe ×1, Mehmet ×1, Zeynep ×1\n"
+        ));
+        assert!(metin.contains(
+            "                                        location: not found in application code (MaxAttemptsExceededException)\n"
+        ));
+        assert!(metin.ends_with("\n  … 14 more rows; use --all to see them all\n"));
+        assert!(!metin.contains("<SAYI>"));
+    }
+
+    #[test]
+    fn ingilizce_karsilastirma_ve_ani_artis() {
+        let _dil = dil::gecici(Dil::En);
+        let ayarlar = RaporAyarlari {
+            karsilastir: ZamanNoktasi::ayristir("16:11"),
+            ilk: Some(2),
+            ..RaporAyarlari::default()
+        };
+        let metin = metin_raporu(ORNEK_LOG, &ayarlar);
+        let beklenen = r#"
+  … 22 more rows; use --all to see them all
+
+Comparison: before and after 2026-10-24 16:11:00
+  before: 08:59:58 → 16:11:00   7 h 11 min    39 records, 5.4 per hour
+  after : 16:11:00 → 18:31:07   2 h 20 min    20 records, 8.6 per hour
+
+New (only after): 3
+  before  after  level      first     last      pattern
+       0      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<NUM>]
+                                                sample: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
+                                                location: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)
+       0      1  INFO       16:24:10  16:24:10  Ödeme sağlayıcısı yeniden yanıt veriyor
+  … 1 more row; use --all to see them all
+
+Gone (only before): 11
+  before  after  level      first     last      pattern
+       1      0  ERROR      09:47:12  09:47:12  Attempt to read property "ad" on null
+                                                location: app/Http/Controllers/KategoriController.php:54, goster() (ErrorException)
+       1      0  ERROR      11:30:44  11:30:44  App\Jobs\FaturaGonder has been attempted too many times.
+                                                location: not found in application code (MaxAttemptsExceededException)
+  … 9 more rows; use --all to see them all
+
+Increased (after ≥ 2× as frequent, chance < 1%): 1
+  before  after  level      first     last      pattern
+       1      5  ERROR      16:10:02  16:16:02  cURL error <NUM>: Operation timed out after <NUM> milliseconds with <NUM> bytes…
+                                                increase: 0.1 → 2.1 per hour (15.4×)
+                                                sample: cURL error 28: Operation timed out after 10001 milliseconds with 0 byte…
+                                                location: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
+"#;
+        assert!(metin.ends_with(beklenen), "{metin}");
+
+        let ayarlar = RaporAyarlari {
+            ani_artis: Some(10),
+            ilk: Some(2),
+            ..RaporAyarlari::default()
+        };
+        let metin = metin_raporu(ORNEK_LOG, &ayarlar);
+        let beklenen = r#"
+Spikes (WARNING and above, 59 slices of 10 min, score > 3.5): 1
+  peak  usual  score  level      first     last      pattern
+     6      0    4.0  ERROR      16:10:02  16:16:02  cURL error <NUM>: Operation timed out after <NUM> milliseconds with <NUM> bytes…
+                                                     spike: 6 records in 16:10–16:20
+                                                     sample: cURL error 28: Operation timed out after 10001 milliseconds with 0 byte…
+                                                     location: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
+"#;
+        assert!(metin.ends_with(beklenen), "{metin}");
+        for (dakika, beklenen) in [
+            (
+                1,
+                "\nSpikes (WARNING and above, 573 slices of 1 min, score > 3.5): none\n",
+            ),
+            (
+                120,
+                "\nSpikes (WARNING and above, 6 slices of 120 min): at least 10 slices are needed to measure the usual level\n",
+            ),
+        ] {
+            let ayarlar = RaporAyarlari {
+                ani_artis: Some(dakika),
+                ..RaporAyarlari::default()
+            };
+            let metin = metin_raporu(ORNEK_LOG, &ayarlar);
+            assert!(metin.ends_with(beklenen), "{metin}");
+        }
+        let ayarlar = RaporAyarlari {
+            ani_artis: Some(1),
+            ..RaporAyarlari::default()
+        };
+        assert!(
+            metin_raporu("", &ayarlar).ends_with(
+                "\nSpikes (WARNING and above, 1-minute slices): no records in the log\n"
+            )
+        );
+    }
+
+    #[test]
+    fn ingilizce_aciklamalar() {
+        let _dil = dil::gecici(Dil::En);
+        // Tekil ve çoğul
+        let metin = metin_raporu(
+            "[2026-10-24 10:00:00] production.ERROR: Payment failed\n",
+            &RaporAyarlari::default(),
+        );
+        assert!(
+            metin.starts_with("ornek.log: 1 line\n  Records       : 1\n"),
+            "{metin}"
+        );
+        assert!(metin.contains(
+            "Patterns: 1 distinct message → 1 after masking → 1 Drain pattern (threshold 0.7) → 1 group by fingerprint\n"
+        ));
+        // Filtre
+        let mut filtre = FiltreOzeti {
+            seviye: Some(Seviye::Error),
+            baslangic: Some(Zaman::kayittan("2026-10-24 17:01:07")),
+            bitis: None,
+            son: Some(5_400),
+            kayit_sayisi: 3,
+        };
+        assert_eq!(
+            filtre.aciklama(),
+            "ERROR and above, from 2026-10-24 17:01:07 (last 1 h 30 min): 3 records"
+        );
+        filtre.seviye = None;
+        filtre.son = None;
+        filtre.bitis = Some(Zaman::kayittan("2026-10-24 18:00:00"));
+        filtre.kayit_sayisi = 1;
+        assert_eq!(
+            filtre.aciklama(),
+            "2026-10-24 17:01:07 to 2026-10-24 18:00:00: 1 record"
+        );
+        filtre.baslangic = None;
+        assert_eq!(filtre.aciklama(), "before 2026-10-24 18:00:00: 1 record");
+        // Saat dilimi
+        let ozet = |verildi, cevrilen, dilimler: &[&str], yazilmamis, kayit_sayisi| {
+            SaatDilimiOzeti {
+                dilim: SaatDilimi::ayristir("+03:00").unwrap(),
+                verildi,
+                sayilar: DilimSayilari {
+                    cevrilen,
+                    cevrilen_dilimler: dilimler
+                        .iter()
+                        .map(|dilim| SaatDilimi::ayristir(dilim).unwrap())
+                        .collect(),
+                    yazilmamis,
+                },
+                kayit_sayisi,
+            }
+            .aciklama()
+        };
+        assert_eq!(ozet(true, 0, &[], 0, 5), "+03:00 (--timezone)");
+        assert_eq!(
+            ozet(false, 1, &["+02:00"], 0, 5),
+            "+03:00; 1 record converted from +02:00"
+        );
+        assert_eq!(
+            ozet(false, 7, &["+02:00", "+01:00"], 0, 9),
+            "+03:00; 7 records converted from other time zones (+01:00 and +02:00)"
+        );
+        assert_eq!(
+            ozet(
+                false,
+                7,
+                &["+04:00", "-05:00", "+00:00", "+02:00", "+01:00"],
+                0,
+                9
+            ),
+            "+03:00; 7 records converted from other time zones (-05:00, +00:00, +01:00 and 2 more)"
+        );
+        assert_eq!(
+            ozet(false, 0, &[], 5, 5),
+            "+03:00; the records have no time zone; times as in the log"
+        );
+        assert_eq!(
+            ozet(false, 3, &["+02:00"], 2, 9),
+            "+03:00; 3 records converted from +02:00; 2 records without a time zone, counted in this one"
+        );
+        // Ani artışın açıklaması
+        let zaman = Zaman::kayittan;
+        let mut artis = AniArtis {
+            satir: 0,
+            seviye: Seviye::Error,
+            ornek: "cURL error 28".to_string(),
+            olagan: 0.0,
+            mad: 0.0,
+            baslangic: zaman("2026-10-24 16:10:00"),
+            bitis: zaman("2026-10-24 16:20:00"),
+            dilim_sayisi: 1,
+            kayit_sayisi: 1,
+            ilk: zaman("2026-10-24 16:10:02"),
+            son: zaman("2026-10-24 16:10:02"),
+            zirve_baslangic: zaman("2026-10-24 16:10:00"),
+            zirve_bitis: zaman("2026-10-24 16:20:00"),
+            zirve_adet: 1,
+            puan: 4.047,
+        };
+        assert_eq!(
+            ani_artis_aciklamasi(&artis, ZamanGosterimi::Saat),
+            "1 record in 16:10–16:20"
+        );
+        artis.bitis = zaman("2026-10-24 16:40:00");
+        artis.dilim_sayisi = 3;
+        artis.kayit_sayisi = 25;
+        artis.zirve_baslangic = zaman("2026-10-24 16:20:00");
+        artis.zirve_bitis = zaman("2026-10-24 16:30:00");
+        assert_eq!(
+            ani_artis_aciklamasi(&artis, ZamanGosterimi::Saat),
+            "25 records in 16:10–16:40 (3 slices), peak 16:20–16:30"
+        );
+        // Ondalıklar noktayla, yüzde sonda, kat ×
+        assert_eq!(ondalik(0.85), "0.85");
+        assert_eq!(ondalik_kisa(0.0483), "0.048");
+        assert_eq!(kat_yaz(15.43), "15.4×");
+    }
+
+    #[test]
+    fn ingilizce_degerlerde_kalan_ve_yer_tutucu() {
+        let _dil = dil::gecici(Dil::En);
+        let mesajlar: Vec<String> = (0..7)
+            .flat_map(|is| {
+                let tekrar = 7 - is;
+                (0..tekrar)
+                    .map(move |_| format!("Job done: App\\Jobs\\Job{}", char::from(b'A' + is)))
+            })
+            .collect();
+        let mesajlar: Vec<&str> = mesajlar.iter().map(String::as_str).collect();
+        let metin = metin_raporu(&kayitlar(&mesajlar), &RaporAyarlari::default());
+        assert!(
+            metin.contains(
+                "values: App\\Jobs\\JobA ×7, App\\Jobs\\JobB ×6, App\\Jobs\\JobC ×5, App\\Jobs\\JobD ×4,\n"
+            ),
+            "{metin}"
+        );
+        // Taşan satır "values: " etiketinin genişliği kadar içeriden başlar
+        assert!(
+            metin.contains(&format!("\n{:48}App\\Jobs\\JobE ×3, +2 more\n", "")),
+            "{metin}"
+        );
+        // Değerlerdeki yer tutucular da çevrilir
+        let satir = KalipSatiri {
+            degiskenler: vec![DegiskenKonum {
+                konum: 2,
+                degerler: vec![("<SAYI>ms".to_owned(), 3)],
+                baska: 0,
+            }],
+            ..ilk_satir("[2026-10-24 10:00:00] production.INFO: x\n")
+        };
+        assert_eq!(degerler_satirlari(&satir.degiskenler, 70), ["<NUM>ms ×3"]);
     }
 
     #[test]

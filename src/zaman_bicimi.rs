@@ -17,6 +17,7 @@
 
 use std::fmt::{self, Write};
 
+use crate::dil::{self, Dil};
 use crate::zaman::{SaatDilimi, Zaman};
 
 /// Ayların İngilizce adları; kısa adları ilk üç harfleridir.
@@ -114,26 +115,41 @@ pub enum ZamanBicimiHatasi {
 
 impl fmt::Display for ZamanBicimiHatasi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ZamanBicimiHatasi::Eksik(alanlar) => write!(
+        match (self, dil::simdiki()) {
+            (ZamanBicimiHatasi::Eksik(alanlar), Dil::Tr) => write!(
                 f,
                 "zaman biçiminde {} yok; yıl (Y), ay (m), gün (d), saat (H) ve dakika (i) gerekir, ya da Unix zamanı (U)",
-                liste(alanlar)
+                dil::liste(alanlar)
             ),
-            ZamanBicimiHatasi::OgleEkiYok => write!(
+            (ZamanBicimiHatasi::Eksik(alanlar), Dil::En) => {
+                let alanlar: Vec<&str> = alanlar.iter().map(|alan| alan_ingilizce(alan)).collect();
+                write!(
+                    f,
+                    "the time format has no {}; year (Y), month (m), day (d), hour (H) and minute (i) are required, or a Unix time (U)",
+                    dil::liste(&alanlar)
+                )
+            }
+            (ZamanBicimiHatasi::OgleEkiYok, Dil::Tr) => write!(
                 f,
                 "12 saatlik saat (h, g) öğleden önce/sonra işareti (A ya da a) olmadan okunamaz"
+            ),
+            (ZamanBicimiHatasi::OgleEkiYok, Dil::En) => write!(
+                f,
+                "a 12-hour clock (h, g) cannot be read without an AM/PM marker (A or a)"
             ),
         }
     }
 }
 
-/// "a", "a ve b", "a, b ve c"
-fn liste(ogeler: &[&str]) -> String {
-    match ogeler {
-        [] => String::new(),
-        [tek] => (*tek).to_string(),
-        [onceki @ .., son] => format!("{} ve {son}", onceki.join(", ")),
+/// Eksik alanın İngilizce adı: `yıl` → `year`.
+fn alan_ingilizce(alan: &str) -> &str {
+    match alan {
+        "yıl" => "year",
+        "ay" => "month",
+        "gün" => "day",
+        "saat" => "hour",
+        "dakika" => "minute",
+        diger => diger,
     }
 }
 

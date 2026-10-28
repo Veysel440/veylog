@@ -95,6 +95,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter;
 
+use crate::dil;
 use crate::istisna_metni::IstisnaMetni;
 use crate::json_okuyucu::{Deger, metni_coz};
 use crate::kayit::Kayit;
@@ -170,7 +171,7 @@ impl KonumTuru {
     /// Bütün türler; yardım metni ve hata mesajları bu listeden üretilir.
     pub const HEPSI: [KonumTuru; 2] = [KonumTuru::Metot, KonumTuru::Satir];
 
-    /// Komut satırındaki adı.
+    /// Komut satırındaki Türkçe adı; JSON'da da bu yazılır.
     pub fn ad(self) -> &'static str {
         match self {
             KonumTuru::Metot => "metot",
@@ -178,17 +179,35 @@ impl KonumTuru {
         }
     }
 
-    /// Yardım metnindeki açıklaması.
-    pub fn aciklama(self) -> &'static str {
+    /// Komut satırındaki İngilizce adı.
+    pub fn ingilizce_ad(self) -> &'static str {
         match self {
-            KonumTuru::Metot => "dosya ve fonksiyon: satırlar kaysa da hata aynı kalır",
-            KonumTuru::Satir => "dosya ve satır",
+            KonumTuru::Metot => "method",
+            KonumTuru::Satir => "line",
         }
     }
 
-    /// Komut satırındaki adından: "satir" → KonumTuru::Satir
+    /// Seçili dildeki adı: yardım metni ve hata mesajları için.
+    pub fn gosterilen_ad(self) -> &'static str {
+        dil::sec(self.ad(), self.ingilizce_ad())
+    }
+
+    /// Yardım metnindeki açıklaması.
+    pub fn aciklama(self) -> &'static str {
+        match self {
+            KonumTuru::Metot => dil::sec(
+                "dosya ve fonksiyon: satırlar kaysa da hata aynı kalır",
+                "file and function: survives shifted line numbers",
+            ),
+            KonumTuru::Satir => dil::sec("dosya ve satır", "file and line"),
+        }
+    }
+
+    /// Komut satırındaki adından (Türkçe ya da İngilizce): "satir" → KonumTuru::Satir
     pub fn ayristir(ad: &str) -> Option<KonumTuru> {
-        KonumTuru::HEPSI.into_iter().find(|tur| tur.ad() == ad)
+        KonumTuru::HEPSI
+            .into_iter()
+            .find(|tur| tur.ad() == ad || tur.ingilizce_ad() == ad)
     }
 }
 
@@ -337,7 +356,15 @@ impl fmt::Display for ParmakIzi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.konum {
             Some(konum) => write!(f, "{konum} ({})", self.kisa_sinif()),
-            None => write!(f, "uygulama kodunda bulunamadı ({})", self.kisa_sinif()),
+            None => write!(
+                f,
+                "{} ({})",
+                dil::sec(
+                    "uygulama kodunda bulunamadı",
+                    "not found in application code"
+                ),
+                self.kisa_sinif()
+            ),
         }
     }
 }

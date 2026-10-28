@@ -45,6 +45,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::depo::{Depo, DepoAyarlari};
+use crate::dil::{self, Dil};
 use crate::filtre::Filtre;
 use crate::kayit::{KayitToplayici, SatirSayilari};
 use crate::komut_satiri::{Izleme, Secenekler};
@@ -725,19 +726,25 @@ impl<'a> Izleyici<'a> {
     }
 
     /// Raporun başındaki satır:
-    /// "İzleniyor: laravel.log · her 2 sn · 1234 kayıt · son kayıt 2026-10-24 14:03:11"
+    /// "İzleniyor: laravel.log · her 2 sn · 1234 kayıt · son kayıt 2026-10-24 14:03:11";
+    /// İngilizcede "Watching: laravel.log · every 2 s · 1234 records · last record ..."
     fn durum_satiri(&self) -> String {
-        let mut parcalar = vec![
-            format!("İzleniyor: {}", self.gosterilen_yol),
-            format!("her {}", aralik_yaz(self.aralik)),
-            format!("{} kayıt", self.depo.kayit_sayisi()),
-        ];
+        let (yol, aralik, sayi) = (
+            self.gosterilen_yol,
+            aralik_yaz(self.aralik),
+            self.depo.kayit_sayisi(),
+        );
+        let mut parcalar = match dil::simdiki() {
+            Dil::Tr => vec![format!("İzleniyor: {yol}"), format!("her {aralik}")],
+            Dil::En => vec![format!("Watching: {yol}"), format!("every {aralik}")],
+        };
+        parcalar.push(dil::sayili(sayi, "kayıt", "record", "records"));
         parcalar.push(match self.depo.en_yeni() {
-            Some(en_yeni) => format!("son kayıt {en_yeni}"),
-            None => "henüz kayıt yok".to_owned(),
+            Some(en_yeni) => format!("{} {en_yeni}", dil::sec("son kayıt", "last record")),
+            None => dil::sec("henüz kayıt yok", "no records yet").to_owned(),
         });
         if self.donduruldu {
-            parcalar.push("döndürüldü".to_owned());
+            parcalar.push(dil::sec("döndürüldü", "rotated").to_owned());
         }
         parcalar.join(" · ")
     }
@@ -746,10 +753,7 @@ impl<'a> Izleyici<'a> {
     fn uyar(&mut self) {
         if self.depo.gecersiz_utf8() && !self.uyarildi.gecersiz_utf8 {
             self.uyarildi.gecersiz_utf8 = true;
-            eprintln!(
-                "Uyarı: {} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi.",
-                self.gosterilen_yol
-            );
+            crate::gecersiz_utf8_uyarisi(self.gosterilen_yol);
         }
         let sayilar = self.depo.sayilar();
         if sayilar.kayit == 0 && sayilar.satir > 0 && !self.uyarildi.kayit_yok {
@@ -814,10 +818,16 @@ impl<'a> Izleyici<'a> {
     }
 }
 
+/// Standart girdinin geçici kopyası oluşturulamadı ya da yazılamıyor (disk dolu).
 fn kopya_uyarisi(hata: &io::Error) {
-    eprintln!(
-        "Uyarı: girdinin geçici kopyası tutulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
-    );
+    match dil::simdiki() {
+        Dil::Tr => eprintln!(
+            "Uyarı: girdinin geçici kopyası tutulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
+        ),
+        Dil::En => eprintln!(
+            "Warning: cannot keep a temporary copy of the input ({hata}); the input cannot be read again, some samples will be the message of the first record with the same pattern and level."
+        ),
+    }
 }
 
 /// `--izle`: girdiyi canlı izler. Dosyaysa Ctrl+C'ye kadar; standart girdiyse (ya da boru,
@@ -1240,6 +1250,35 @@ mod testler {
         assert!(!izleyici.degisti());
         izleyici.bitir();
         assert!(izleyici.degisti(), "depoya giren kayıt çizimi değiştirir");
+    }
+
+    #[test]
+    fn ingilizce_durum_satiri() {
+        let _dil = dil::gecici(Dil::En);
+        let secenekler = secenekler(&["--watch", "--interval", "1500ms", "deneme.log"]);
+        let yazilan = Yazilan::default();
+        let mut izleyici = izleyici(&secenekler, &yazilan);
+        izleyici.ciz().ok().unwrap();
+        assert!(
+            yazilan.metin().starts_with(
+                "Watching: deneme.log · every 1 s 500 ms · 0 records · no records yet\n"
+            ),
+            "{}",
+            yazilan.metin()
+        );
+        izleyici.isle(KAYIT.as_bytes());
+        izleyici.donduruldu();
+        izleyici.ciz().ok().unwrap();
+        let metin = yazilan.metin();
+        let son = metin.rsplit_once(AYIRICI).unwrap().1;
+        assert!(
+            son.starts_with(
+                "\nWatching: deneme.log · every 1 s 500 ms · 1 record · last record 2026-10-24 10:00:00 · rotated\n"
+            ),
+            "{son}"
+        );
+        assert_eq!(aralik_yaz(Duration::from_millis(500)), "500 ms");
+        assert_eq!(aralik_yaz(Duration::from_secs(90)), "1 min 30 s");
     }
 
     #[test]

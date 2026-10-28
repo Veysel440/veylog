@@ -7,8 +7,16 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{self, Command, Output, Stdio};
 
+/// Derlenmiş program. Arayüzün dilini seçen ortam değişkeni silinir: testleri çalıştıranın
+/// ortamında `VEYLOG_DIL=en` olsa da Türkçe çıktı beklenen testler bozulmasın.
+fn komut() -> Command {
+    let mut komut = Command::new(env!("CARGO_BIN_EXE_veylog"));
+    komut.env_remove("VEYLOG_DIL");
+    komut
+}
+
 fn veylog(argumanlar: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_veylog"))
+    komut()
         .args(argumanlar)
         .output()
         .expect("veylog çalıştırılamadı")
@@ -110,10 +118,7 @@ fn utf8_olmayan_dosya_adi_programi_cokertmez() {
     // Linux'ta dosya adı herhangi bir bayt dizisi olabilir. `env::args` böyle bir argümanda
     // çöküyordu (çıkış kodu 101); şimdi "okunamadı" hatası verilir.
     let ad = OsStr::from_bytes(b"olmayan-\xff.log");
-    let cikti = Command::new(env!("CARGO_BIN_EXE_veylog"))
-        .arg(ad)
-        .output()
-        .expect("veylog çalıştırılamadı");
+    let cikti = komut().arg(ad).output().expect("veylog çalıştırılamadı");
     assert_eq!(cikti.status.code(), Some(1));
     let stderr = metin(&cikti.stderr);
     assert!(
@@ -153,7 +158,7 @@ fn bos_dosya_adi_kullanim_hatasidir() {
 #[test]
 fn standart_girdiden_okunur() {
     // `zcat laravel-2026-10-24.log.gz | veylog -`
-    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+    let mut surec = komut()
         .args(["-b", "json", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -191,7 +196,7 @@ fn bom_ilk_kaydi_yutmaz() {
     assert!(stdout.contains("\n  CRITICAL     1\n"), "{stdout}");
 
     // `cat gun1.log gun2.log | veylog -`: ikinci dosyanın BOM'u akışın ortasında
-    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+    let mut surec = komut()
         .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -699,7 +704,7 @@ fn ani_artis_ornegi_yeniden_okunarak_bulunur() {
     let gecici_klasor = std::env::temp_dir().join(format!("veylog-{}-gecici", process::id()));
     fs::create_dir_all(&gecici_klasor).unwrap();
     for (secenekler, ornekli) in [(&["-a", "1", "-"][..], true), (&["-"][..], false)] {
-        let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+        let mut surec = komut()
             .args(secenekler)
             .env("TMPDIR", &gecici_klasor)
             .env("TMP", &gecici_klasor)
@@ -733,7 +738,7 @@ fn gecici_dosya_olusturulamazsa_rapor_yine_cikar() {
     // Var olmadığı varsayılan sabit bir yol (`/olmayan/bir/klasor`) her makinede yok değildir.
     let dosya = gecici_dosya("klasor-degil", b"");
     let gecici_klasor = dosya.join("alt");
-    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+    let mut surec = komut()
         .args(["-a", "1", "-"])
         .env("TMPDIR", &gecici_klasor)
         .stdin(Stdio::piped())
@@ -802,7 +807,7 @@ fn son_standart_girdiden_de_okunur() {
     // iki kez okunur, iş bitince kopya kalmaz
     let gecici_klasor = std::env::temp_dir().join(format!("veylog-{}-son", process::id()));
     fs::create_dir_all(&gecici_klasor).unwrap();
-    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+    let mut surec = komut()
         .args(["--son", "30dk", "-a", "1", "-"])
         .env("TMPDIR", &gecici_klasor)
         .env("TMP", &gecici_klasor)
@@ -1239,7 +1244,7 @@ fn desen_ve_zaman_bicimiyle_okunur() {
     // Standart girdiden: girdi geçici bir kopyadan iki kez okunur, ikisi de desenle
     let gecici_klasor = std::env::temp_dir().join(format!("veylog-{}-desen", process::id()));
     fs::create_dir_all(&gecici_klasor).unwrap();
-    let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+    let mut surec = komut()
         .args(["--desen", "%datetime% [%level_name%] %message%"])
         .args(["--zaman-biçimi", "d.m.Y H:i:s"])
         .args(ortak)
@@ -1450,7 +1455,7 @@ fn biriktir(mut okunan: impl Read + Send + 'static) -> Arc<Mutex<Vec<u8>>> {
 
 impl Izlenen {
     fn baslat(argumanlar: &[&str]) -> Izlenen {
-        let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+        let mut surec = komut()
             .args(argumanlar)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1588,7 +1593,7 @@ fn izleme_standart_girdide_girdi_bitince_son_raporu_yazip_cikar() {
     let (kod, stdout, stderr) = izlenen.girdiyi_kapat();
     assert_eq!(kod, Some(0), "{stderr}");
     assert!(stderr.is_empty(), "{stderr}");
-    let normal = Command::new(env!("CARGO_BIN_EXE_veylog"))
+    let normal = komut()
         .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1783,4 +1788,317 @@ fn izleme_secenekleri_denetlenir() {
     let yardim = metin(&veylog(&["--yardim"]).stdout);
     assert!(yardim.contains("      --izle "), "{yardim}");
     assert!(yardim.contains("      --aralik <süre>"), "{yardim}");
+}
+
+/// İngilizce içerikli kurgusal bir log: dil testlerinde raporda Türkçe bir şey kalmadığı
+/// görülebilsin diye mesajlarında Türkçe harf ve kelime yok. Yetim satır, istisna, JSON
+/// satırı (başka bir saat diliminde), kategorik değerler ve bir ani artış içerir.
+fn ingilizce_log() -> String {
+    let mut satirlar = vec!["stray line before the first record".to_owned()];
+    for saat in 8..20 {
+        satirlar.push(format!(
+            "[2026-10-24T{saat:02}:00:00+03:00] production.INFO: User {} logged in {{\"ip\":\"198.51.100.7\"}}",
+            100 + saat
+        ));
+        satirlar.push(format!(
+            "[2026-10-24T{saat:02}:30:00+03:00] production.WARNING: Slow query ({} ms): select * from orders where user_id = {saat}",
+            1_000 + saat
+        ));
+    }
+    for (dakika, is) in [
+        (5, "SendInvoice"),
+        (6, "SendEmail"),
+        (7, "SendInvoice"),
+        (8, "SyncStock"),
+    ] {
+        satirlar.push(format!(
+            "[2026-10-24T09:{dakika:02}:00+03:00] production.INFO: Job processed: App\\Jobs\\{is}"
+        ));
+    }
+    satirlar.push(
+        "[2026-10-24T11:15:00+03:00] production.ERROR: Undefined array key \"shipping\" {\"exception\":\"[object] (ErrorException(code: 0): Undefined array key \\\"shipping\\\" at /var/www/shop/app/Services/Cart.php:88)\n[stacktrace]\n#0 /var/www/shop/vendor/laravel/framework/src/Illuminate/Foundation/Bootstrap/HandleExceptions.php(256): Illuminate\\\\Foundation\\\\Bootstrap\\\\HandleExceptions->handleError(2, 'Undefined array...', '/var/www/shop/a...', 88)\n#1 /var/www/shop/app/Services/Cart.php(88): Illuminate\\\\Foundation\\\\Bootstrap\\\\HandleExceptions->Illuminate\\\\Foundation\\\\Bootstrap\\\\{closure}(2, 'Undefined array...', '/var/www/shop/a...', 88)\n#2 /var/www/shop/app/Http/Controllers/CartController.php(21): App\\\\Services\\\\Cart->total()\n#3 {main}\n\"}".to_owned(),
+    );
+    satirlar.push(
+        r#"{"message":"Payment provider timed out","context":{},"level":400,"level_name":"ERROR","channel":"production","datetime":"2026-10-24T13:20:00+00:00","extra":{}}"#.to_owned(),
+    );
+    for saniye in 0..8 {
+        satirlar.push(format!(
+            "[2026-10-24T16:10:{:02}+03:00] production.ERROR: Queue full: {} jobs waiting",
+            saniye * 5,
+            50 + saniye
+        ));
+    }
+    satirlar.join("\n") + "\n"
+}
+
+/// Logu standart girdiden okuyan veylog: dosya adı (geçici klasörün yolu Türkçe harf
+/// içerebilir) rapora girmesin.
+fn girdiyle(argumanlar: &[&str], girdi: &str, ortam: &[(&str, &str)]) -> Output {
+    let mut surec = komut()
+        .args(argumanlar)
+        .envs(ortam.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("veylog çalıştırılamadı");
+    surec
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(girdi.as_bytes())
+        .unwrap();
+    surec.wait_with_output().unwrap()
+}
+
+/// Türkçe arayüzün kelimeleri ve harfleri: İngilizce çıktıda hiçbiri olmamalı.
+fn turkce_kalintilar(metin: &str) -> Vec<String> {
+    const KELIMELER: [&str; 34] = [
+        "kayit",
+        "satir",
+        "kalip",
+        "kaliplar",
+        "ornek",
+        "konum",
+        "seviye",
+        "seviyeler",
+        "filtre",
+        "zaman",
+        "araligi",
+        "dilim",
+        "dilimi",
+        "grup",
+        "esik",
+        "sonra",
+        "artis",
+        "zirve",
+        "olagan",
+        "puan",
+        "yok",
+        "baska",
+        "daha",
+        "icin",
+        "ve",
+        "ile",
+        "sa",
+        "dk",
+        "sn",
+        "kat",
+        "saatte",
+        "uyari",
+        "izleniyor",
+        "hepsi",
+    ];
+    let mut bulunan: Vec<String> = metin
+        .chars()
+        .filter(|harf| "çğıöşüÇĞİÖŞÜ".contains(*harf))
+        .map(|harf| format!("harf {harf}"))
+        .collect();
+    for kelime in metin.split(|harf: char| !harf.is_alphanumeric()) {
+        if KELIMELER.contains(&kelime.to_lowercase().as_str()) {
+            bulunan.push(format!("kelime {kelime}"));
+        }
+    }
+    bulunan
+}
+
+#[test]
+fn ingilizce_arayuzde_turkce_kalmaz() {
+    let log = ingilizce_log();
+    for argumanlar in [
+        &["--lang", "en", "-"][..],
+        &[
+            "--lang",
+            "en",
+            "--spikes",
+            "1",
+            "--compare",
+            "12:00",
+            "--top",
+            "2",
+            "-",
+        ],
+        &["--lang", "en", "--level", "warning", "--last", "3h", "-"],
+        &[
+            "--lang",
+            "en",
+            "--since",
+            "09:00",
+            "--until",
+            "18:00",
+            "--timezone",
+            "+00:00",
+            "-",
+        ],
+        &[
+            "--lang",
+            "en",
+            "--location",
+            "line",
+            "--sort",
+            "newest",
+            "--all",
+            "-",
+        ],
+        &[
+            "--lang",
+            "en",
+            "--format",
+            "markdown",
+            "--spikes",
+            "1",
+            "--compare",
+            "12:00",
+            "--top",
+            "1",
+            "-",
+        ],
+        &["--lang", "en", "--spikes", "120", "-"],
+        &[
+            "--lang",
+            "en",
+            "--level",
+            "emergency",
+            "--spikes",
+            "1",
+            "--compare",
+            "12:00",
+            "-",
+        ],
+        &["--lang", "en", "--threshold", "2", "-"],
+        &["--lang", "en", "--watch", "--format", "json", "-"],
+        &["--lang", "en", "--watch", "--interval", "100ms", "-"],
+        &["--lang", "en", "--compare", "2027-01-01", "-"],
+        &["--lang", "en", "--help"],
+    ] {
+        let cikti = girdiyle(argumanlar, &log, &[]);
+        let butun = metin(&cikti.stdout) + &metin(&cikti.stderr);
+        assert!(!butun.is_empty(), "{argumanlar:?}");
+        let mut kalintilar = turkce_kalintilar(&butun);
+        // Yardım seçeneklerin Türkçe adlarını ve JSON'un alan adlarını da anar
+        if argumanlar.contains(&"--help") {
+            kalintilar.retain(|kalinti| kalinti.starts_with("harf"));
+        }
+        assert_eq!(kalintilar, Vec::<String>::new(), "{argumanlar:?}\n{butun}");
+    }
+    // Ortam değişkeniyle de; yazılmamış saat dilimi ve kayıt bulunamayan log uyarısı da
+    let cikti = girdiyle(&["-"], "no record here\n", &[("VEYLOG_DIL", "en")]);
+    let stderr = metin(&cikti.stderr);
+    assert_eq!(
+        stderr,
+        "Warning: <standard input> has no records in Laravel's format; if the log has another format, describe it with --pattern.\n"
+    );
+    assert!(turkce_kalintilar(&metin(&cikti.stdout)).is_empty());
+}
+
+#[test]
+fn ingilizce_arayuz() {
+    let log = ingilizce_log();
+    let cikti = girdiyle(&["--lang", "en", "--spikes", "1", "-"], &log, &[]);
+    assert!(cikti.status.success());
+    let stdout = metin(&cikti.stdout);
+    let beklenen = "\
+<standard input>: 45 lines
+  Records       : 38
+  Continuations : 6
+  Orphan lines  : 1
+  Time range    : 2026-10-24 08:00:00 → 2026-10-24 19:30:00
+  Time zone     : +03:00; 1 record converted from +00:00
+";
+    assert!(stdout.starts_with(beklenen), "{stdout}");
+    for parca in [
+        "\nPatterns: 37 distinct messages → 8 after masking → 6 Drain patterns (threshold 0.7) → 6 groups by fingerprint\n",
+        "  count  level      first     last      pattern\n",
+        "  Queue full: <NUM> jobs waiting\n",
+        "values: App\\Jobs\\SendInvoice ×2, App\\Jobs\\SendEmail ×1, App\\Jobs\\SyncStock ×1\n",
+        "location: app/Services/Cart.php:88, total() (ErrorException)\n",
+        "\nSpikes (WARNING and above, 691 slices of 1 min, score > 3.5): 1\n",
+        // JSON satırının +00:00'lık zamanı raporun dilimine çevrildi
+        "  1  ERROR      16:20:00  16:20:00  Payment provider timed out\n",
+        "spike: 8 records in 16:10–16:11\n",
+    ] {
+        assert!(stdout.contains(parca), "{parca}\n{stdout}");
+    }
+    // Ortam değişkeni aynı sonucu verir; --dil ondan önce gelir
+    let ortamla = girdiyle(&["--spikes", "1", "-"], &log, &[("VEYLOG_DIL", "en")]);
+    assert_eq!(metin(&ortamla.stdout), stdout);
+    let turkce = girdiyle(&["--dil", "tr", "-"], &log, &[("VEYLOG_DIL", "en")]);
+    assert!(metin(&turkce.stdout).starts_with("<standart girdi>: 45 satır\n"));
+    // Tanınmayan değer iki dilde uyarılır, Türkçe sürer
+    let tanimsiz = girdiyle(&["-"], &log, &[("VEYLOG_DIL", "english")]);
+    assert_eq!(
+        metin(&tanimsiz.stderr),
+        "Uyarı / Warning: VEYLOG_DIL=\"english\" tanınmadı / not recognized; tr, en\n"
+    );
+    assert!(metin(&tanimsiz.stdout).starts_with("<standart girdi>: 45 satır\n"));
+    // --dil verildiyse ortam değişkenine bakılmaz; boş değişken verilmemiş sayılır
+    for (argumanlar, deger) in [(&["--dil", "en", "-"][..], "english"), (&["-"][..], " ")] {
+        let cikti = girdiyle(argumanlar, &log, &[("VEYLOG_DIL", deger)]);
+        assert!(cikti.stderr.is_empty(), "{}", metin(&cikti.stderr));
+    }
+    // Hatalar ve çıkış kodları
+    let cikti = veylog(&["--lang", "en", "--esik", "2", "ornekler/laravel.log"]);
+    assert_eq!(cikti.status.code(), Some(2));
+    assert_eq!(
+        metin(&cikti.stderr),
+        "veylog: invalid value \"2\" for --esik: must be a number between 0 and 1 (e.g. 0.7)\nUsage: veylog [OPTIONS] <log-file>\nFor details: veylog --lang en --help\n"
+    );
+    let cikti = veylog(&["--lang", "en", "missing.log"]);
+    assert_eq!(cikti.status.code(), Some(1));
+    assert_eq!(
+        metin(&cikti.stderr),
+        "veylog: cannot read missing.log: file not found\n"
+    );
+    let cikti = veylog(&["--lang", "en", "-k", "2027-01-01", "ornekler/laravel.log"]);
+    assert_eq!(cikti.status.code(), Some(2));
+    assert_eq!(
+        metin(&cikti.stderr),
+        "veylog: the comparison point 2027-01-01 00:00:00 is not inside the log: records are between 2026-10-24 08:59:58 and 2026-10-24 18:31:07\n"
+    );
+    // Yardım
+    let cikti = veylog(&["--lang", "en", "--help"]);
+    assert!(cikti.status.success());
+    assert!(metin(&cikti.stdout).contains("\nUsage: veylog [OPTIONS] <log-file>\n"));
+}
+
+#[test]
+fn json_her_dilde_ayni() {
+    // JSON betikler içindir: alan adları, değerler ve yer tutucular dil değişince değişmez
+    for argumanlar in [
+        &["-b", "json", "ornekler/laravel.log"][..],
+        &[
+            "-b",
+            "json",
+            "-a",
+            "10",
+            "-k",
+            "16:11",
+            "--seviye",
+            "warning",
+            "ornekler/laravel.log",
+        ],
+        &[
+            "-b",
+            "json",
+            "--son",
+            "2sa",
+            "--konum",
+            "satir",
+            "--siralama",
+            "yeni",
+            "ornekler/laravel.log",
+        ],
+        &["-b", "json", "--hepsi", "ornekler/kuyruk.log"],
+    ] {
+        let turkce = veylog(argumanlar);
+        assert!(turkce.status.success(), "{argumanlar:?}");
+        let mut ingilizce_argumanlar = vec!["--lang", "en"];
+        ingilizce_argumanlar.extend_from_slice(argumanlar);
+        let ingilizce = veylog(&ingilizce_argumanlar);
+        assert_eq!(
+            metin(&ingilizce.stdout),
+            metin(&turkce.stdout),
+            "{argumanlar:?}"
+        );
+    }
 }

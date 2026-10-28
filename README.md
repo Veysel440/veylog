@@ -106,6 +106,9 @@ biri kategori sayfasında, öteki ürün sayfasında oluşan iki ayrı hata.
   Girdi yeniden okunmaz: her çizim yalnızca yeni baytları işler.
 - **Üç çıktı biçimi.** Terminal için tablo, betikler ve CI adımları için JSON, GitHub
   issue'larına yapıştırmak için Markdown.
+- **İki dil.** Arayüz Türkçe; `--dil en` (ya da `VEYLOG_DIL=en`) yardımı, raporu ve bütün
+  mesajları İngilizce yazar. Her seçeneğin İngilizce adı da geçerlidir (`--last 2h`,
+  `--format json`). JSON çıktısı her dilde aynıdır: betikler dil değişince bozulmaz.
 - **Gerçek loglara dayanıklı.** Laravel'in metin biçimi ve Monolog'un JSON satırları (aynı
   dosyada karışık olsalar bile), ISO 8601 zamanlar, Windows yolları (Herd, Laragon),
   standart girdi, UTF-8 BOM ve geçersiz UTF-8. Uygulama Monolog'a başka bir satır ya da
@@ -203,6 +206,7 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `--zaman-bicimi <biçim>` | Zamanın biçimi, PHP'nin `date()` dizgesiyle: `"d.m.Y H:i:s"`, `"d/M/Y:H:i:s O"`, `"U"`. | ISO 8601 |
 | `--izle` | Logu canlı izle: sonuna kadar oku, raporu yaz, eklenen kayıtlar geldikçe yeniden çiz. Yalnızca metin biçiminde; `--karsilastir` ile kullanılamaz. | |
 | `--aralik <süre>` | İzlemede girdiye bu sıklıkla bak; raporu en sık bu kadarda bir çiz. Süre `--son` gibi, `ms` de olur (`500ms`); en az 100 ms. | `2sn` |
+| `--dil <dil>` | Arayüzün dili: `tr` ya da `en`. `VEYLOG_DIL` ortam değişkeniyle de seçilir. | `tr` |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
 
@@ -247,6 +251,21 @@ veylog /mnt/c/Users/Ad/Herd/proje/storage/logs/laravel.log
 Seçenekler dosya adından önce ya da sonra yazılabilir; değer boşlukla, `=` ile ya da kısa
 seçeneklerde bitişik verilir (`--esik 0,8`, `--esik=0,8`, `-n20`). Ondalık ayracı virgül de
 olabilir, nokta da. Türkçe karakterli yazımlar da geçerlidir (`--eşik`, `--sıralama önem`).
+Her uzun seçeneğin ve her değerin İngilizce adı da her dilde geçerlidir; yardım ve mesajlar
+seçili dildeki adları gösterir:
+
+| Türkçe | İngilizce | Türkçe | İngilizce |
+|---|---|---|---|
+| `--esik` | `--threshold` | `--baslangic` | `--since` |
+| `--konum metot`, `satir` | `--location method`, `line` | `--bitis` | `--until` |
+| `--ilk` | `--top` | `--son 2sa` | `--last 2h` |
+| `--hepsi` | `--all` | `--saat-dilimi` | `--timezone` |
+| `--siralama onem`, `adet`, `yeni` | `--sort severity`, `count`, `newest` | `--desen` | `--pattern` |
+| `--bicim metin` | `--format text` | `--zaman-bicimi` | `--time-format` |
+| `--karsilastir` | `--compare` | `--izle` | `--watch` |
+| `--ani-artis` | `--spikes` | `--aralik` | `--interval` |
+| `--seviye` | `--level` | `--dil` | `--lang` |
+
 Yazım hatalarında en yakın seçenek önerilir:
 
 ```text
@@ -476,7 +495,7 @@ Her adımın ayrıntısı, gerekçesi ve gerçek loglarda nasıl sınandığı
 | Kesin binom testi | Az kayıtta da geçerlidir; yanlış alarm oranı %1'i geçmez. Yaklaşık testler (z testi) küçük sayılarda yanılır. |
 | Parmak izi fonksiyona bağlı, satıra değil | `Attempt to read property "ad" on null` iki denetleyicide iki ayrı hatadır, ama bir dağıtım satırları kaydırsa da aynı hata aynı kalır; Sentry de satır numarası kullanmaz. Bedeli: aynı fonksiyonda aynı sınıf ve kalıpla oluşan iki hata birleşir; `--konum satir` ayırır. |
 | Kontrol karakterleri sembole çevrilir | Log güvenilmez metindir; ESC dizileri ekranı silebilir, satırları gizleyebilir ([CWE-150](https://cwe.mitre.org/data/definitions/150.html)). JSON'da veri kaybı yoktur: ham mesaj kaçışlarıyla yazılır. |
-| Türkçe arayüz | Hedef kitle Türkçe konuşan Laravel geliştiricileri: mesajlar, seçenekler (`--esik`, `--eşik`) ve virgüllü ondalık sayılar Türkçeye göre. |
+| Türkçe arayüz, İngilizcesi de | Hedef kitle Türkçe konuşan Laravel geliştiricileri: mesajlar, seçenekler (`--esik`, `--eşik`) ve virgüllü ondalık sayılar Türkçeye göre. İngilizce arayüz (`--dil en`) her metnin elle yazılmış karşılığıdır; çeviri kütüphanesi yok. JSON dilden bağımsızdır. |
 
 ## Performans
 
@@ -551,6 +570,7 @@ Tam liste: [sınırlamalar](docs/sinirlamalar.md).
 src/
 ├── main.rs          girişi açar (dosya ya da standart girdi), özeti istenen biçimde yazar
 ├── komut_satiri.rs  seçenekler, yardım metni, hata mesajları, yazım hatasına öneri
+├── dil.rs           arayüzün dili (--dil): seçili dildeki metin, sayıların ve listelerin yazılışı
 ├── okuyucu.rs       girdiyi satır satır okur; bir kaydı yeniden okumak için seyrek dizin
 ├── izle.rs          --izle: eklenen baytları satırlara ayırır, döndürmeyi algılar, raporu yeniden çizer
 ├── kayit.rs         satırları kayıtlara toplar: başlık ya da JSON satırı, seviye, mesaj
@@ -585,6 +605,7 @@ ornekler/            kurgusal örnek loglar
 - [x] Satır numarasından bağımsız parmak izi: hata, satırın içinde bulunduğu fonksiyonla tanınır
 - [x] Kategorik konumlar: koddan gelen değerler biçimleriyle tanınır, en sık değerleri raporda
 - [x] Canlı izleme: `--izle` ile log eklendikçe rapor yeniden çizilir
+- [x] İngilizce arayüz: `--dil en`
 
 Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md).
 
@@ -622,12 +643,42 @@ lines, handles Windows paths, and writes text, JSON or Markdown. Timestamps with
 are converted to a single report time zone, so logs that span a daylight saving change sort
 correctly. Exceptions logged as strings (`Log::error($e)`) are parsed from PHP's own text
 and grouped with the same exception logged through the context; custom line formats are
-given as a Monolog format string or a regex with named groups (`--desen`), and custom date
-formats as a PHP `date()` format (`--zaman-bicimi`). The file is streamed line by line into
-a compact store, so a 2 GB log is summarized with 30 MB of memory. `--izle` follows a log
-live, like `tail -f`: new records are fed into the same store, the report is redrawn as they
-arrive, time filters become a sliding window and rotated files are picked up. Its only dependency is
-`regex`; the JSON reader and writer, statistics and argument parser are hand-written and
-tested against serde_json, scipy and Drain3. Prebuilt binaries for Linux (static), macOS and
-Windows are on the [Releases](https://github.com/Veysel440/veylog/releases/latest) page. The
-interface is in Turkish.
+given as a Monolog format string or a regex with named groups (`--pattern`), and custom
+date formats as a PHP `date()` format (`--time-format`). The file is streamed line by line
+into a compact store, so a 2 GB log is summarized with 30 MB of memory. `--watch` follows a
+log live, like `tail -f`: new records are fed into the same store, the report is redrawn as
+they arrive, time filters become a sliding window and rotated files are picked up. Its only
+dependency is `regex`; the JSON reader and writer, statistics and argument parser are
+hand-written and tested against serde_json, scipy and Drain3. Prebuilt binaries for Linux
+(static), macOS and Windows are on the
+[Releases](https://github.com/Veysel440/veylog/releases/latest) page; `cargo install veylog`
+also works.
+
+The interface is in Turkish by default. `--lang en`, or `VEYLOG_DIL=en` in the environment,
+switches the help, the report and every message to English:
+
+```text
+$ veylog --lang en ornekler/laravel.log
+ornekler/laravel.log: 205 lines
+  Records       : 59
+  Continuations : 143
+  Orphan lines  : 3
+  Time range    : 2026-10-24 08:59:58 → 2026-10-24 18:31:07
+...
+Patterns: 45 distinct messages → 27 after masking → 23 Drain patterns (threshold 0.7) → 24 groups by fingerprint
+  count  level      first     last      pattern
+      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<NUM>]
+                                        sample: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
+                                        location: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)
+...
+```
+
+Every option has an English name, accepted in either language: `--threshold`, `--location`
+(`method`, `line`), `--top`, `--all`, `--sort` (`severity`, `count`, `newest`), `--format`
+(`text`, `json`, `markdown`), `--compare`, `--spikes`, `--level`, `--since`, `--until`,
+`--last`, `--timezone`, `--pattern`, `--time-format`, `--watch`, `--interval` and `--lang`.
+Durations take `s`, `m`, `h`, `d` (and `ms` for `--interval`): `--last 1h30m`. Placeholders
+are shown in English (`<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>`). The JSON output is the same in
+both languages, so scripts do not break when the language changes; its keys and placeholders
+are Turkish: `<SAYI>` is a number, `<YOL>` a path, `<EPOSTA>` an e-mail address and
+`<ZAMAN>` a timestamp. `veylog --lang en --help` lists everything.

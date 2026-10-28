@@ -19,6 +19,7 @@
 use std::fmt;
 
 use crate::depo::Depo;
+use crate::dil::{self, Dil};
 use crate::istatistik::binom_ust_kuyruk;
 use crate::rapor::KalipAnalizi;
 use crate::zaman::{Zaman, ZamanNoktasi};
@@ -94,14 +95,26 @@ pub enum KarsilastirmaHatasi {
 
 impl fmt::Display for KarsilastirmaHatasi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            KarsilastirmaHatasi::KayitYok => write!(f, "karşılaştırma için logda kayıt yok"),
-            KarsilastirmaHatasi::FiltreyeUyanYok => {
+        match (self, dil::simdiki()) {
+            (KarsilastirmaHatasi::KayitYok, Dil::Tr) => {
+                write!(f, "karşılaştırma için logda kayıt yok")
+            }
+            (KarsilastirmaHatasi::KayitYok, Dil::En) => {
+                write!(f, "the log has no records to compare")
+            }
+            (KarsilastirmaHatasi::FiltreyeUyanYok, Dil::Tr) => {
                 write!(f, "karşılaştırma için filtreye uyan kayıt yok")
             }
-            KarsilastirmaHatasi::AralikDisi { nokta, ilk, son } => write!(
+            (KarsilastirmaHatasi::FiltreyeUyanYok, Dil::En) => {
+                write!(f, "no records match the filter to compare")
+            }
+            (KarsilastirmaHatasi::AralikDisi { nokta, ilk, son }, Dil::Tr) => write!(
                 f,
                 "karşılaştırma noktası {nokta} logun içinde değil: kayıtlar {ilk} ile {son} arasında"
+            ),
+            (KarsilastirmaHatasi::AralikDisi { nokta, ilk, son }, Dil::En) => write!(
+                f,
+                "the comparison point {nokta} is not inside the log: records are between {ilk} and {son}"
             ),
         }
     }
@@ -208,6 +221,32 @@ fn saniye_farki(bas: Zaman, son: Zaman) -> usize {
 #[cfg(test)]
 mod testler {
     use super::*;
+
+    #[test]
+    fn hatalar_iki_dilde() {
+        let disarida = KarsilastirmaHatasi::AralikDisi {
+            nokta: Zaman::kayittan("2027-01-01 00:00:00"),
+            ilk: Zaman::kayittan("2026-10-24 08:00:00"),
+            son: Zaman::kayittan("2026-10-24 19:00:00"),
+        };
+        assert_eq!(
+            disarida.to_string(),
+            "karşılaştırma noktası 2027-01-01 00:00:00 logun içinde değil: kayıtlar 2026-10-24 08:00:00 ile 2026-10-24 19:00:00 arasında"
+        );
+        let _dil = dil::gecici(Dil::En);
+        assert_eq!(
+            disarida.to_string(),
+            "the comparison point 2027-01-01 00:00:00 is not inside the log: records are between 2026-10-24 08:00:00 and 2026-10-24 19:00:00"
+        );
+        assert_eq!(
+            KarsilastirmaHatasi::KayitYok.to_string(),
+            "the log has no records to compare"
+        );
+        assert_eq!(
+            KarsilastirmaHatasi::FiltreyeUyanYok.to_string(),
+            "no records match the filter to compare"
+        );
+    }
     use crate::depo;
     use crate::rapor::{RaporAyarlari, kaliplari_cikar};
 
