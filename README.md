@@ -1,37 +1,37 @@
 # veylog
 
 [![CI](https://github.com/Veysel440/veylog/actions/workflows/ci.yml/badge.svg)](https://github.com/Veysel440/veylog/actions/workflows/ci.yml)
-[![Sürüm](https://img.shields.io/github/v/release/Veysel440/veylog?label=s%C3%BCr%C3%BCm)](https://github.com/Veysel440/veylog/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Veysel440/veylog)](https://github.com/Veysel440/veylog/releases/latest)
 [![crates.io](https://img.shields.io/crates/v/veylog.svg)](https://crates.io/crates/veylog)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
-[![Lisans: MIT](https://img.shields.io/badge/lisans-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Laravel log dosyalarını saniyenin altında okunabilir bir özete çeviren komut satırı aracı.**
-Rust ile yazıldı; tek bir çalıştırılabilir dosyadır, projeye paket eklemek ya da PHP kurmak
-gerekmez.
+**A fast command-line tool that turns Laravel log files into a readable summary of recurring
+errors.** Written in Rust and shipped as a single binary: nothing to add to your project, no
+PHP required.
 
-[Kurulum](#kurulum) · [Kullanım](#kullanım) · [Örnekler](#örnekler) ·
-[Nasıl çalışır](#nasıl-çalışır) · [Tasarım kararları](#tasarım-kararları) ·
-[Performans](#performans) · [Sınırlamalar](#sınırlamalar) · [English](#english)
+[Installation](#installation) · [Usage](#usage) · [Examples](#examples) ·
+[How it works](#how-it-works) · [Design decisions](#design-decisions) ·
+[Performance](#performance) · [Limitations](#limitations) · [Türkçe](README.tr.md)
 
-`storage/logs/laravel.log` kısa sürede binlerce satıra ulaşır: aynı hata yüzlerce kez
-tekrarlanır, stack trace'ler satır sayısını şişirir, gerçekten önemli olan kayıt kalabalıkta
-kaybolur. veylog dosyayı okur ve şu sorulara cevap verir:
+`storage/logs/laravel.log` quickly grows to thousands of lines: the same error repeats
+hundreds of times, stack traces inflate the line count, and the record that really matters
+gets lost in the noise. veylog reads the file and answers four questions:
 
-- Hangi hatalar tekrar ediyor, kaç kez, hangi seviyede?
-- Kodun neresinde oluşuyorlar?
-- Ne zaman başladılar, son dağıtımdan sonra ne değişti?
-- Hangi hata bir anda patladı?
+- Which errors keep recurring, how often, and at what level?
+- Where in the code do they come from?
+- When did they start, and what changed after the last deploy?
+- Which error suddenly spiked?
 
 ```text
 $ veylog ornekler/laravel.log
-ornekler/laravel.log: 205 satır
-  Kayıt         : 59
-  Devam satırı  : 143
-  Yetim satır   : 3
-  Zaman aralığı : 2026-10-24 08:59:58 → 2026-10-24 18:31:07
+ornekler/laravel.log: 205 lines
+  Records       : 59
+  Continuations : 143
+  Orphan lines  : 3
+  Time range    : 2026-10-24 08:59:58 → 2026-10-24 18:31:07
 
-Seviyeler:
+Levels:
   CRITICAL     2
   ERROR       16
   WARNING      6
@@ -39,102 +39,112 @@ Seviyeler:
   INFO        31
   DEBUG        3
 
-Kalıplar: 45 farklı mesaj → maskeleyince 27 → Drain ile 23 kalıp (eşik 0,7) → parmak iziyle 24 grup
-  adet  seviye     ilk       son       kalıp
-     2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]
-                                       örnek: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
-                                       konum: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)
-     6  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
-                                       örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
-                                       konum: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
-     4  ERROR      15:02:11  16:58:12  Undefined array key "kargo_ucreti"
-                                       konum: app/Services/SepetHesaplayici.php:88, toplam() (ErrorException)
-     3  ERROR      09:14:20  17:55:03  SQLSTATE[<SAYI>]: Integrity constraint violation: <SAYI> Duplicate entry '<EPOS…
-                                       örnek: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'a…
-                                       değerler: Ayşe ×1, Mehmet ×1, Zeynep ×1
-                                       konum: app/Http/Controllers/KayitController.php:38, store() (UniqueConstraintViolationException)
-     1  ERROR      09:47:12  09:47:12  Attempt to read property "ad" on null
-                                       konum: app/Http/Controllers/KategoriController.php:54, goster() (ErrorException)
-     1  ERROR      11:30:44  11:30:44  App\Jobs\FaturaGonder has been attempted too many times.
-                                       konum: uygulama kodunda bulunamadı (MaxAttemptsExceededException)
-     1  ERROR      13:18:20  13:18:20  Attempt to read property "ad" on null
-                                       konum: app/Http/Controllers/UrunController.php:72, goster() (ErrorException)
-     3  WARNING    16:10:03  16:12:41  Ödeme sağlayıcısı yanıt vermedi, sipariş <SAYI> için yeniden denenecek (deneme …
-                                       örnek: Ödeme sağlayıcısı yanıt vermedi, sipariş 1047 için yeniden denenecek (de…
-     1  WARNING    09:33:05  09:33:05  Yavaş sorgu (<SAYI> ms): select * from `siparisler` where `kullanici_id` = <SAY…
-                                       örnek: Yavaş sorgu (1532 ms): select * from `siparisler` where `kullanici_id` =…
-     1  WARNING    10:58:51  10:58:51  Yavaş sorgu (<SAYI> ms): select * from `urunler` where `kategori_id` = <SAYI> a…
-                                       örnek: Yavaş sorgu (2210 ms): select * from `urunler` where `kategori_id` = 12 …
-  … 14 satır daha; tümünü görmek için --hepsi
+Patterns: 45 distinct messages → 27 after masking → 23 Drain patterns (threshold 0.7) → 24 groups by fingerprint
+  count  level      first     last      pattern
+      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<NUM>]
+                                        sample: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
+                                        location: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)
+      6  ERROR      16:10:02  16:16:02  cURL error <NUM>: Operation timed out after <NUM> milliseconds with <NUM> bytes…
+                                        sample: cURL error 28: Operation timed out after 10001 milliseconds with 0 byte…
+                                        location: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
+      4  ERROR      15:02:11  16:58:12  Undefined array key "kargo_ucreti"
+                                        location: app/Services/SepetHesaplayici.php:88, toplam() (ErrorException)
+      3  ERROR      09:14:20  17:55:03  SQLSTATE[<NUM>]: Integrity constraint violation: <NUM> Duplicate entry '<EMAIL>…
+                                        sample: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry '…
+                                        values: Ayşe ×1, Mehmet ×1, Zeynep ×1
+                                        location: app/Http/Controllers/KayitController.php:38, store() (UniqueConstraintViolationException)
+      1  ERROR      09:47:12  09:47:12  Attempt to read property "ad" on null
+                                        location: app/Http/Controllers/KategoriController.php:54, goster() (ErrorException)
+      1  ERROR      11:30:44  11:30:44  App\Jobs\FaturaGonder has been attempted too many times.
+                                        location: not found in application code (MaxAttemptsExceededException)
+      1  ERROR      13:18:20  13:18:20  Attempt to read property "ad" on null
+                                        location: app/Http/Controllers/UrunController.php:72, goster() (ErrorException)
+      3  WARNING    16:10:03  16:12:41  Ödeme sağlayıcısı yanıt vermedi, sipariş <NUM> için yeniden denenecek (deneme <…
+                                        sample: Ödeme sağlayıcısı yanıt vermedi, sipariş 1047 için yeniden denenecek (d…
+      1  WARNING    09:33:05  09:33:05  Yavaş sorgu (<NUM> ms): select * from `siparisler` where `kullanici_id` = <NUM>…
+                                        sample: Yavaş sorgu (1532 ms): select * from `siparisler` where `kullanici_id` …
+      1  WARNING    10:58:51  10:58:51  Yavaş sorgu (<NUM> ms): select * from `urunler` where `kategori_id` = <NUM> and…
+                                        sample: Yavaş sorgu (2210 ms): select * from `urunler` where `kategori_id` = 12…
+  … 14 more rows; use --all to see them all
 ```
 
-Tablo, örnek logdaki bir günün hikâyesini anlatıyor: 15:00'teki dağıtımdan iki dakika sonra
-başlayan `kargo_ucreti` hatası, 16:10–16:16 arasındaki ödeme zaman aşımları ve 17:05'teki
-Redis çöküşü. `Attempt to read property "ad" on null` iki ayrı satırda: mesajları aynı, ama
-biri kategori sayfasında, öteki ürün sayfasında oluşan iki ayrı hata.
+The table tells the story of one day in the sample log: an undefined `kargo_ucreti` (shipping
+fee) key that starts two minutes after the 15:00 deploy, payment timeouts between 16:10 and
+16:16, and a Redis outage at 17:05. `Attempt to read property "ad" on null` appears on two
+rows: the message is the same, but one error comes from the category page and the other from
+the product page.
 
-## Öne çıkanlar
+> **Note:** the interface is Turkish by default. Pass `--lang en`, or set `VEYLOG_DIL=en`
+> once (see [Interface language](#interface-language)), for English help, reports and
+> messages; the examples in this README show English output. The sample logs come from a
+> fictional Turkish online shop, so the log messages themselves are in Turkish.
 
-- **Satırlar değil, kalıplar.** Mesajlardaki değişken kısımlar maskelenir (`<SAYI>`, `<IP>`,
-  `<YOL>`...) ve mesajlar [Drain](https://jiemingzhu.github.io/pub/pjhe_icws2017.pdf)
-  algoritmasıyla kalıplara ayrılır: 59 kayıt 24 satıra iner.
-- **Kategorik konumlar.** Koddan gelen değerler (sınıf adları, sabitler, olay adları,
-  tırnaklı anahtarlar) sıradan kelimelerden biçimleriyle ayrılır: `İş tamamlandı:
-  App\Jobs\FaturaGonder` ile `İş tamamlandı: App\Jobs\EpostaGonder` yüz farklı iş beklenmeden
-  tek kalıpta birleşir, `Ödeme alındı` ile `Ödeme reddedildi` birleşmez. Her `<*>` konumunun
-  en sık değerleri adetleriyle raporda yazılır: hangi işler, hangi olaylar, kaçar kez.
-- **Hatanın yeri.** Stack trace'ten istisna sınıfı, uygulama kodundaki ilk satır ve o satırın
-  içinde bulunduğu fonksiyon çıkarılır. Vendor, giriş noktaları ve middleware'in
-  `$next($request)` satırı atlanır; Blade hatalarında şablonun kendisi gösterilir. Aynı mesaj
-  kodun farklı yerlerinden geliyorsa ayrı satırlara bölünür. İstisna `report($e)` ile
-  bağlamda da, `Log::error($e)` ile metin olarak da loglansa aynı hatadır.
-- **Dağıtımlara dayanıklı.** Hata satırla değil fonksiyonla tanınır: bir dağıtım dosyanın
-  üstüne satır eklese de aynı hata aynı kalır, yeni çıkmış sayılmaz. Closure'lar
-  tanımlandıkları fonksiyonla ayrılır (`{closure:olustur()}`); çağrıları yazılmayan JSON
-  kayıtlarının fonksiyonu logun başka kayıtlarından öğrenilir. Proje kökü yollardan silinir:
-  sıfır kesintili dağıtımlarda (Forge, Envoyer) klasör her seferinde değişse de aynı hata tek
-  satırda kalır.
-- **Dağıtımdan önce ve sonra.** `--karsilastir 15:00` logu ikiye böler ve o andan sonra yeni
-  çıkan, kaybolan ve belirgin şekilde artan hataları listeler. Artışın tesadüf olmadığı
-  kesin bir binom testiyle sınanır.
-- **Ani artışlar.** `--ani-artis 5` her kalıbın WARNING ve üstündeki kayıtlarını beşer
-  dakikalık dilimlerde sayar ve olağan seviyesinden sıçradığı anları bulur. Olağan seviye
-  medyanla, dalgalanma MAD ile ölçülür; aranan patlama kendi ölçüsünü bozmaz.
-- **Canlı izleme.** `--izle` logu sonuna kadar okur, raporu yazar, sonra eklenen kayıtları
-  okumaya devam eder ve yeni kayıt geldikçe raporu yeniden çizer; `--son 1sa` ile hep son bir
-  saat görünür. Döndürülen log baştan okunur, `tail -f` ile gelen bir akış da izlenebilir.
-  Girdi yeniden okunmaz: her çizim yalnızca yeni baytları işler.
-- **Üç çıktı biçimi.** Terminal için tablo, betikler ve CI adımları için JSON, GitHub
-  issue'larına yapıştırmak için Markdown.
-- **İki dil.** Arayüz Türkçe; `--dil en` (ya da `VEYLOG_DIL=en`) yardımı, raporu ve bütün
-  mesajları İngilizce yazar. Her seçeneğin İngilizce adı da geçerlidir (`--last 2h`,
-  `--format json`). JSON çıktısı her dilde aynıdır: betikler dil değişince bozulmaz.
-- **Gerçek loglara dayanıklı.** Laravel'in metin biçimi ve Monolog'un JSON satırları (aynı
-  dosyada karışık olsalar bile), ISO 8601 zamanlar, Windows yolları (Herd, Laragon),
-  standart girdi, UTF-8 BOM ve geçersiz UTF-8. Uygulama Monolog'a başka bir satır ya da
-  tarih biçimi verdiyse aynı dizgeler `--desen` ve `--zaman-bicimi` ile verilir.
-- **Güvenli çıktı.** Log mesajlarındaki kontrol karakterleri (ESC, CR) terminale komut olarak
-  ulaşmaz: logu yazabilen biri raporun ekranda nasıl göründüğünü değiştiremez.
-- **Tek bağımlılık.** Yalnızca [regex](https://crates.io/crates/regex). JSON okuyucu ve
-  yazıcı, Drain, istatistik hesapları ve komut satırı ayrıştırıcı elle yazıldı; doğrulukları
-  referans uygulamalarla (serde_json, scipy, numpy, Drain3) karşılaştırılarak sınanır.
+## Features
 
-## Kurulum
+- **Patterns, not lines.** Variable parts of messages are masked (`<NUM>`, `<IP>`, `<PATH>`,
+  …) and messages are clustered into patterns with the
+  [Drain](https://jiemingzhu.github.io/pub/pjhe_icws2017.pdf) algorithm: the 59 records above
+  fit into 24 rows.
+- **Categorical positions.** Code-like values (class names, constants, event names, quoted
+  keys) are told apart from ordinary words by their shape. `Job completed:
+  App\Jobs\SendInvoice` and `Job completed: App\Jobs\SendEmail` merge into one pattern without
+  waiting for a hundred different jobs, while `Payment received` and `Payment declined` stay
+  apart. The most frequent values of every `<*>` position are listed with their counts: which
+  jobs, which events, how many times each.
+- **Where the error happened.** The exception class, the first frame in application code and
+  the function enclosing it are extracted from the stack trace. Vendor code, entry points and
+  the middleware `$next($request)` frame are skipped; Blade errors point at the template
+  itself. When the same message comes from different places in the code, it is split into
+  separate rows. An exception logged with `report($e)` (in the context) and one logged with
+  `Log::error($e)` (as text) are recognized as the same error.
+- **Stable across deploys.** Errors are identified by function, not by line number: when a
+  deploy adds lines at the top of a file, the same error stays the same instead of showing up
+  as new. Closures are told apart by the function that defines them (`{closure:store()}`),
+  and JSON records, whose stack traces carry no calls, learn their function from other records
+  in the log. The project root is stripped from paths, so zero-downtime deployments (Forge,
+  Envoyer) that use a new release directory each time still produce a single row.
+- **Before and after a deploy.** `--compare 15:00` splits the log in two and lists the
+  patterns that are new, gone, or significantly more frequent afterwards. An increase has to
+  pass an exact binomial test, so chance fluctuations are not reported.
+- **Spikes.** `--spikes 5` counts each pattern's WARNING and above records in five-minute
+  slices and finds the moments when it jumps above its usual level. The usual level is the
+  median and the spread is the MAD, so the burst being searched for cannot distort its own
+  baseline.
+- **Live watching.** `--watch` reads the log to the end, prints the report, then keeps
+  reading new records and redraws the report as they arrive; with `--last 1h` it always shows
+  the last hour. Rotated logs are picked up from the start, and a `tail -f` stream can be
+  watched too. The input is never re-read: each redraw processes only the new bytes.
+- **Three output formats.** A table for the terminal, JSON for scripts and CI steps, Markdown
+  for GitHub issues and pull requests.
+- **Two languages.** The help, the report and every message are available in Turkish and
+  English. Every option has an English and a Turkish name, both accepted in either language.
+  JSON output is identical in both, so scripts do not break when the language changes.
+- **Built for real-world logs.** Laravel's text format and Monolog's JSON lines (even mixed in
+  one file), ISO 8601 timestamps, Windows paths (Herd, Laragon), standard input, UTF-8 BOMs
+  and invalid UTF-8. If the application gives Monolog a different line or date format, the
+  same strings can be passed with `--pattern` and `--time-format`.
+- **Safe output.** Control characters in log messages (ESC, CR) never reach the terminal as
+  commands: whoever can write to the log cannot change how the report looks on screen.
+- **A single dependency.** Only [regex](https://crates.io/crates/regex). The JSON reader and
+  writer, Drain, the statistics and the argument parser are hand-written and tested against
+  reference implementations (serde_json, SciPy, NumPy, Drain3).
 
-### Hazır program
+## Installation
 
-[Sürümler](https://github.com/Veysel440/veylog/releases/latest) sayfasında Linux, macOS ve
-Windows için derlenmiş program bulunur; Rust kurmak gerekmez.
+### Prebuilt binaries
 
-| Sistem | Dosya |
+The [Releases](https://github.com/Veysel440/veylog/releases/latest) page has binaries for
+Linux, macOS and Windows; no Rust toolchain is needed.
+
+| Platform | File |
 |---|---|
-| Linux (x86_64, statik; her dağıtımda çalışır) | `veylog-x86_64-unknown-linux-musl.tar.gz` |
+| Linux (x86_64, static; runs on any distribution) | `veylog-x86_64-unknown-linux-musl.tar.gz` |
 | macOS (Apple Silicon) | `veylog-aarch64-apple-darwin.tar.gz` |
 | macOS (Intel) | `veylog-x86_64-apple-darwin.tar.gz` |
 | Windows (x86_64) | `veylog-x86_64-pc-windows-msvc.zip` |
 
-Her arşivin yanında SHA-256 özeti (`.sha256`) de yayımlanır. Linux'ta (WSL dahil) indirme,
-doğrulama ve kurulum:
+Every archive is published with its SHA-256 checksum (`.sha256`). To download, verify and
+install on Linux (including WSL):
 
 ```bash
 curl -LO https://github.com/Veysel440/veylog/releases/latest/download/veylog-x86_64-unknown-linux-musl.tar.gz
@@ -142,46 +152,46 @@ curl -LO https://github.com/Veysel440/veylog/releases/latest/download/veylog-x86
 sha256sum -c veylog-x86_64-unknown-linux-musl.sha256
 tar -xzf veylog-x86_64-unknown-linux-musl.tar.gz
 sudo mv veylog /usr/local/bin/
-veylog --surum
+veylog --version
 ```
 
-macOS'ta dosya adlarındaki hedefi değiştirmek yeterlidir; özet `shasum -a 256 -c` ile
-doğrulanır. Arşiv tarayıcıyla indirildiyse macOS ilk çalıştırmada uyarabilir:
-`xattr -d com.apple.quarantine veylog`.
+On macOS, change the target in the file names and verify the checksum with
+`shasum -a 256 -c`. If the archive was downloaded with a browser, macOS may block the first
+run: `xattr -d com.apple.quarantine veylog`.
 
-Windows'ta (PowerShell):
+On Windows (PowerShell):
 
 ```powershell
 Invoke-WebRequest https://github.com/Veysel440/veylog/releases/latest/download/veylog-x86_64-pc-windows-msvc.zip -OutFile veylog.zip
 Expand-Archive veylog.zip -DestinationPath veylog
-.\veylog\veylog.exe --surum
+.\veylog\veylog.exe --version
 ```
 
-`veylog.exe` tek başına çalışır; Visual C++ çalışma zamanı gibi ek bir kurulum gerekmez. Her
-klasörden çalıştırmak için `veylog` klasörünü `PATH`'e ekleyin.
+`veylog.exe` runs on its own; no Visual C++ runtime or other installation is needed. Add the
+`veylog` folder to your `PATH` to run it from anywhere.
 
-Ekranda Türkçe harfler doğru görünür. Windows'la gelen Windows PowerShell 5.1 ise bir dosyaya
-ya da başka bir programa yönlendirilen çıktıyı (`> rapor.md`, `| jq`) yeniden kodlar ve
-Türkçe harfleri bozar; PowerShell 7.4 ve sonrası (`winget install Microsoft.PowerShell`)
-baytları olduğu gibi aktarır. 5.1'de yönlendirme `cmd` ile yapılabilir:
+Windows PowerShell 5.1, the version that ships with Windows, re-encodes output that is
+redirected to a file or another program (`> report.md`, `| jq`) and garbles non-ASCII
+characters. PowerShell 7.4 and later (`winget install Microsoft.PowerShell`) pass the bytes
+through unchanged. On 5.1, redirect through `cmd`:
 
 ```powershell
-cmd /c "veylog --bicim markdown storage\logs\laravel.log > rapor.md"
+cmd /c "veylog --format markdown storage\logs\laravel.log > report.md"
 ```
 
-### Cargo ile
+### With Cargo
 
-[Rust](https://rustup.rs) 1.88 ya da daha yenisi kuruluysa
-[crates.io](https://crates.io/crates/veylog)'dan:
+With [Rust](https://rustup.rs) 1.88 or later, install from
+[crates.io](https://crates.io/crates/veylog):
 
 ```bash
 cargo install veylog --locked
 ```
 
-Program `~/.cargo/bin` klasörüne kurulur; rustup bu klasörü `PATH`'e ekler. Henüz sürüme
-girmemiş son değişiklikler için: `cargo install --git https://github.com/Veysel440/veylog --locked`
+The binary is installed into `~/.cargo/bin`, which rustup adds to your `PATH`. For the latest
+unreleased changes: `cargo install --git https://github.com/Veysel440/veylog --locked`
 
-### Kaynaktan
+### From source
 
 ```bash
 git clone https://github.com/Veysel440/veylog.git
@@ -190,445 +200,482 @@ cargo build --release
 ./target/release/veylog ornekler/laravel.log
 ```
 
-## Kullanım
+## Usage
 
 ```text
-veylog [SEÇENEKLER] <log-dosyası>
+veylog [OPTIONS] <log-file>
 ```
 
-| Seçenek | Açıklama | Varsayılan |
+| Option | Description | Default |
 |---|---|---|
-| `-e`, `--esik <sayı>` | Drain benzerlik eşiği, 0 ile 1 arası. Büyüdükçe kalıplar daha az birleşir. | 0,7 |
-| `--konum <tür>` | Bir hatanın yeri neyle belirlensin: `metot` (dosya ve fonksiyon; satırlar kaysa da hata aynı kalır) ya da `satir` (dosya ve satır, 0.1'deki gibi). | `metot` |
-| `-n`, `--ilk <sayı>` | Tabloda gösterilecek satır sayısı. | 10 |
-| `--hepsi` | Tablonun tamamını göster. | |
-| `-s`, `--siralama <ölçüt>` | Tablonun sırası: `onem`, `adet` ya da `yeni`. | `onem` |
-| `-b`, `--bicim <ad>` | Çıktının biçimi: `metin`, `json` ya da `markdown`. | `metin` |
-| `-k`, `--karsilastir <zaman>` | Logu bu anda ikiye böl ve iki yarıyı karşılaştır. Zaman: `15:00`, `15:00:30`, `2026-10-24` ya da `"2026-10-24 15:00"`. | |
-| `-a`, `--ani-artis <dakika>` | Logu bu uzunlukta dilimlere böl; her kalıbın WARNING ve üstündeki kayıtlarının olağan seviyesinden sıçradığı anları bul (1–1440). | |
-| `--seviye <seviye>` | Yalnızca bu seviye ve üstündeki kayıtlar: `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`. | |
-| `--baslangic <zaman>` | Yalnızca bu andan (dahil) sonraki kayıtlar. Zaman `--karsilastir` gibi yazılır. | |
-| `--bitis <zaman>` | Yalnızca bu andan (hariç) önceki kayıtlar. | |
-| `--son <süre>` | Yalnızca logun son kısmı: en yeni kayıttan bu kadar öncesinden bu yana. Süre: `30dk`, `2sa`, `1g`, `1sa30dk`. | |
-| `--saat-dilimi <dilim>` | Zamanları bu saat diliminde göster: `+03:00`, `-05:30`, `Z` (UTC). Saat dilimi yazılı kayıtlar bu dilime çevrilir. | logda yazılı ilk dilim |
-| `--desen <desen>` | Bir kaydı başlatan satırın biçimi: Monolog'un biçim dizgesi (`"%datetime% [%level_name%] %message% %context%"`) ya da adlandırılmış gruplu bir düzenli ifade. | Laravel'in biçimi |
-| `--zaman-bicimi <biçim>` | Zamanın biçimi, PHP'nin `date()` dizgesiyle: `"d.m.Y H:i:s"`, `"d/M/Y:H:i:s O"`, `"U"`. | `2026-10-24 14:03:11` ya da ISO 8601 |
-| `--izle` | Logu canlı izle: sonuna kadar oku, raporu yaz, eklenen kayıtlar geldikçe yeniden çiz. Yalnızca metin biçiminde; `--karsilastir` ile kullanılamaz. | |
-| `--aralik <süre>` | İzlemede girdiye bu sıklıkla bak; raporu en sık bu kadarda bir çiz. Süre `--son` gibi, `ms` de olur (`500ms`); 100 ms ile 1 sa arası. | `2sn` |
-| `--dil <dil>` | Arayüzün dili: `tr` ya da `en`. `VEYLOG_DIL` ortam değişkeniyle de seçilir. | `tr` |
-| `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
-| `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
+| `-e`, `--threshold <num>` | Drain similarity threshold, between 0 and 1. The higher it is, the less patterns merge. | 0.7 |
+| `--location <kind>` | What identifies where an error happened: `method` (file and function; an error keeps its identity when line numbers shift) or `line` (file and line, as in 0.1). | `method` |
+| `-n`, `--top <num>` | Number of rows in the table. | 10 |
+| `--all` | Show the whole table. | |
+| `-s`, `--sort <key>` | Order of the table: `severity`, `count` or `newest`. | `severity` |
+| `-b`, `--format <name>` | Output format: `text`, `json` or `markdown`. | `text` |
+| `-k`, `--compare <time>` | Split the log at this moment and compare the two halves. Time: `15:00`, `15:00:30`, `2026-10-24` or `"2026-10-24 15:00"`. | |
+| `-a`, `--spikes <minutes>` | Split the log into slices of this length and find the moments when a pattern's WARNING and above records jump above their usual level (1–1440). | |
+| `--level <level>` | Only records at this level and above: `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`. | |
+| `--since <time>` | Only records from this moment on (inclusive). Times are written as for `--compare`. | |
+| `--until <time>` | Only records before this moment (exclusive). | |
+| `--last <duration>` | Only the end of the log: from this long before the newest record. Duration: `30m`, `2h`, `1d`, `1h30m`. | |
+| `--timezone <zone>` | Show times in this time zone: `+03:00`, `-05:30`, `Z` (UTC). Records that carry a time zone are converted to it. | first zone in the log |
+| `--pattern <pattern>` | Format of a line that starts a record: a Monolog format string (`"%datetime% [%level_name%] %message% %context%"`) or a regular expression with named groups. | Laravel's format |
+| `--time-format <format>` | Format of the timestamp, as a PHP `date()` string: `"d.m.Y H:i:s"`, `"d/M/Y:H:i:s O"`, `"U"`. | `2026-10-24 14:03:11` or ISO 8601 |
+| `--watch` | Watch the log live: read it to the end, print the report, redraw as new records arrive. Text format only; cannot be combined with `--compare`. | |
+| `--interval <duration>` | In watch mode, check the input this often and redraw at most this often. Durations as for `--last`, plus `ms` (`500ms`); between 100 ms and 1 h. | `2s` |
+| `--lang <language>` | Interface language: `tr` or `en`. Also set by the `VEYLOG_DIL` environment variable. | `tr` |
+| `-h`, `--help` | Show the help. | |
+| `-V`, `--version` | Show the version. | |
 
 ```bash
-# Varsayılan ayarlarla
+# Default settings
 veylog storage/logs/laravel.log
 
-# Son ortaya çıkan sorunlar önce, tablonun tamamı
-veylog --siralama yeni --hepsi storage/logs/laravel.log
+# Most recently appeared problems first, the whole table
+veylog --sort newest --all storage/logs/laravel.log
 
-# 15:00'teki dağıtımdan önce ve sonra: yeni çıkan, kaybolan ve artan hatalar
-veylog --karsilastir 15:00 storage/logs/laravel.log
+# Before and after the 15:00 deploy: new, gone and increased errors
+veylog --compare 15:00 storage/logs/laravel.log
 
-# Aynı fonksiyonun farklı satırlarındaki hatalar ayrı ayrı
-veylog --konum satir storage/logs/laravel.log
+# Errors on different lines of the same function, on separate rows
+veylog --location line storage/logs/laravel.log
 
-# Beşer dakikalık dilimlerde olağan seviyesinden sıçrayan hatalar
-veylog --ani-artis 5 storage/logs/laravel.log
+# Errors that jump above their usual level in five-minute slices
+veylog --spikes 5 storage/logs/laravel.log
 
-# Logun son iki saatindeki hatalar; ya da yalnızca dünkü 14:00–16:00
-veylog --seviye error --son 2sa storage/logs/laravel.log
-veylog --baslangic "2026-10-23 14:00" --bitis "2026-10-23 16:00" storage/logs/laravel.log
+# Errors from the last two hours; or only yesterday between 14:00 and 16:00
+veylog --level error --last 2h storage/logs/laravel.log
+veylog --since "2026-10-23 14:00" --until "2026-10-23 16:00" storage/logs/laravel.log
 
-# UTC'de yazılmış bir log, Türkiye saatiyle
-veylog --saat-dilimi +03:00 storage/logs/laravel.log
+# A log written in UTC, shown in UTC+3
+veylog --timezone +03:00 storage/logs/laravel.log
 
-# Biçimi config/logging.php'de değiştirilmiş bir log: Monolog'un biçim ve tarih dizgeleri
-veylog --desen '%datetime% [%level_name%] %message% %context%' --zaman-bicimi 'd.m.Y H:i:s' storage/logs/laravel.log
+# A log whose format was changed in config/logging.php: Monolog's format and date strings
+veylog --pattern '%datetime% [%level_name%] %message% %context%' --time-format 'd.m.Y H:i:s' storage/logs/laravel.log
 
-# Sıkıştırılmış bir günlük log ya da sunucudaki bir log: dosya yerine - standart girdidir
+# A compressed daily log, or a log on a server: - reads standard input
 zcat laravel-2026-10-24.log.gz | veylog -
-ssh sunucu 'cat /var/www/magaza/storage/logs/laravel.log' | veylog -
+ssh server 'cat /var/www/shop/storage/logs/laravel.log' | veylog -
 
-# Logu canlı izle: her 2 saniyede yeni kayıtlara bak, son bir saati göster; Ctrl+C ile çık
-veylog --izle --son 1sa storage/logs/laravel.log
-ssh sunucu 'tail -f /var/www/magaza/storage/logs/laravel.log' | veylog --izle --ani-artis 1 -
+# Watch a log live: check every 2 seconds, show the last hour; quit with Ctrl+C
+veylog --watch --last 1h storage/logs/laravel.log
+ssh server 'tail -f /var/www/shop/storage/logs/laravel.log' | veylog --watch --spikes 1 -
 
-# WSL'den, Windows'taki bir Herd projesinin logu
-veylog /mnt/c/Users/Ad/Herd/proje/storage/logs/laravel.log
+# From WSL, the log of a Herd project on Windows
+veylog /mnt/c/Users/you/Herd/shop/storage/logs/laravel.log
 ```
 
-Seçenekler dosya adından önce ya da sonra yazılabilir; değer boşlukla, `=` ile ya da kısa
-seçeneklerde bitişik verilir (`--esik 0,8`, `--esik=0,8`, `-n20`, `-n=20`). Ondalık ayracı
-virgül de olabilir, nokta da; değerlerde büyük ve küçük harf fark etmez (`--bicim JSON`).
-Türkçe karakterli yazımlar da geçerlidir (`--eşik`, `--sıralama önem`).
-Her uzun seçeneğin ve her değerin İngilizce adı da her dilde geçerlidir; yardım ve mesajlar
-seçili dildeki adları gösterir:
+Options can come before or after the file name. A value follows a space or `=`, and short
+options also take it attached (`--threshold 0.8`, `--threshold=0.8`, `-n20`, `-n=20`). The
+decimal separator can be a dot or a comma, and values are case-insensitive (`--format JSON`).
+For a typo, the closest option is suggested:
 
-| Türkçe | İngilizce | Türkçe | İngilizce |
+```text
+$ veylog --treshold 0.8 laravel.log
+veylog: unknown option: --treshold (did you mean --threshold?)
+Usage: veylog [OPTIONS] <log-file>
+For details: veylog --lang en --help
+```
+
+### Interface language
+
+The interface is Turkish by default. `--lang en` switches the help, the report and every
+message to English for one run; the `VEYLOG_DIL` environment variable makes it permanent:
+
+```bash
+# Linux and macOS: add the line to ~/.bashrc or ~/.zshrc to keep it
+export VEYLOG_DIL=en
+```
+
+```powershell
+# Windows: applies to terminals opened afterwards
+setx VEYLOG_DIL en
+```
+
+Placeholders follow the interface language (`<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>` in
+English); JSON output is the same in both languages. Every option and every value also has a
+Turkish name, accepted in either language. The detailed documentation is in Turkish and uses
+these names:
+
+| English | Turkish | English | Turkish |
 |---|---|---|---|
-| `--esik` | `--threshold` | `--baslangic` | `--since` |
-| `--konum metot`, `satir` | `--location method`, `line` | `--bitis` | `--until` |
-| `--ilk` | `--top` | `--son 2sa` | `--last 2h` |
-| `--hepsi` | `--all` | `--saat-dilimi` | `--timezone` |
-| `--siralama onem`, `adet`, `yeni` | `--sort severity`, `count`, `newest` | `--desen` | `--pattern` |
-| `--bicim metin` | `--format text` | `--zaman-bicimi` | `--time-format` |
-| `--karsilastir` | `--compare` | `--izle` | `--watch` |
-| `--ani-artis` | `--spikes` | `--aralik` | `--interval` |
-| `--seviye` | `--level` | `--dil` | `--lang` |
+| `--threshold` | `--esik` | `--since` | `--baslangic` |
+| `--location method`, `line` | `--konum metot`, `satir` | `--until` | `--bitis` |
+| `--top` | `--ilk` | `--last 2h` | `--son 2sa` |
+| `--all` | `--hepsi` | `--timezone` | `--saat-dilimi` |
+| `--sort severity`, `count`, `newest` | `--siralama onem`, `adet`, `yeni` | `--pattern` | `--desen` |
+| `--format text` | `--bicim metin` | `--time-format` | `--zaman-bicimi` |
+| `--compare` | `--karsilastir` | `--watch` | `--izle` |
+| `--spikes` | `--ani-artis` | `--interval` | `--aralik` |
+| `--level` | `--seviye` | `--lang` | `--dil` |
 
-Yazım hatalarında en yakın seçenek önerilir:
+### Filters
+
+Filters (`--level`, `--since`, `--until`, `--last`) build the report from matching records
+only: patterns, levels, the time range, the comparison and spikes all come from them. Line and
+record counts still describe the whole file; the number of matching records appears on the
+`Filter` line. A bound given as a time of day only (`--since 15:00`) applies to the log's last
+day, as with `--compare`. `--last` and time-only bounds need to know where the log ends, so
+the log is scanned once beforehand; standard input arriving through a pipe is copied to a
+temporary file meanwhile. Records outside the filter are neither masked nor clustered, so a
+filtered report is faster: the last two hours of a 500 MB log are summarized in 1.8 seconds.
+
+### Live watching
+
+`--watch` follows a log live: it reads the log to the end, prints the report, then keeps
+reading what is appended and redraws the report as new records arrive. In a terminal the
+screen is cleared before each redraw; when the output goes to a file or a pipe, redraws follow
+one another, separated by a divider line. The input is never re-read: each redraw processes
+only the bytes appended since the previous one, and the report is regenerated from the
+in-memory store. The first line of the report shows how many records have been read and the
+time of the newest one.
+
+In watch mode, time filters are a sliding window: `--last 1h` is applied at every redraw
+relative to the newest record so far, so the report always shows the last hour. A rotated log
+(logrotate, `copytruncate`) is read from the start, and earlier records stay in the report.
+Standard input (`tail -f ... | veylog --watch -`) prints the final report and exits when the
+input ends; a file is watched until Ctrl+C. Because a stack trace can arrive in several writes,
+the last record read is committed when the next record header arrives or when the input stays
+quiet for one interval (`--interval`, 2 seconds by default)
+([details](docs/nasil-calisir.md#canlı-izleme), in Turkish).
+
+### Time zones
+
+When records carry a time zone (Monolog's ISO 8601 format and JSON lines:
+`2026-10-24T14:03:11+03:00`), all times are converted to a single report time zone, so the log
+of an application that crossed a daylight saving change, or whose time zone was changed, sorts
+correctly. The report's zone is set with `--timezone`; by default it is the first zone written
+in the log. The `Time zone` line of the report shows how many records were converted. Times
+given to the filters and to `--compare` are in the same zone
+([details](docs/nasil-calisir.md#saat-dilimleri), in Turkish).
+
+### Log formats
+
+Laravel's line format and Monolog's JSON lines are recognized automatically. `Log::error($e)`
+does not put the exception in the context; it writes PHP's string form of the exception
+(`RuntimeException: ... in /path:64` followed by `Stack trace:`). veylog reads the class, the
+location and the message from that text too, so the same error logged with `report($e)` ends
+up on the same row ([details](docs/nasil-calisir.md#php-istisna-metni), in Turkish). If the
+application gives Monolog a different line format (`formatter_with` with `format` and
+`dateFormat`), pass the same strings with `--pattern` and `--time-format`. A log that was not
+written by Monolog can be described with a regular expression with named groups:
+`--pattern '(?P<time>\S+ \S+) (?P<level>\w+): (?P<message>.*)'`
+([details](docs/nasil-calisir.md#log-biçimleri), in Turkish).
+
+### Error locations
+
+An error's location is the file and the function that encloses the line:
+`app/Services/SepetHesaplayici.php:88, toplam()`. The line number is shown but is not part of
+the error's identity: if a deploy adds lines at the top of the file, the same error shows up at
+line 91 and is still the same error; the line shown is that of the newest record. For closures,
+the function that defines them is shown (`{closure:store()}`); PHP 8.4 writes it into the
+closure's name, and for earlier versions it is recovered from the stack trace. To separate
+errors on two lines of the same function, use `--location line`
+([details](docs/nasil-calisir.md#satır-değil-fonksiyon), in Turkish).
+
+### Exit codes
+
+Exit codes let scripts tell failures apart: `0` success, `1` the file could not be read or the
+output could not be written, `2` usage error (unknown option, invalid value, a comparison point
+outside the log, an empty filter range).
+
+## Examples
+
+### Before and after a deploy
+
+`--compare` splits the log at the given moment. Patterns are extracted once over the whole
+log, then each row's records are counted in the two halves. Since the halves can differ in
+length, hourly rates are compared rather than raw counts.
 
 ```text
-$ veylog --esk 0,8 laravel.log
-veylog: bilinmeyen seçenek: --esk (bunu mu demek istediniz: --esik)
-Kullanım: veylog [SEÇENEKLER] <log-dosyası>
-Ayrıntılar için: veylog --yardim
-```
-
-Filtreler (`--seviye`, `--baslangic`, `--bitis`, `--son`) raporu yalnızca uyan kayıtlarla
-çıkarır: kalıplar, seviyeler, zaman aralığı, karşılaştırma ve ani artışlar onlardandır.
-Dosyanın satır ve kayıt sayıları dosyanın tamamınındır; uyan kayıt sayısı `Filtre` satırında
-yazar. Yalnızca saat verilmiş bir sınır (`--baslangic 15:00`) `--karsilastir` gibi logun son
-gününe uygulanır. `--son` ve yalnızca saat verilmiş sınırlar logun sonunu bilmeyi gerektirir:
-log önce bir kez taranır (standart girdi bir borudan geliyorsa o sırada geçici bir dosyaya
-kopyalanır). Filtreye
-uymayan kayıtlar maskelenmediği ve kümelenmediği için filtreli bir rapor daha hızlı çıkar:
-500 MB'lık bir logun son iki saati 1,8 saniyede özetlenir.
-
-`--izle` logu canlı izler: sonuna kadar okur, raporu yazar, sonra eklenen kayıtları okumaya
-devam eder ve yeni kayıt geldikçe raporu yeniden çizer (terminalde ekranı temizleyerek; bir
-dosyaya ya da boruya yazılıyorsa çizimler bir ayırıcı satırla art arda). Girdi yeniden
-okunmaz: her çizim yalnızca o çizimden beri eklenen baytları işler, rapor depodan yeniden
-üretilir. Raporun başındaki satır kaç kaydın okunduğunu ve en yeni kaydın zamanını söyler.
-Zaman filtreleri izlemede kayan penceredir: `--son 1sa` her çizimde o ana kadarki en yeni
-kayda göre uygulanır, rapor hep son bir saati gösterir. Döndürülen log (logrotate,
-`copytruncate`) baştan okunur, önceki kayıtlar raporda kalır. Standart girdi (`tail -f ... |
-veylog --izle -`) bitince son rapor yazılır ve çıkılır; dosya Ctrl+C'ye kadar izlenir. Bir
-kaydın yığın izi birkaç yazma işlemiyle gelebileceği için okunan son kayıt, ondan sonra bir
-kayıt başlığı gelince ya da girdi bir aralık (`--aralik`, varsayılan 2 saniye) boyunca sessiz
-kalınca depoya alınır ([ayrıntılar](docs/nasil-calisir.md#canlı-izleme)).
-
-Kayıtlarda saat dilimi yazılıysa (Monolog'un ISO 8601 biçimi ve JSON satırları:
-`2026-10-24T14:03:11+03:00`) bütün zamanlar tek bir dilime, raporun saat dilimine çevrilir:
-yaz saatine geçişi kapsayan ya da saat dilimi değiştirilmiş bir uygulamanın logu doğru sıralanır.
-Raporun dilimi `--saat-dilimi` ile verilir; verilmezse logda yazılı ilk dilimdir. Raporda
-`Saat dilimi` satırı kaç kaydın çevrildiğini söyler. Filtrelerin ve `--karsilastir`'ın zamanları
-da bu dilimdedir ([ayrıntılar](docs/nasil-calisir.md#saat-dilimleri)).
-
-Laravel'in satır biçimi ve Monolog'un JSON satırları kendiliğinden tanınır. `Log::error($e)`
-istisnayı bağlama koymaz, PHP'nin metni olarak yazar (`RuntimeException: ... in /yol:64` ve
-`Stack trace:`); veylog sınıfı, yeri ve mesajı bu metinden de okur: aynı hata `report($e)` ile
-loglanmış olsa da tek satırdır ([ayrıntılar](docs/nasil-calisir.md#php-istisna-metni)).
-Uygulama Monolog'a başka bir satır biçimi verdiyse (`formatter_with` ile `format` ve
-`dateFormat`) aynı dizgeler `--desen` ve `--zaman-bicimi` ile verilir. Monolog'la yazılmamış
-bir log adlandırılmış gruplu bir düzenli ifadeyle tanıtılır:
-`--desen '(?P<zaman>\S+ \S+) (?P<seviye>\w+): (?P<mesaj>.*)'`
-([ayrıntılar](docs/nasil-calisir.md#log-biçimleri)).
-
-Bir hatanın yeri dosya ve satırın içinde bulunduğu fonksiyondur:
-`app/Services/SepetHesaplayici.php:88, toplam()`. Satır numarası gösterilir ama kimliğe
-katılmaz: bir dağıtım dosyanın üstüne satır eklerse aynı hata 91. satırda görünür ve yine aynı
-hatadır; gösterilen satır en yeni kaydınkidir. Closure'larda tanımlandıkları fonksiyon yazılır
-(`{closure:olustur()}`); PHP 8.4 onu closure'ın adına kendisi yazar, öncesinde yığın izinden
-bulunur. Aynı fonksiyonun iki satırındaki hataları ayırmak için `--konum satir`
-([ayrıntılar](docs/nasil-calisir.md#satır-değil-fonksiyon)).
-
-Çıkış kodları betiklerin hatanın türünü ayırt edebilmesi içindir: `0` başarılı, `1` dosya
-okunamadı ya da çıktı yazılamadı, `2` kullanım hatası (bilinmeyen seçenek, geçersiz değer,
-logun dışında kalan bir karşılaştırma noktası, boş bir filtre aralığı).
-
-## Örnekler
-
-### Dağıtımdan önce ve sonra
-
-`--karsilastir` logu verilen anda ikiye böler. Kalıplar bütün log üzerinde bir kez çıkarılır,
-sonra her satırın kayıtları iki yarıya sayılır. Yarılar farklı uzunlukta olabileceği için
-kayıt sayıları değil saatlik sıklıklar karşılaştırılır.
-
-```text
-$ veylog --karsilastir 16:11 --ilk 1 ornekler/laravel.log
+$ veylog --compare 16:11 --top 1 ornekler/laravel.log
 ...
-Karşılaştırma: 2026-10-24 16:11:00 öncesi ve sonrası
-  önce  : 08:59:58 → 16:11:00   7 sa 11 dk    39 kayıt, saatte 5,4
-  sonra : 16:11:00 → 18:31:07   2 sa 20 dk    20 kayıt, saatte 8,6
+Comparison: before and after 2026-10-24 16:11:00
+  before: 08:59:58 → 16:11:00   7 h 11 min    39 records, 5.4 per hour
+  after : 16:11:00 → 18:31:07   2 h 20 min    20 records, 8.6 per hour
 
-Yeni çıkanlar (yalnızca sonra): 3
-  önce  sonra  seviye     ilk       son       kalıp
-     0      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<SAYI>]
-                                              örnek: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
-                                              konum: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)
-  … 2 satır daha; tümünü görmek için --hepsi
+New (only after): 3
+  before  after  level      first     last      pattern
+       0      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<NUM>]
+                                                sample: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
+                                                location: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)
+  … 2 more rows; use --all to see them all
 
-Kaybolanlar (yalnızca önce): 11
-  önce  sonra  seviye     ilk       son       kalıp
-     1      0  ERROR      09:47:12  09:47:12  Attempt to read property "ad" on null
-                                              konum: app/Http/Controllers/KategoriController.php:54, goster() (ErrorException)
-  … 10 satır daha; tümünü görmek için --hepsi
+Gone (only before): 11
+  before  after  level      first     last      pattern
+       1      0  ERROR      09:47:12  09:47:12  Attempt to read property "ad" on null
+                                                location: app/Http/Controllers/KategoriController.php:54, goster() (ErrorException)
+  … 10 more rows; use --all to see them all
 
-Artanlar (sonra ≥ 2 kat sık, tesadüf ihtimali < %1): 1
-  önce  sonra  seviye     ilk       son       kalıp
-     1      5  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
-                                              artış: saatte 0,1 → 2,1 (15,4 kat)
-                                              örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
-                                              konum: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
+Increased (after ≥ 2× as frequent, chance < 1%): 1
+  before  after  level      first     last      pattern
+       1      5  ERROR      16:10:02  16:16:02  cURL error <NUM>: Operation timed out after <NUM> milliseconds with <NUM> bytes…
+                                                increase: 0.1 → 2.1 per hour (15.4×)
+                                                sample: cURL error 28: Operation timed out after 10001 milliseconds with 0 byte…
+                                                location: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
 ```
 
-Hatalar satırla değil fonksiyonla tanındığı için dağıtım dosyaların üstüne satır eklediyse
-de aynı hata tablonun aynı satırında kalır; `--konum satir` ile hem "kaybolan" hem "yeni çıkan"
-sayılırdı.
+Because errors are identified by function rather than by line, an error stays on the same row
+even if the deploy added lines to the top of its file; with `--location line` it would be
+counted both as gone and as new.
 
-Bir kalıbın "artan" sayılması için üç şart birlikte aranır: sonra en az 2 kat sık görülmeli,
-sonra yarısında en az 2 kaydı olmalı ve artış tesadüf olmamalı (p < 0,01). Aynı anda
-"Ödeme sağlayıcısı yanıt vermedi" kalıbı da 1 kayıttan 2'ye çıkar ve sıklığı 6 kat artar;
-ama toplam 3 kaydın tesadüfen böyle dağılma ihtimali %15'tir, listeye girmez.
+A pattern counts as increased only when three conditions hold together: it is at least twice
+as frequent afterwards, it has at least 2 records in the second half, and the increase is
+unlikely to be chance (p < 0.01). In the same window the "Ödeme sağlayıcısı yanıt vermedi"
+(payment provider did not respond) pattern also goes from 1 record to 2 and becomes six times
+as frequent, but the chance that its 3 records split like that at random is 15%, so it is not
+listed.
 
-### Ani artışlar
+### Spikes
 
-Karşılaştırma için bakılacak anı bilmek gerekir. `--ani-artis` ise logu dilimlere böler ve her
-kalıbın olağan seviyesinden sıçradığı anları kendisi bulur:
+`--compare` requires knowing which moment to look at. `--spikes` instead splits the log into
+slices and finds, for each pattern, the moments when it jumps above its usual level:
 
 ```text
-$ veylog --ani-artis 10 --ilk 3 ornekler/laravel.log
+$ veylog --spikes 10 --top 3 ornekler/laravel.log
 ...
-Ani artışlar (WARNING ve üstü, 10 dakikalık 59 dilim, puan > 3,5): 1
-  zirve  olağan  puan  seviye     ilk       son       kalıp
-      6       0   4,0  ERROR      16:10:02  16:16:02  cURL error <SAYI>: Operation timed out after <SAYI> milliseconds with <SAYI> by…
-                                                      artış: 16:10–16:20 arası 6 kayıt
-                                                      örnek: cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes…
-                                                      konum: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
+Spikes (WARNING and above, 59 slices of 10 min, score > 3.5): 1
+  peak  usual  score  level      first     last      pattern
+     6      0    4.0  ERROR      16:10:02  16:16:02  cURL error <NUM>: Operation timed out after <NUM> milliseconds with <NUM> bytes…
+                                                     spike: 6 records in 16:10–16:20
+                                                     sample: cURL error 28: Operation timed out after 10001 milliseconds with 0 byte…
+                                                     location: app/Services/OdemeServisi.php:64, tahsilEt() (ConnectionException)
 ```
 
-Ödeme zaman aşımı günün geri kalanında hiç görülmüyor; 16:10–16:20 diliminde 6 kez. Puan,
-Iglewicz ve Hoaglin'in değiştirilmiş z puanıdır: `0,6745 × (sayı − medyan) / MAD`.
+The payment timeout does not appear during the rest of the day, but occurs 6 times in the
+16:10–16:20 slice. The score is Iglewicz and Hoaglin's modified z-score:
+`0.6745 × (count − median) / MAD`.
 
-### Kategorik konumlar
+### Categorical positions
 
-Bir kuyruk işçisinin logu ([ornekler/kuyruk.log](ornekler/kuyruk.log)): iş sınıfları, olay
-adları ve durum sabitleri birer değişkendir, kuyruk adları (`emails`, `default`) sıradan
-kelimelerdir.
+The log of a queue worker ([ornekler/kuyruk.log](ornekler/kuyruk.log)): job classes, event
+names and status constants are variables, while queue names (`emails`, `default`) are
+ordinary words.
 
 ```text
 $ veylog ornekler/kuyruk.log
 ...
-Kalıplar: 11 farklı mesaj → maskeleyince 11 → Drain ile 6 kalıp (eşik 0,7) → parmak iziyle 6 grup
-  adet  seviye     ilk       son       kalıp
-     2  WARNING    09:02:40  09:05:40  Sipariş <SAYI> durumu <*> olarak kaldı
-                                       örnek: Sipariş 1051 durumu ORDER_PENDING olarak kaldı
-                                       değerler: ORDER_PENDING ×1, ORDER_FAILED ×1
-     2  WARNING    09:06:18  09:06:19  Undefined array key <*>
-                                       örnek: Undefined array key "kargo_ucreti"
-                                       değerler: "kargo_ucreti" ×1, "indirim" ×1
-     4  INFO       09:00:03  09:01:12  İş tamamlandı: <*>
-                                       örnek: İş tamamlandı: App\Jobs\FaturaGonder
-                                       değerler: App\Jobs\FaturaGonder ×2, App\Jobs\EpostaGonder ×1,
-                                                 App\Jobs\StokGuncelle ×1
-     3  INFO       09:01:30  09:02:02  Olay işlendi: <*>
-                                       örnek: Olay işlendi: siparis.olusturuldu
-                                       değerler: siparis.olusturuldu ×2, odeme.alindi ×1
-     1  INFO       09:07:11  09:07:11  Kuyruk durdu: emails
-     1  INFO       09:07:11  09:07:11  Kuyruk durdu: default
+Patterns: 11 distinct messages → 11 after masking → 6 Drain patterns (threshold 0.7) → 6 groups by fingerprint
+  count  level      first     last      pattern
+      2  WARNING    09:02:40  09:05:40  Sipariş <NUM> durumu <*> olarak kaldı
+                                        sample: Sipariş 1051 durumu ORDER_PENDING olarak kaldı
+                                        values: ORDER_PENDING ×1, ORDER_FAILED ×1
+      2  WARNING    09:06:18  09:06:19  Undefined array key <*>
+                                        sample: Undefined array key "kargo_ucreti"
+                                        values: "kargo_ucreti" ×1, "indirim" ×1
+      4  INFO       09:00:03  09:01:12  İş tamamlandı: <*>
+                                        sample: İş tamamlandı: App\Jobs\FaturaGonder
+                                        values: App\Jobs\FaturaGonder ×2, App\Jobs\EpostaGonder ×1,
+                                                App\Jobs\StokGuncelle ×1
+      3  INFO       09:01:30  09:02:02  Olay işlendi: <*>
+                                        sample: Olay işlendi: siparis.olusturuldu
+                                        values: siparis.olusturuldu ×2, odeme.alindi ×1
+      1  INFO       09:07:11  09:07:11  Kuyruk durdu: emails
+      1  INFO       09:07:11  09:07:11  Kuyruk durdu: default
 ```
 
-Bir konumun en sık beş değeri yazılır, kalanı `+N başka` olur. JSON'da her satırın
-`degiskenler` dizisi aynı bilgiyi taşır ([çıktı biçimleri](docs/cikti-bicimleri.md)).
-Hangi belirteçlerin kodsal sayıldığı ve neden kuyruk adlarının birleşmediği
-[kategorik konumlar](docs/nasil-calisir.md#kategorik-konumlar) bölümünde.
+The five most frequent values of a position are listed and the rest are summarized as
+`+N more`. In JSON, the `degiskenler` array of each row carries the same information
+([output formats](docs/cikti-bicimleri.md), in Turkish). Which tokens count as code-like, and
+why queue names do not merge, is explained under
+[categorical positions](docs/nasil-calisir.md#kategorik-konumlar) (in Turkish).
 
-### Betikler ve CI için JSON
+### JSON for scripts and CI
 
 ```bash
-# Hatalar ve uygulama kodundaki yerleri, sekmeyle ayrılmış
-veylog --bicim json --hepsi laravel.log | jq -r '.kaliplar.satirlar[]
+# Errors and their location in application code, tab-separated
+veylog --format json --all laravel.log | jq -r '.kaliplar.satirlar[]
   | select(.seviye == "CRITICAL" or .seviye == "ERROR")
   | "\(.adet)\t\(.istisna.dosya // "-")\t\(.istisna.metot // "-")\t\(.kalip)"'
 
-# CI adımı: logda CRITICAL varsa başarısız ol
-veylog --bicim json laravel.log | jq -e '.seviyeler.CRITICAL // 0 | . == 0'
+# CI step: fail if the log contains a CRITICAL record
+veylog --format json laravel.log | jq -e '.seviyeler.CRITICAL // 0 | . == 0'
 
-# CI adımı: bir ani artış varsa başarısız ol
-veylog --bicim json --ani-artis 5 laravel.log | jq -e '.ani_artislar.artis_sayisi == 0'
+# CI step: fail if there is a spike
+veylog --format json --spikes 5 laravel.log | jq -e '.ani_artislar.artis_sayisi == 0'
 ```
 
-`--bicim markdown` aynı özeti GitHub issue ve PR açıklamalarına yapıştırılabilecek tablolar
-olarak yazar. Alanların hepsi [çıktı biçimleri](docs/cikti-bicimleri.md) belgesinde.
+JSON keys are in Turkish: `kaliplar.satirlar` is the pattern table, `seviye` the level, `adet`
+the count, `kalip` the pattern, `istisna` the exception (`dosya` file, `metot` method),
+`seviyeler` the level counts and `ani_artislar.artis_sayisi` the number of spikes. Every field
+is listed in [output formats](docs/cikti-bicimleri.md) (in Turkish). `--format markdown`
+writes the same summary as tables that can be pasted into GitHub issues and pull request
+descriptions.
 
-## Nasıl çalışır
+## How it works
 
 ```text
 laravel.log
-  → kayıtlara ayır    59 kayıt, 45 farklı mesaj
-  → maskele           27 farklı mesaj
-  → Drain             23 kalıp
-  → parmak izi        24 grup
-  → karşılaştırma     isteğe bağlı (--karsilastir): yeni çıkan, kaybolan, artan
-  → ani artışlar      isteğe bağlı (--ani-artis): olağan seviyesinden sıçrayan anlar
-  → özet              metin, JSON ya da Markdown
+  → split into records   59 records, 45 distinct messages
+  → mask                 27 distinct messages
+  → Drain                23 patterns
+  → fingerprint          24 groups
+  → comparison           optional (--compare): new, gone, increased
+  → spikes               optional (--spikes): moments above the usual level
+  → summary              text, JSON or Markdown
 ```
 
-1. **Kayıtlara ayırma.** `[2026-10-24 14:03:11] production.ERROR: ...` başlığı (ya da
-   `--desen`'e uyan bir satır) veya Monolog'un bir JSON satırı yeni bir kayıt başlatır; stack
-   trace gibi satırlar bir sonraki başlığa kadar o kayda bağlanır. Mesaj PHP'nin istisna
-   metniyse (`Log::error($e)`) kaydın mesajı istisnanın mesajıdır.
-2. **Maskeleme.** URL, dosya yolu, e-posta, UUID, zaman, IP ve sayılar yer tutucu olur:
-   `Kullanıcı 381 giriş yaptı` → `Kullanıcı <SAYI> giriş yaptı`.
-3. **Drain.** Maskelenmiş mesajlar sabit derinlikli bir ağaçta kümelenir; değişen konumlar
-   `<*>` olur. Eşik üç durumda gevşer: iki tarafında da rakam olan farklılıklarda (`120ms`,
-   `95ms`), aynı biçimdeki iki kodsal değerde (`ORDER_CREATED`, `ORDER_FAILED`) ve bir
-   konumun 100'den fazla farklı sıradan kelime aldığı yaprakta (kullanıcı adları gibi). Her
-   `<*>` konumunun en sık değerleri raporda sayılır.
-4. **Parmak izi.** Stack trace'ten istisna sınıfı, uygulama kodundaki ilk satır ve o satırın
-   içinde bulunduğu fonksiyon çıkarılır
-   ([Sentry](https://docs.sentry.io/concepts/data-management/event-grouping/) gibi hata
-   takip araçlarının yaptığının sade bir hali). İstisna bağlamdan, JSON'dan ya da PHP'nin
-   istisna metninden okunur. Bir yerin fonksiyonu yığın izinde bir sonraki satırda çağrılan
-   fonksiyondur; closure'ların sahibi dışa doğru aynı dosyadaki ilk satırdan, çağrıları
-   yazılmayan JSON kayıtlarınınki logun öteki yığın izlerinden öğrenilir. Drain'in kalıplarını
-   yalnızca böler: aynı mesaj iki yerden geliyorsa iki ayrı hatadır.
-5. **İstatistik.** Karşılaştırmada iki Poisson sıklığını karşılaştıran koşullu binom testi;
-   ani artışlarda dilim başına kayıt sayılarının medyanı ve MAD'ı.
-6. **Canlı izleme.** `--izle` ile depo okuma durumunu korur: eklenen baytlar satırlara,
-   satırlar kayıtlara, kayıtlar depoya akar; rapor her çizimde depodan yeniden üretilir.
-   Okunan son kayıt, devam satırları gelebileceği için, bir sonraki kayıt başlayınca ya da
-   girdi bir aralık boyunca sessiz kalınca tamamlanmış sayılır.
+1. **Splitting into records.** A header such as `[2026-10-24 14:03:11] production.ERROR: ...`
+   (or a line that matches `--pattern`), or a Monolog JSON line, starts a new record; lines
+   such as stack traces are attached to it until the next header. If the message is PHP's
+   exception text (`Log::error($e)`), the record's message is the exception's message.
+2. **Masking.** URLs, file paths, e-mail addresses, UUIDs, timestamps, IP addresses and
+   numbers become placeholders: `User 381 logged in` → `User <NUM> logged in`.
+3. **Drain.** Masked messages are clustered in a fixed-depth tree; positions that vary become
+   `<*>`. The similarity threshold relaxes in three cases: differences with digits on both
+   sides (`120ms`, `95ms`), two code-like values of the same shape (`ORDER_CREATED`,
+   `ORDER_FAILED`), and a position that takes more than 100 different ordinary words in the
+   same leaf (such as user names). The most frequent values of every `<*>` position are
+   counted for the report.
+4. **Fingerprinting.** The exception class, the first frame in application code and the
+   function enclosing it are extracted from the stack trace, a simplified version of what
+   error trackers such as [Sentry](https://docs.sentry.io/concepts/data-management/event-grouping/)
+   do. The exception is read from the context, from JSON, or from PHP's exception text. A
+   frame's function is the one called on the next line of the stack trace; the function that
+   owns a closure is taken from the next frame outwards in the same file, and JSON records,
+   whose traces carry no calls, learn theirs from the other traces in the log. Fingerprints
+   only ever split Drain's patterns: the same message coming from two places is two different
+   errors.
+5. **Statistics.** For comparisons, a conditional binomial test of two Poisson rates; for
+   spikes, the median and MAD of the per-slice counts.
+6. **Live watching.** With `--watch`, the store keeps its reading state: appended bytes flow
+   into lines, lines into records and records into the store, and the report is regenerated
+   from the store at every redraw. Because continuation lines may still follow, the last record
+   read is considered complete when the next record starts or when the input stays quiet for
+   one interval.
 
-Her adımın ayrıntısı, gerekçesi ve gerçek loglarda nasıl sınandığı
-[nasıl çalışır](docs/nasil-calisir.md) ve
-[karşılaştırma ve ani artışlar](docs/karsilastirma-ve-ani-artis.md) belgelerinde.
+The details of each step, the reasoning behind them and how they were tested on real logs are
+in [How it works](docs/nasil-calisir.md) and
+[Comparison and spikes](docs/karsilastirma-ve-ani-artis.md) (in Turkish).
 
-## Tasarım kararları
+## Design decisions
 
-| Karar | Neden |
+| Decision | Why |
 |---|---|
-| Akışlı okuma | Dosya satır satır okunur, kayıtlar saklanmaz; özet için gerekenler sıkıştırılmış olarak birikir. 2 GB'lık bir log 27 MB bellekle özetlenir ([ayrıntılar](docs/nasil-calisir.md#akışlı-okuma-ve-bellek)). |
-| Tek bağımlılık: `regex` | serde ile JSON yazmak bağımlılıkları 5 paketten 15'e, clap ile argüman ayrıştırmak 22'ye çıkarırdı. JSON yalnızca okunuyor ve yazılıyor, kuralları kısa ([RFC 8259](https://www.rfc-editor.org/rfc/rfc8259)); clap'in mesajları İngilizce ve virgüllü ondalığı tanımıyor. |
-| Elle yazılan parçalar referansla sınanır | JSON okuyucu serde_json ile (2 000 rastgele değer, gerçek loglardan 17 944 satır), binom kuyruğu scipy ile, medyan ve MAD numpy ile, tarih hesabı Python'un `datetime`'ı ile, kümeleme Drain3 ile karşılaştırılır. |
-| Ortalama yerine medyan ve MAD | Ortalama ve standart sapma tek bir patlamayla kayar; medyan ve MAD dilimlerin yarısına kadarı patlama olsa bile yerinde kalır. |
-| Kesin binom testi | Az kayıtta da geçerlidir; yanlış alarm oranı %1'i geçmez. Yaklaşık testler (z testi) küçük sayılarda yanılır. |
-| Parmak izi fonksiyona bağlı, satıra değil | `Attempt to read property "ad" on null` iki denetleyicide iki ayrı hatadır, ama bir dağıtım satırları kaydırsa da aynı hata aynı kalır; Sentry de satır numarası kullanmaz. Bedeli: aynı fonksiyonda aynı sınıf ve kalıpla oluşan iki hata birleşir; `--konum satir` ayırır. |
-| Kontrol karakterleri sembole çevrilir | Log güvenilmez metindir; ESC dizileri ekranı silebilir, satırları gizleyebilir ([CWE-150](https://cwe.mitre.org/data/definitions/150.html)). JSON'da veri kaybı yoktur: ham mesaj kaçışlarıyla yazılır. |
-| Türkçe arayüz, İngilizcesi de | Hedef kitle Türkçe konuşan Laravel geliştiricileri: mesajlar, seçenekler (`--esik`, `--eşik`) ve virgüllü ondalık sayılar Türkçeye göre. İngilizce arayüz (`--dil en`) her metnin elle yazılmış karşılığıdır; çeviri kütüphanesi yok. JSON dilden bağımsızdır. |
+| Streaming | The file is read line by line and records are not kept; only what the summary needs accumulates, in compressed form. A 2 GB log is summarized with 27 MB of memory ([details](docs/nasil-calisir.md#akışlı-okuma-ve-bellek)). |
+| A single dependency: `regex` | Writing JSON with serde would grow the dependencies from 5 crates to 15, and parsing arguments with clap to 22. JSON is only read and written, and its rules are short ([RFC 8259](https://www.rfc-editor.org/rfc/rfc8259)); clap's messages are English-only and it does not accept decimal commas. |
+| Hand-written parts are tested against references | The JSON reader against serde_json (2,000 random values and 17,944 lines from real logs), the binomial tail against SciPy, median and MAD against NumPy, date arithmetic against Python's `datetime`, clustering against Drain3. |
+| Median and MAD instead of the mean | The mean and the standard deviation shift with a single burst; the median and the MAD stay in place even if up to half of the slices are bursts. |
+| An exact binomial test | Valid with few records too; the false alarm rate stays below 1%. Approximate tests (such as a z-test) are unreliable at small counts. |
+| Fingerprints tied to functions, not lines | `Attempt to read property "ad" on null` in two controllers is two different errors, yet a deploy that shifts lines keeps an error's identity; Sentry does not use line numbers either. The cost: two errors with the same class and pattern in the same function merge; `--location line` separates them. |
+| Control characters become symbols | A log is untrusted text: ESC sequences can clear the screen or hide lines ([CWE-150](https://cwe.mitre.org/data/definitions/150.html)). JSON loses nothing: the raw message is written with escapes. |
+| A Turkish interface, with English too | veylog started as a tool for Turkish-speaking Laravel developers: messages, options (`--esik`, `--eşik`) and decimal commas follow Turkish conventions. The English interface (`--lang en`) is a hand-written counterpart of every text, without a translation library. JSON output is language-independent. |
 
-## Performans
+## Performance
 
-İki çekirdekli bir bulut sanal makinesinde, `--release` derlemesiyle; süre birkaç
-çalıştırmanın en kısası, bellek en yüksek yerleşik bellektir (GNU `time`). Dosya satır satır
-okunur; bellek dosyanın boyuyla değil, farklı mesajların sayısı ve uzunluğuyla büyür:
+Measured on a two-core cloud virtual machine with a `--release` build; the time is the best of
+several runs and the memory is the peak resident set size (GNU `time`). The file is streamed
+line by line, so memory grows with the number and length of distinct messages, not with the
+size of the file:
 
-| Log | Boyut | Süre | Bellek |
+| Log | Size | Time | Memory |
 |---|---|---|---|
-| Örnek log | 205 satır | < 0,01 sn | 5 MB |
-| Gerçek bir geliştirme logu | 13 MB, 64 931 satır | 0,04 sn | 5 MB |
-| Sentetik 426 bin satır | 55 MB | 0,9 sn | 12 MB |
-| 30 günlük log, `--ani-artis 1` (43 195 dilim) | 92 MB, 524 bin satır | 0,4 sn | 7 MB |
-| Sentetik üretim logu | 500 MB, 1,5 milyon kayıt | 3,8 sn | 16 MB |
-| Aynısı, biçimi `--desen` ile tarif edilerek | 500 MB | 6,4 sn | 16 MB |
-| Aynısı, dört kat büyük | 2 GB, 6,3 milyon kayıt | 15 sn | 27 MB |
-| Her satırda başka bir kullanıcı adı | 40 bin satır | 0,2 sn | 23 MB |
+| Sample log | 205 lines | < 0.01 s | 5 MB |
+| A real development log | 13 MB, 64,931 lines | 0.04 s | 5 MB |
+| Synthetic, 426k lines | 55 MB | 0.9 s | 12 MB |
+| 30-day log, `--spikes 1` (43,195 slices) | 92 MB, 524k lines | 0.4 s | 7 MB |
+| Synthetic production log | 500 MB, 1.5 million records | 3.8 s | 16 MB |
+| The same, format described with `--pattern` | 500 MB | 6.4 s | 16 MB |
+| The same, four times larger | 2 GB, 6.3 million records | 15 s | 27 MB |
+| A different user name on every line | 40k lines | 0.2 s | 23 MB |
 
-0.1.0 dosyanın tamamını belleğe okuyordu: 2 GB'lık log 4 GB bellek istiyor ve 36 saniye
-sürüyordu.
+Version 0.1.0 read the whole file into memory: the 2 GB log needed 4 GB of memory and took
+36 seconds.
 
-Son satır klasik Drain için en kötü durumdur: kısa bir mesajdaki rakamsız bir değer
-birleşmez, her değer ayrı bir küme açar. [Değişken konumlar](docs/nasil-calisir.md#değişken-konumlar)
-eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık bir tablo
-çıkarıyordu; şimdi tek bir kalıp çıkıyor: `Bilinmeyen kullanıcı: <*>`.
+The last row is the worst case for classic Drain: a value without digits in a short message
+never merges, so every value opens its own cluster. Before
+[variable positions](docs/nasil-calisir.md#değişken-konumlar) were added, the same log took
+about a minute and produced a 40,000-row table; now it yields a single pattern,
+`Bilinmeyen kullanıcı: <*>` (unknown user).
 
-## Kalite
+## Testing and quality
 
-- **Testler:** 385 birim testi her modülü ayrı ayrı, 53 uçtan uca test derlenmiş programı
-  çalıştırıp kullanıcının gördüğünü sınar: çıktı metinleri karakter karakter, JSON
-  serde_json ile ayrıştırılarak, Markdown tablosu satır satır.
-- **Referans karşılaştırmaları:** yukarıdaki tabloda. Kümeleme gerçek ve sentetik loglarda
-  [Drain3](https://github.com/logpai/Drain3) ile birebir aynı kümeleri veriyor; esnek eşik
-  yalnızca eşiği gevşeten farklılıklarda ayrılır
-  ([ayrıntılar](docs/nasil-calisir.md#değişken-konumlar)).
-- **Mutasyon testleri:** koda bilerek küçük hatalar yerleştirilip (bir karşılaştırmayı
-  çevirmek, bir sınırı kaydırmak, bir kuralı silmek) testlerin yakaladığı denetlendi;
-  geliştirme adımlarında ve son incelemede denenen 464 mutasyonun 463'ü yakalandı. Kalan
-  biri sonucu hiç değiştirmeyen (eşdeğer) bir mutasyondu.
-- **CI/CD:** `main` dalına her gönderimde ve her PR'da Linux, macOS ve Windows'ta testler;
-  `rustfmt`, `clippy -D warnings` ve en düşük Rust sürümü (1.88). Her sürüm etiketinde dört
-  sistem için programlar derlenir ve SHA-256 özetleriyle otomatik yayımlanır.
-- **Gerçek loglar:** iki kişisel Laravel projesinin geliştirme logları (13 MB'a kadar) ve
-  Laravel 13 ile gerçekten fırlatılan istisnalarla üretilmiş loglar: bağlamda ve
-  `Log::error($e)` ile metin olarak; Laravel'in biçiminde, JSON'da ve özel bir satır ve tarih
-  biçiminde. Üç biçimde de kalıp tablosu aynıdır. Bir dağıtım da taklit edildi: servisin
-  başına satırlar eklenip aynı istekler tekrarlandı; her hata tablonun aynı satırında kaldı.
-  Örnek loglar (`ornekler/`) kurgusaldır; IP adresleri dokümantasyon aralıklarından
-  ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)) ya da yerel ve özel ağdandır
-  (`127.0.0.1`, `10.0.3.12`), e-postalar `.test` uzantılıdır.
+- **Tests:** 385 unit tests cover each module on its own; 53 end-to-end tests run the compiled
+  binary and check what the user sees: output text character by character, JSON parsed with
+  serde_json, Markdown tables line by line.
+- **Reference comparisons:** see the table above. On real and synthetic logs, the clustering
+  produces exactly the same clusters as [Drain3](https://github.com/logpai/Drain3); the
+  flexible threshold only differs where it relaxes the threshold
+  ([details](docs/nasil-calisir.md#değişken-konumlar), in Turkish).
+- **Mutation testing:** small bugs were deliberately planted in the code (flipping a
+  comparison, shifting a bound, deleting a rule) to check that the tests catch them; 463 of
+  the 464 mutations tried during development and the final review were caught. The remaining
+  one was an equivalent mutation that does not change any result.
+- **CI/CD:** tests on Linux, macOS and Windows for every push to `main` and every pull request,
+  along with `rustfmt`, `clippy -D warnings` and the minimum supported Rust version (1.88).
+  Every release tag builds binaries for four targets and publishes them with SHA-256 checksums
+  automatically.
+- **Real logs:** the development logs of two personal Laravel projects (up to 13 MB), and logs
+  produced with exceptions actually thrown by Laravel 13: in the context and as text via
+  `Log::error($e)`; in Laravel's format, in JSON and in a custom line and date format. The
+  pattern table is the same in all three formats. A deploy was simulated as well: lines were
+  added to the top of a service and the same requests were replayed; every error stayed on the
+  same row of the table. The sample logs (`ornekler/`) are fictional; IP addresses come from
+  the documentation ranges ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)) or from local
+  and private networks (`127.0.0.1`, `10.0.3.12`), and e-mail addresses use the `.test`
+  domain.
 
 ```bash
 cargo test
 ```
 
-## Sınırlamalar
+## Limitations
 
-- Drain sözdizimine bakar, anlama bakmaz: `Kullanıcı <SAYI> giriş yaptı` ile
-  `Kullanıcı <SAYI> çıkış yaptı` aynı kalıpta birleşir; raporun `değerler` satırı birleşenleri
-  gösterir.
-- Kısa mesajlarda sıradan bir kelime olan değişkenler (`Kuyruk durdu: emails`) ancak 100'den
-  fazla farklı değer görülünce birleşir; kodsal biçimli değerler hemen birleşir.
-- Aynı fonksiyonda aynı istisna sınıfı ve aynı kalıpla oluşan iki hata tek satırdır;
-  `--konum satir` ayırır.
-- Saat dilimi yazılmamış kayıtlar (Laravel'in varsayılan biçimi) raporun diliminde yazılmış
-  sayılır; `--saat-dilimi` onların zamanını değiştiremez.
-- Ani artışlarda günlük döngü hesaba katılmaz; bu yüzden yalnızca WARNING ve üstüne bakılır.
-- Tek seferde bir dosya okunur; birden çok dosya için `cat laravel-*.log | veylog -`.
+- Drain looks at syntax, not meaning: `User <NUM> logged in` and `User <NUM> logged out` merge
+  into one pattern; the `values` line of the report shows what was merged.
+- In short messages, variables that are ordinary words (`Queue stopped: emails`) merge only
+  after more than 100 different values have been seen; code-like values merge immediately.
+- Two errors with the same exception class and the same pattern in the same function share a
+  row; `--location line` separates them.
+- Records without a time zone (Laravel's default format) are taken to be in the report's time
+  zone; `--timezone` cannot change their times.
+- Spike detection ignores daily cycles, which is why only WARNING and above are considered.
+- One file is read at a time; for several files, use `cat laravel-*.log | veylog -`.
 
-Tam liste: [sınırlamalar](docs/sinirlamalar.md).
+The full list is in [limitations](docs/sinirlamalar.md) (in Turkish).
 
-## Proje yapısı
+## Project layout
+
+Module names, identifiers and code comments are currently in Turkish.
 
 ```text
 src/
-├── main.rs          girişi açar (dosya ya da standart girdi), özeti istenen biçimde yazar
-├── komut_satiri.rs  seçenekler, yardım metni, hata mesajları, yazım hatasına öneri
-├── dil.rs           arayüzün dili (--dil): seçili dildeki metin, sayıların ve listelerin yazılışı
-├── okuyucu.rs       girdiyi satır satır okur; bir kaydı yeniden okumak için seyrek dizin
-├── izle.rs          --izle: eklenen baytları satırlara ayırır, döndürmeyi algılar, raporu yeniden çizer
-├── filtre.rs        --seviye, --baslangic, --bitis, --son: sınırların logun sonuna göre çözülmesi
-├── kayit.rs         satırları kayıtlara toplar: başlık ya da JSON satırı, seviye, mesaj
-├── satir_bicimi.rs  başlık satırının biçimi: Laravel'inki ya da --desen (Monolog dizgesi, düzenli ifade)
-├── zaman_bicimi.rs  --zaman-bicimi: PHP'nin date() dizgesiyle yazılmış zamanları okur
-├── depo.rs          okunurken her kayıttan özet için gerekenler: alt gruplar, sütunlar, kökler
-├── sutunlar.rs      kayıtların zamanları ve alt grupları, delta ve LEB128 ile sıkıştırılmış
-├── farkli_sayac.rs  farklı mesaj sayacı: tam, çok sayıda farklı değerde HyperLogLog
-├── json_okuyucu.rs  Monolog'un JSON satırları için kütüphanesiz JSON okuyucu
-├── maske.rs         değişkenleri yer tutucularla değiştirir: <SAYI>, <IP>, <YOL>...
-├── drain.rs         Drain: maskelenmiş mesajlardan kalıp çıkarır; esnek eşik, kodsal biçimler, değişken konumlar
-├── parmak_izi.rs    istisna sınıfı, uygulama kodundaki ilk satır ve fonksiyonu
-├── istisna_metni.rs PHP'nin istisna metni (Log::error($e)): sınıf, yer, yığın izi, Next
-├── rapor.rs         özet ve kalıp tablosu; metin çıktısı, kontrol karakterlerinin temizlenmesi
-├── karsilastirma.rs iki zaman aralığının karşılaştırılması
-├── ani_artis.rs     dilimler, medyan ve MAD, değiştirilmiş z puanı, çift eşik
-├── istatistik.rs    binom dağılımının kuyruğu; seyrek dizilerde medyan ve MAD
-├── zaman.rs         tarih ve saat hesapları, saat dilimleri
-├── json.rs          JSON çıktısı
-└── markdown.rs      Markdown çıktısı
-tests/cli.rs         derlenmiş programı çalıştıran uçtan uca testler
-docs/                ayrıntılı belgeler
-ornekler/            kurgusal örnek loglar
+├── main.rs          opens the input (file or standard input), writes the summary in the requested format
+├── komut_satiri.rs  command line: options, help text, error messages, typo suggestions
+├── dil.rs           interface language (--lang): text in the selected language, numbers and lists
+├── okuyucu.rs       reads the input line by line; sparse index for re-reading a record
+├── izle.rs          --watch: splits appended bytes into lines, detects rotation, redraws the report
+├── filtre.rs        --level, --since, --until, --last: resolves bounds relative to the end of the log
+├── kayit.rs         gathers lines into records: header or JSON line, level, message
+├── satir_bicimi.rs  format of the header line: Laravel's or --pattern (Monolog string, regular expression)
+├── zaman_bicimi.rs  --time-format: reads times written with a PHP date() format
+├── depo.rs          what the summary needs from each record, collected while reading: subgroups, columns, roots
+├── sutunlar.rs      record times and subgroups, compressed with delta and LEB128 encoding
+├── farkli_sayac.rs  distinct message counter: exact, HyperLogLog for many distinct values
+├── json_okuyucu.rs  dependency-free JSON reader for Monolog's JSON lines
+├── maske.rs         replaces variables with placeholders: <NUM>, <IP>, <PATH>...
+├── drain.rs         Drain: extracts patterns from masked messages; flexible threshold, code-like shapes, variable positions
+├── parmak_izi.rs    exception class, first application frame and its function
+├── istisna_metni.rs PHP's exception text (Log::error($e)): class, location, stack trace, Next
+├── rapor.rs         summary and pattern table; text output, control character cleanup
+├── karsilastirma.rs comparison of two time ranges
+├── ani_artis.rs     slices, median and MAD, modified z-score, double threshold
+├── istatistik.rs    binomial tail; median and MAD over sparse arrays
+├── zaman.rs         date and time arithmetic, time zones
+├── json.rs          JSON output
+└── markdown.rs      Markdown output
+tests/cli.rs         end-to-end tests that run the compiled binary
+docs/                detailed documentation (in Turkish)
+ornekler/            fictional sample logs
 ```
 
-## Yol haritası
+## Contributing
 
-- [x] Dosyayı satır satır okumak: bellek kullanımı dosyanın boyutundan bağımsız
-- [ ] Birden çok dosyayı ve `.gz` arşivlerini doğrudan okumak
-- [x] Saat dilimlerini hesaba katmak
-- [x] `Log::error($e)` ile metne çevrilmiş istisnalar; kendi satır ve tarih biçimleri
-- [x] Satır numarasından bağımsız parmak izi: hata, satırın içinde bulunduğu fonksiyonla tanınır
-- [x] Kategorik konumlar: koddan gelen değerler biçimleriyle tanınır, en sık değerleri raporda
-- [x] Canlı izleme: `--izle` ile log eklendikçe rapor yeniden çizilir
-- [x] İngilizce arayüz: `--dil en`
-
-Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md).
-
-## Katkı
-
-Hata bildirimleri ve öneriler için bir [issue](https://github.com/Veysel440/veylog/issues)
-açabilirsiniz. Bir log biçimi tanınmıyorsa, kişisel bilgileri çıkarılmış kısa bir örnek
-çok yardımcı olur. Pull request'lerde şu komutların temiz geçmesi beklenir:
+Bug reports and suggestions are welcome as [issues](https://github.com/Veysel440/veylog/issues).
+If a log format is not recognized, a short sample with personal data removed helps a lot. Pull
+requests are expected to pass:
 
 ```bash
 cargo fmt --check
@@ -636,64 +683,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-## Lisans
+Release notes are in [CHANGELOG.md](CHANGELOG.md) (in Turkish).
+
+## License
 
 [MIT](LICENSE) © 2026 Veysel Tulu
-
-## English
-
-veylog is a fast command-line tool, written in Rust, that turns Laravel log files into a
-readable summary. It masks variable parts of messages, groups them into patterns with the
-Drain algorithm, fingerprints exceptions by class, first application frame and the function
-enclosing it (skipping vendor code, entry points and middleware pass-through frames, and
-pointing Blade errors at the template), so an error keeps its identity when a deploy shifts
-line numbers; closures are told apart by the function that defines them, and JSON records,
-whose traces carry no calls, learn their functions from the other traces in the log.
-Code-like values (class names, constants, event names, quoted keys) are told apart from
-ordinary words by their shape, so categorical positions merge without waiting for a hundred
-distinct values, and the report lists the most frequent values of every `<*>` position. It
-compares two time ranges with an exact conditional binomial test, and detects sudden spikes
-with median/MAD-based modified z-scores. It reads Laravel's text format and Monolog's JSON
-lines, handles Windows paths, and writes text, JSON or Markdown. Timestamps with UTC offsets
-are converted to a single report time zone, so logs that span a daylight saving change sort
-correctly. Exceptions logged as strings (`Log::error($e)`) are parsed from PHP's own text
-and grouped with the same exception logged through the context; custom line formats are
-given as a Monolog format string or a regex with named groups (`--pattern`), and custom date
-formats as a PHP `date()` format (`--time-format`). The file is streamed line by line into a
-compact store, so a 2 GB log is summarized in 15 seconds with 27 MB of memory. `--watch`
-follows a log live, like `tail -f`: new records are fed into the same store, the report is
-redrawn as they arrive, time filters become a sliding window and rotated files are picked
-up. Its only dependency is `regex`; the JSON reader and writer, statistics and argument
-parser are hand-written and tested against serde_json, scipy and Drain3. Prebuilt binaries
-for Linux (static), macOS and Windows are on the
-[Releases](https://github.com/Veysel440/veylog/releases/latest) page; `cargo install veylog`
-also works.
-
-The interface is in Turkish by default. `--lang en`, or `VEYLOG_DIL=en` in the environment,
-switches the help, the report and every message to English:
-
-```text
-$ veylog --lang en ornekler/laravel.log
-ornekler/laravel.log: 205 lines
-  Records       : 59
-  Continuations : 143
-  Orphan lines  : 3
-  Time range    : 2026-10-24 08:59:58 → 2026-10-24 18:31:07
-...
-Patterns: 45 distinct messages → 27 after masking → 23 Drain patterns (threshold 0.7) → 24 groups by fingerprint
-  count  level      first     last      pattern
-      2  CRITICAL   17:05:13  17:06:45  Redis bağlantısı kurulamadı: Connection refused [tcp://<IP>:<NUM>]
-                                        sample: Redis bağlantısı kurulamadı: Connection refused [tcp://10.0.3.12:6379]
-                                        location: app/Http/Middleware/HizSiniri.php:22, handle() (RedisException)
-...
-```
-
-Every option has an English name, accepted in either language: `--threshold`, `--location`
-(`method`, `line`), `--top`, `--all`, `--sort` (`severity`, `count`, `newest`), `--format`
-(`text`, `json`, `markdown`), `--compare`, `--spikes`, `--level`, `--since`, `--until`,
-`--last`, `--timezone`, `--pattern`, `--time-format`, `--watch`, `--interval` and `--lang`.
-Durations take `s`, `m`, `h`, `d` (and `ms` for `--interval`): `--last 1h30m`. Placeholders
-are shown in English (`<NUM>`, `<PATH>`, `<EMAIL>`, `<TIME>`). The JSON output is the same in
-both languages, so scripts do not break when the language changes; its keys and placeholders
-are Turkish: `<SAYI>` is a number, `<YOL>` a path, `<EPOSTA>` an e-mail address and
-`<ZAMAN>` a timestamp. `veylog --lang en --help` lists everything.

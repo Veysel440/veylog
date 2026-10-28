@@ -1,7 +1,7 @@
 # Sınırlamalar
 
 veylog'un bilinen sınırları. Her biri bir tasarım kararının bedelidir ya da henüz yapılmamış
-bir iştir ([yol haritası](../README.md#yol-haritası)).
+bir iştir.
 
 ## Kalıplar
 
