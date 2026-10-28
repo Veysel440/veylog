@@ -5,6 +5,8 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 
 ## [Yayımlanmamış]
 
+## [0.2.0] - 2026-10-28
+
 ### Bellek ve hız
 
 - Log satır satır, akış halinde okunur; dosyanın tamamı belleğe alınmaz. Bellek dosyanın
@@ -286,5 +288,6 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 - Türkçe komut satırı: virgüllü ondalık sayılar, Türkçe karakterli seçenek adları, yazım
   hatalarına öneri, ayırt edilebilir çıkış kodları.
 
-[Yayımlanmamış]: https://github.com/Veysel440/veylog/compare/v0.1.0...HEAD
+[Yayımlanmamış]: https://github.com/Veysel440/veylog/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Veysel440/veylog/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Veysel440/veylog/releases/tag/v0.1.0

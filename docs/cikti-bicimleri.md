@@ -43,7 +43,7 @@ karakterinden oluşan bir ayırıcı satırla art arda yazılır; son çizim son
 <!-- denetim: veylog --bicim json --ilk 1 ornekler/laravel.log -->
 ```json
 {
-  "surum": "0.1.0",
+  "surum": "0.2.0",
   "dosya": "ornekler/laravel.log",
   "satir_sayisi": 205,
   "kayit_sayisi": 59,

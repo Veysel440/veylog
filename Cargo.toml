@@ -1,10 +1,10 @@
 [package]
 name = "veylog"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # En düşük Rust sürümü: `if let ... && ...` zincirleri 1.88'de kararlı hale geldi
 rust-version = "1.88"
-description = "Laravel log dosyalarını okunabilir bir özete çeviren komut satırı aracı: kalıplar, hata parmak izleri, karşılaştırma ve ani artışlar"
+description = "Laravel log dosyalarını okunabilir bir özete çeviren komut satırı aracı: kalıplar, hata parmak izleri, karşılaştırma, ani artışlar ve canlı izleme"
 authors = ["Veysel Tulu"]
 license = "MIT"
 repository = "https://github.com/Veysel440/veylog"
