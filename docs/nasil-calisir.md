@@ -1067,9 +1067,12 @@ yazılanlar ise okunmaz ([sınırlamalar](sinirlamalar.md#canlı-izleme)).
 Unix'te yolun düğüm (inode) numarası değiştiyse (logrotate dosyayı yeniden adlandırıp yenisini
 açmıştır) eski dosya bitmiş sayılır (satır sonu olmayan son satırı da okunur), yeni dosya
 açılıp baştan okunur; eldeki dosya okunandan kısaysa (`copytruncate`) başa sarılır.
-Windows'ta düğüm numarası yoktur ve oluşturulma zamanı güvenilir değildir (yeniden
-adlandırılan bir dosyanın yerine hemen açılan yeni dosya eskisinin zamanını alabilir); yoldaki
-dosya her seferinde yeniden açılır, oluşturulma zamanı başkaysa ya da eldekinden kısaysa
+Windows'ta yoldaki dosya her seferinde yeniden açılır ve eldekiyle birimin seri numarası ve
+dosya numarasıyla karşılaştırılır (`GetFileInformationByHandle`): yeniden adlandırılan dosya
+numarasını korur, yerine açılan dosya başka bir numara alır. Oluşturulma zamanı bunun için
+güvenilir değildir: NTFS, yeniden adlandırılan ya da silinen bir dosyanın yerine 15 saniye
+içinde aynı adla açılan dosyaya eskisinin oluşturulma zamanını verir (dosya adı tünellemesi).
+Dosya numarası okunamazsa oluşturulma zamanı başkaysa ya da yoldaki dosya eldekinden kısaysa
 başka bir dosya sayılır. Depo korunur: eski dosyanın kayıtları raporda kalır, yalnızca
 örnekleri artık yeniden okunamaz. Yeni dosyanın ilk kaydı seyrek dizine yeni dosyadaki
 konumuyla yazılır; dizinin öteki kayıtları her 1024 kayıtta birdir ve döndürmenin ortasına

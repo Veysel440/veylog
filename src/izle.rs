@@ -246,6 +246,52 @@ impl Kimlik {
     }
 }
 
+/// Açık bir dosyanın kimliği (Windows): birimin seri numarası ve dosyanın birimdeki numarası.
+/// NTFS'te dosya numarası dosya silinene kadar değişmez; yeniden adlandırılan dosya numarasını
+/// korur, yerine açılan yeni dosya başka bir numara alır. Dosya sistemi numara vermiyorsa (0)
+/// ya da bilgi okunamazsa `None`.
+#[cfg(windows)]
+fn dosya_kimligi(dosya: &File) -> Option<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    /// Windows'un `BY_HANDLE_FILE_INFORMATION` yapısı (52 bayt). Üç zaman (`FILETIME`) ikişer
+    /// u32'dir; boy ve dosya numarası üst ve alt yarılarıyla yazılır.
+    #[repr(C)]
+    struct DosyaBilgisi {
+        _oznitelikler: u32,
+        _zamanlar: [u32; 6],
+        birim_seri_numarasi: u32,
+        _boy: [u32; 2],
+        _bag_sayisi: u32,
+        numara_ust: u32,
+        numara_alt: u32,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(
+            dosya: *mut std::ffi::c_void,
+            bilgi: *mut DosyaBilgisi,
+        ) -> i32;
+    }
+    let mut bilgi = std::mem::MaybeUninit::<DosyaBilgisi>::uninit();
+    // SAFETY: tutamaç `dosya` yaşadıkça açıktır; `bilgi` Windows'un beklediği düzende ve
+    // boyuttadır. İşlev başarılıysa (0 döndürmezse) yapının tamamını doldurur; başarısızsa
+    // yapı okunmaz.
+    let bilgi = unsafe {
+        if GetFileInformationByHandle(dosya.as_raw_handle(), bilgi.as_mut_ptr()) == 0 {
+            return None;
+        }
+        bilgi.assume_init()
+    };
+    let numara = (u64::from(bilgi.numara_ust) << 32) | u64::from(bilgi.numara_alt);
+    (numara != 0).then_some((bilgi.birim_seri_numarasi, numara))
+}
+
+/// Unix'te ve Windows'ta olmayan sistemlerde dosya kimliği okunmaz.
+#[cfg(not(any(unix, windows)))]
+fn dosya_kimligi(_: &File) -> Option<(u32, u64)> {
+    None
+}
+
 /// İzlenen dosya: açık tutulur, her aralıkta kaldığı yerden sonuna kadar okunur.
 pub struct DosyaKaynagi {
     yol: PathBuf,
@@ -308,22 +354,30 @@ impl DosyaKaynagi {
         self.kisalmis_mi()
     }
 
-    /// Windows'ta düğüm numarası yoktur; oluşturulma zamanı da güvenilir değildir (yeniden
-    /// adlandırılan bir dosyanın yerine hemen açılan yeni dosya eskisinin zamanını alabilir,
-    /// Wine'da aynı dosyanınki değişebilir). Yoldaki dosya her seferinde yeniden açılır ve
-    /// eldekiyle karşılaştırılır: oluşturulma zamanı başkaysa ya da yoldaki dosya eldekinden
-    /// kısaysa yolda başka bir dosya vardır. İki tutamacın boyları da güvenilirdir; yolun
-    /// boyu ise dosyayı yazan süreç tutamacını kapatana kadar güncellenmeyebilir.
+    /// Windows'ta yoldaki dosya her seferinde yeniden açılır ve eldekiyle kimliğinden (birimin
+    /// seri numarası ve dosyanın numarası) karşılaştırılır. Oluşturulma zamanı güvenilir
+    /// değildir: NTFS, yeniden adlandırılan ya da silinen bir dosyanın yerine 15 saniye içinde
+    /// aynı adla açılan dosyaya eskisinin oluşturulma zamanını verir (dosya adı tünellemesi).
+    /// Kimlik okunamazsa (dosya numarası vermeyen bir ağ sürücüsü) oluşturulma zamanı başkaysa
+    /// ya da yoldaki dosya eldekinden kısaysa yolda başka bir dosya vardır. İki tutamacın
+    /// boyları güvenilirdir; yolun boyu ise dosyayı yazan süreç tutamacını kapatana kadar
+    /// güncellenmeyebilir.
     #[cfg(not(unix))]
     pub fn dondurme_denetle(&mut self) -> Dondurme {
         let Ok(yeni) = File::open(&self.yol) else {
             return Dondurme::Yok;
         };
-        let (Ok(yeni_bilgi), Ok(eski_bilgi)) = (yeni.metadata(), self.dosya.metadata()) else {
-            return Dondurme::Yok;
+        let baska = match (dosya_kimligi(&yeni), dosya_kimligi(&self.dosya)) {
+            (Some(yeni_kimlik), Some(eski_kimlik)) => yeni_kimlik != eski_kimlik,
+            _ => {
+                let (Ok(yeni_bilgi), Ok(eski_bilgi)) = (yeni.metadata(), self.dosya.metadata())
+                else {
+                    return Dondurme::Yok;
+                };
+                yeni_bilgi.created().ok() != eski_bilgi.created().ok()
+                    || yeni_bilgi.len() < eski_bilgi.len()
+            }
         };
-        let baska = yeni_bilgi.created().ok() != eski_bilgi.created().ok()
-            || yeni_bilgi.len() < eski_bilgi.len();
         if baska {
             self.dosya = yeni;
             self.konum = 0;
@@ -1273,18 +1327,35 @@ mod testler {
         let yedek = gecici_yol("donen.log.1");
         fs::rename(&yol, &yedek).unwrap();
         assert_eq!(kaynak.dondurme_denetle(), Dondurme::Yok);
-        // Yeni bir dosya: baştan okunur
+        // Eskisiyle aynı boyda yeni bir dosya: baştan okunur. Windows'ta (NTFS) yeni dosya
+        // eskisinin oluşturulma zamanını da alır (dosya adı tünellemesi); ayırt eden kimliktir.
         fs::write(&yol, b"yeni\n").unwrap();
-        // Windows'ta kimlik oluşturulma zamanıdır; aynı anda oluşturulmuş sayılmasın
-        if !cfg!(unix) {
-            thread::sleep(Duration::from_millis(50));
-        }
         assert_eq!(kaynak.dondurme_denetle(), Dondurme::Donduruldu);
         let mut okunan = Vec::new();
         kaynak.oku(|parca| okunan.extend_from_slice(parca)).unwrap();
         assert_eq!(okunan, b"yeni\n");
         // Konumlar yeni dosyada sıfırdan sayılır
         assert_eq!(kaynak.konum(), 5);
+        fs::remove_file(&yol).ok();
+        fs::remove_file(&yedek).ok();
+    }
+
+    /// Windows'ta dosyanın kimliği tutamaçtan bağımsızdır ve dosya yeniden adlandırılınca
+    /// değişmez; yerine aynı adla açılan dosyanınki başkadır.
+    #[cfg(windows)]
+    #[test]
+    fn dosya_kimligi_yeniden_adlandirilinca_korunur() {
+        let yol = gecici_yol("kimlik.log");
+        fs::write(&yol, b"eski\n").unwrap();
+        let eski = File::open(&yol).unwrap();
+        let kimlik = dosya_kimligi(&eski).expect("NTFS dosya numarası verir");
+        assert_eq!(dosya_kimligi(&File::open(&yol).unwrap()), Some(kimlik));
+        let yedek = gecici_yol("kimlik.log.1");
+        fs::rename(&yol, &yedek).unwrap();
+        fs::write(&yol, b"yeni\n").unwrap();
+        assert_eq!(dosya_kimligi(&File::open(&yedek).unwrap()), Some(kimlik));
+        assert_ne!(dosya_kimligi(&File::open(&yol).unwrap()), Some(kimlik));
+        drop(eski);
         fs::remove_file(&yol).ok();
         fs::remove_file(&yedek).ok();
     }

@@ -161,9 +161,10 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
   mesaj sayısı ve saat dilimi sayıları ise o ana kadar okunan bütün kayıtlar içindir, yalnızca
   penceredekiler için değil. Pencere ve ani artışlar her çizimde kayıt sütunlarını dolaşır:
   milyonlarca kayıtlık bir izlemede bir çizim onlarca milisaniye sürer.
-- Windows'ta döndürme oluşturulma zamanı ve boyla anlaşılır: yeniden adlandırılan dosyanın
-  yerine açılan yeni dosya eskisinin oluşturulma zamanını alır ve eskisinden uzunsa fark
-  edilmez. Unix'te düğüm numarasıyla kesin anlaşılır.
+- Windows'ta döndürme dosya numarasıyla anlaşılır. Dosya numarası vermeyen bir dosya
+  sisteminde (bazı ağ sürücüleri) oluşturulma zamanına ve boya bakılır: orada yeniden
+  adlandırılan dosyanın yerine açılan yeni dosya eskisinin oluşturulma zamanını alabilir ve
+  eskisinden kısa değilse fark edilmez. Unix'te düğüm numarasıyla kesin anlaşılır.
 - Döndürmeden sonra eski dosyanın kayıtları raporda kalır ama örnekleri yeniden okunamaz;
   ikinci turda bölünen bir alt grubun ya da bir ani artışın örneği eski dosyadaysa, aynı
   kalıpta aynı seviyedeki ilk kaydın mesajı yazılır.

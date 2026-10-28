@@ -5,6 +5,13 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
 
 ## [Yayımlanmamış]
 
+### Düzeltmeler
+
+- Windows'ta `--izle`, yeniden adlandırılarak döndürülen bir logun yerine açılan yeni dosyayı
+  eskisinden kısa değilse fark etmiyordu: NTFS, aynı adla 15 saniye içinde açılan dosyaya
+  eskisinin oluşturulma zamanını verir (dosya adı tünellemesi). Dosyalar artık birimin seri
+  numarası ve dosya numarasıyla karşılaştırılır.
+
 ## [0.2.0] - 2026-10-28
 
 ### Bellek ve hız
