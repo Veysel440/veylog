@@ -36,6 +36,52 @@ pub const SATIR_SINIRI: usize = 256 << 20;
 /// Seyrek dizinin aralığı: her bu kadar kayıtta bir kaydın konumu saklanır.
 pub const DIZIN_ARALIGI: usize = 1024;
 
+/// Seyrek dizin: bazı kayıtların depodaki sıra numarası ve başlık satırının girdideki konumu,
+/// sıra numarasına göre artan. Her `DIZIN_ARALIGI` kayıtta bir kayıt girer; canlı izlemede
+/// döndürülen dosyanın ilk kaydı da (`Depo::yeni_girdi`): konumlar yeni dosyada sıfırdan
+/// sayılır, onun bloğundaki kayıtlar eski dosyanın konumlarıyla aranamaz. Bir kayıt, sırası
+/// ondan büyük olmayan en son dizin kaydından başlanarak bulunur.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SeyrekDizin {
+    kayitlar: Vec<(usize, u64)>,
+}
+
+impl SeyrekDizin {
+    /// Bir kaydı ekler; sıra numaraları artarak eklenir.
+    pub fn ekle(&mut self, sira: usize, konum: u64) {
+        debug_assert!(
+            self.kayitlar
+                .last()
+                .is_none_or(|&(onceki, _)| onceki < sira),
+            "dizin sıraya göre artmalı"
+        );
+        self.kayitlar.push((sira, konum));
+    }
+
+    /// `sira`. kaydı içeren blok: sırası `sira`dan büyük olmayan en son dizin kaydının sırası
+    /// ve konumu. Dizin boşsa ya da ilk kaydı `sira`dan sonraysa None.
+    fn blok(&self, sira: usize) -> Option<(usize, u64)> {
+        let sonraki = self.kayitlar.partition_point(|&(bas, _)| bas <= sira);
+        sonraki.checked_sub(1).map(|no| self.kayitlar[no])
+    }
+
+    /// Dizindeki kayıtlar: (sıra, konum).
+    #[cfg(test)]
+    pub fn kayitlar(&self) -> &[(usize, u64)] {
+        &self.kayitlar
+    }
+}
+
+impl FromIterator<(usize, u64)> for SeyrekDizin {
+    fn from_iter<T: IntoIterator<Item = (usize, u64)>>(kayitlar: T) -> Self {
+        let mut dizin = SeyrekDizin::default();
+        for (sira, konum) in kayitlar {
+            dizin.ekle(sira, konum);
+        }
+        dizin
+    }
+}
+
 /// Satır okuyucu: satırları ve başlarının girdideki bayt konumunu verir.
 pub struct SatirOkuyucu<R> {
     girdi: R,
@@ -67,11 +113,17 @@ impl<R: BufRead> SatirOkuyucu<R> {
 
     /// Satırların en fazla `sinir` baytını okuyan bir okuyucu (testler için).
     #[cfg(test)]
-    fn sinirli(girdi: R, sinir: usize) -> Self {
+    pub(crate) fn sinirli(girdi: R, sinir: usize) -> Self {
         SatirOkuyucu {
             sinir,
             ..SatirOkuyucu::new(girdi)
         }
+    }
+
+    /// Şimdiye kadar geçersiz UTF-8 baytı görüldü mü? (testler için)
+    #[cfg(test)]
+    pub(crate) fn gecersiz_utf8(&self) -> bool {
+        self.gecersiz_utf8
     }
 
     /// Bir sonraki satır (satır sonu olmadan) ve başının konumu; girdi bittiyse None.
@@ -265,8 +317,7 @@ pub trait OrnekKaynagi {
 /// Yeniden okunabilen bir girdi (dosya ya da kopyası) ve onun seyrek dizini.
 pub struct YenidenOkuyucu<R> {
     girdi: R,
-    /// `dizin[i]`: `i × DIZIN_ARALIGI`. kaydın başlık satırının konumu.
-    dizin: Vec<u64>,
+    dizin: SeyrekDizin,
     /// Depo filtreliyse aynı filtre: sıra numaraları yalnızca filtreye uyan kayıtlar
     /// arasındadır, yeniden okurken de öyle sayılır.
     filtre: Option<CozulmusFiltre>,
@@ -283,7 +334,7 @@ impl<R: BufRead + Seek> YenidenOkuyucu<R> {
     /// `dilim`: deponun saat dilimi (`Depo::saat_dilimi`).
     pub fn new(
         girdi: R,
-        dizin: Vec<u64>,
+        dizin: SeyrekDizin,
         filtre: Option<CozulmusFiltre>,
         dilim: Option<SaatDilimi>,
     ) -> Self {
@@ -355,9 +406,8 @@ impl<R: BufRead + Seek> OrnekKaynagi for YenidenOkuyucu<R> {
         istenenler.dedup_by_key(|istek| istek.sira);
         let mut bulunanlar = HashMap::new();
         // Aynı bloktaki kayıtlar tek okumada bulunur
-        for blok in istenenler.chunk_by(|a, b| a.sira / DIZIN_ARALIGI == b.sira / DIZIN_ARALIGI) {
-            let numara = blok[0].sira / DIZIN_ARALIGI;
-            let Some(&konum) = self.dizin.get(numara) else {
+        for blok in istenenler.chunk_by(|a, b| self.dizin.blok(a.sira) == self.dizin.blok(b.sira)) {
+            let Some((ilk_sira, konum)) = self.dizin.blok(blok[0].sira) else {
                 continue;
             };
             self.girdi.seek(SeekFrom::Start(konum))?;
@@ -367,7 +417,7 @@ impl<R: BufRead + Seek> OrnekKaynagi for YenidenOkuyucu<R> {
             let mut arayan = Arayan {
                 filtre: self.filtre.as_ref(),
                 cevirici: &mut self.cevirici,
-                siradaki: numara * DIZIN_ARALIGI,
+                siradaki: ilk_sira,
                 aranan: blok,
                 bulunanlar: &mut bulunanlar,
                 degisti: &mut self.degisti,
@@ -615,13 +665,13 @@ mod testler {
     }
 
     /// Bir logun kayıtlarını okur; seyrek dizini de kurar.
-    fn dizinle_oku(metin: &str) -> (Vec<ToplananKayit>, Vec<u64>) {
+    fn dizinle_oku(metin: &str) -> (Vec<ToplananKayit>, SeyrekDizin) {
         let mut kayitlar: Vec<ToplananKayit> = Vec::new();
         oku(metin.as_bytes(), &SatirBicimi::default(), &mut kayitlar).unwrap();
         let dizin = kayitlar
             .iter()
             .filter(|kayit| kayit.bilgi.sira.is_multiple_of(DIZIN_ARALIGI))
-            .map(|kayit| kayit.bilgi.konum)
+            .map(|kayit| (kayit.bilgi.sira, kayit.bilgi.konum))
             .collect();
         (kayitlar, dizin)
     }
@@ -654,7 +704,7 @@ mod testler {
     fn kayitlar_seyrek_dizinle_yeniden_bulunur() {
         let metin = uzun_log(3 * DIZIN_ARALIGI + 7);
         let (kayitlar, dizin) = dizinle_oku(&metin);
-        assert_eq!(dizin.len(), 4);
+        assert_eq!(dizin.kayitlar().len(), 4);
         let maskeliler = maskeliler(&kayitlar);
         let mut kaynak = YenidenOkuyucu::new(Cursor::new(metin.as_bytes()), dizin, None, None);
         // Blok sınırları, ilk ve son kayıt, aynı bloktan birkaç kayıt, tekrar ve sırasızlık
@@ -759,7 +809,7 @@ mod testler {
         assert_eq!(depo.kayit_sayisi(), 3 * DIZIN_ARALIGI / 2);
         let mut kaynak = YenidenOkuyucu::new(
             Cursor::new(metin.as_bytes()),
-            depo.dizin().to_vec(),
+            depo.dizin().clone(),
             Some(filtre),
             depo.saat_dilimi(),
         );
@@ -805,7 +855,7 @@ mod testler {
         assert_eq!(depo.kayit_sayisi(), 3 * DIZIN_ARALIGI / 2);
         let mut kaynak = YenidenOkuyucu::new(
             Cursor::new(metin.as_bytes()),
-            depo.dizin().to_vec(),
+            depo.dizin().clone(),
             Some(filtre),
             depo.saat_dilimi(),
         );
@@ -929,10 +979,10 @@ mod testler {
         let mut kayitlar: Vec<ToplananKayit> = Vec::new();
         oku(metin.as_bytes(), &bicim, &mut kayitlar).unwrap();
         assert_eq!(kayitlar.len(), DIZIN_ARALIGI + 5);
-        let dizin: Vec<u64> = kayitlar
+        let dizin: SeyrekDizin = kayitlar
             .iter()
             .filter(|kayit| kayit.bilgi.sira.is_multiple_of(DIZIN_ARALIGI))
-            .map(|kayit| kayit.bilgi.konum)
+            .map(|kayit| (kayit.bilgi.sira, kayit.bilgi.konum))
             .collect();
         let maskeliler = maskeliler(&kayitlar);
         let istekler = istekler(&[1, DIZIN_ARALIGI + 4], &kayitlar, &maskeliler);

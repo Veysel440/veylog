@@ -48,7 +48,7 @@ use crate::farkli_sayac::FarkliSayaci;
 use crate::filtre::CozulmusFiltre;
 use crate::kayit::{Kayit, KayitAlici, KayitBilgisi, SatirSayilari, Seviye};
 use crate::maske::maskele;
-use crate::okuyucu::{self, DIZIN_ARALIGI, OkumaSonucu, OrnekIstegi, OrnekKaynagi};
+use crate::okuyucu::{self, DIZIN_ARALIGI, OkumaSonucu, OrnekIstegi, OrnekKaynagi, SeyrekDizin};
 use crate::parmak_izi::{Istisna, IstisnaTaslagi, KonumTuru, MetotHaritasi, ParmakIzi};
 use crate::satir_bicimi::SatirBicimi;
 use crate::sutunlar::{KayitSutunlari, SutunOkuyucu};
@@ -175,8 +175,10 @@ pub struct Depo {
     sayilar: SatirSayilari,
     gecersiz_utf8: bool,
     sutunlar: KayitSutunlari,
-    /// `dizin[i]`: `i × DIZIN_ARALIGI`. kaydın başlık satırının girdideki konumu.
-    dizin: Vec<u64>,
+    /// Her `DIZIN_ARALIGI` kayıtta bir kaydın girdideki konumu.
+    dizin: SeyrekDizin,
+    /// Girdi baştan başladı (`yeni_girdi`): gelen ilk kaydın konumu da dizine yazılır.
+    yeni_girdi: bool,
     /// `Seviye`nin sırasıyla her seviyenin kayıt sayısı.
     seviye_sayilari: [usize; 8],
     /// Logun en eski ve en yeni kaydının zamanı.
@@ -273,8 +275,9 @@ impl KayitAlici for Depo {
             }
         };
         self.sutunlar.ekle(zaman.saniye(), no);
-        if sira.is_multiple_of(DIZIN_ARALIGI) {
-            self.dizin.push(bilgi.konum);
+        if self.yeni_girdi || sira.is_multiple_of(DIZIN_ARALIGI) {
+            self.dizin.ekle(sira, bilgi.konum);
+            self.yeni_girdi = false;
         }
     }
 }
@@ -307,7 +310,8 @@ impl Depo {
             sayilar: SatirSayilari::default(),
             gecersiz_utf8: false,
             sutunlar: KayitSutunlari::default(),
-            dizin: Vec::new(),
+            dizin: SeyrekDizin::default(),
+            yeni_girdi: false,
             seviye_sayilari: [0; 8],
             en_eski: None,
             en_yeni: None,
@@ -348,13 +352,121 @@ impl Depo {
     /// Okuma bitince satır sayılarını ve geçersiz UTF-8 bilgisini kaydeder. Drain ilk turda
     /// değişken bir konum bulduysa kayıtları ikinci kez kümeler.
     pub fn okuma_bitti(&mut self, sonuc: OkumaSonucu) {
-        self.sayilar = sonuc.sayilar;
-        self.gecersiz_utf8 = sonuc.gecersiz_utf8;
+        self.ara_durum(sonuc);
         // Yalnızca okunurken gerekir
         self.alt_grup_sirasi = HashMap::new();
+    }
+
+    /// Okuma sürerken bir ara rapor için (canlı izleme): satır sayılarını ve geçersiz UTF-8
+    /// bilgisini kaydeder, Drain değişken bir konum bulduysa kayıtları yeniden kümeler.
+    /// Okuma durumu korunur: sonra kayıt almaya devam edilebilir.
+    ///
+    /// Yeniden kümelemede alt grupların küme numaraları (bölünürlerse kendileri) değişir;
+    /// okunurken kullanılan anahtar → numara sözlüğü yeni anahtarlarla kurulur. Yeni bir
+    /// değişken konum sonraki çizimlerde de bulunabilir: her çizimde en fazla bir tur yapılır,
+    /// önceki turlarda öğrenilenler unutulmaz (`Kumeleyici::ikinci_tur`).
+    pub fn ara_durum(&mut self, sonuc: OkumaSonucu) {
+        self.sayilar = sonuc.sayilar;
+        self.gecersiz_utf8 = sonuc.gecersiz_utf8;
         if self.kumeleyici.ikinci_tur_gerekir() {
             self.ikinci_tur();
+            self.alt_grup_sirasi = self
+                .alt_gruplar
+                .iter()
+                .enumerate()
+                .map(|(no, alt)| (alt.anahtar, numara(no)))
+                .collect();
         }
+    }
+
+    /// Deponun bir filtreye uyan kayıtlardaki görünümü: canlı izlemede `--son 1sa` gibi
+    /// zaman sınırları her çizimde o ana kadar okunan en yeni kayda göre uygulanır. Kalıplar,
+    /// maskeli mesajlar, parmak izleri, kökler ve fonksiyon haritası okunan bütün
+    /// kayıtlardan gelir (kümeleme yinelenmez, pencerenin dışındakiler de öğretir); alt
+    /// grupların sayıları ve zamanları, seviyeler ve zaman aralığı yalnızca filtreye uyan
+    /// kayıtlardan toplanır. Farklı ham mesaj ve saat dilimi sayıları da okunan bütün
+    /// kayıtlar içindir: kayıt başına saklanmazlar.
+    ///
+    /// Görünümde kayıtlar yeniden numaralanır. Dönen listede görünümün k. kaydının bu depodaki
+    /// sıra numarası vardır; girdiyi yeniden okuyan kaynak istekleri bununla çevirir. Görünümün
+    /// seyrek dizini yoktur. Örneği kesin olmayan bir alt grup (pencereye ilk kaydıyla
+    /// girmeyen) görünümde de kesin değildir: örneği `ornekleri_tamamla` ile yeniden okunur.
+    pub fn pencere(&self, filtre: CozulmusFiltre) -> (Depo, Vec<usize>) {
+        let mut sutunlar = KayitSutunlari::default();
+        let mut tam_sira = Vec::new();
+        let mut alt_gruplar: Vec<AltGrup> = Vec::new();
+        let mut yeni_no: Vec<Option<u32>> = vec![None; self.alt_gruplar.len()];
+        let mut seviye_sayilari = [0; 8];
+        let (mut en_eski, mut en_yeni) = (None, None);
+        for (sira, (saniye, eski_no)) in self.sutunlar.iter().enumerate() {
+            let eski = &self.alt_gruplar[eski_no as usize];
+            let seviye = eski.anahtar.seviye;
+            if !filtre.gecer(saniye, seviye) {
+                continue;
+            }
+            let yeni_sira = tam_sira.len();
+            tam_sira.push(sira);
+            let zaman = Zaman::saniyeden(saniye);
+            seviye_sayilari[seviye as usize] += 1;
+            en_eski = Some(en_eski.map_or(zaman, |en_eski: Zaman| en_eski.min(zaman)));
+            en_yeni = Some(en_yeni.map_or(zaman, |en_yeni: Zaman| en_yeni.max(zaman)));
+            let no = match yeni_no[eski_no as usize] {
+                Some(no) => {
+                    let alt = &mut alt_gruplar[no as usize];
+                    alt.adet += 1;
+                    alt.ilk = alt.ilk.min(zaman);
+                    if zaman >= alt.son {
+                        alt.son_kayit = yeni_sira;
+                    }
+                    alt.son = alt.son.max(zaman);
+                    no
+                }
+                None => {
+                    let no = numara(alt_gruplar.len());
+                    alt_gruplar.push(AltGrup {
+                        anahtar: eski.anahtar,
+                        adet: 1,
+                        ilk_kayit: yeni_sira,
+                        ornek: Rc::clone(&eski.ornek),
+                        ornek_kesin: eski.ornek_kesin && eski.ilk_kayit == sira,
+                        ilk: zaman,
+                        son: zaman,
+                        son_kayit: yeni_sira,
+                    });
+                    yeni_no[eski_no as usize] = Some(no);
+                    no
+                }
+            };
+            sutunlar.ekle(saniye, no);
+        }
+        let depo = Depo {
+            kumeleyici: self.kumeleyici.kumelerin_kopyasi(),
+            filtre: Some(filtre),
+            cevirici: self.cevirici,
+            satir_bicimi: self.satir_bicimi.clone(),
+            konum_turu: self.konum_turu,
+            dilimler: self.dilimler.clone(),
+            sayilar: self.sayilar,
+            gecersiz_utf8: self.gecersiz_utf8,
+            sutunlar,
+            dizin: SeyrekDizin::default(),
+            yeni_girdi: false,
+            seviye_sayilari,
+            en_eski,
+            en_yeni,
+            ham_mesajlar: self.ham_mesajlar.clone(),
+            maskeliler: self.maskeliler.clone(),
+            maskeli_sirasi: HashMap::new(),
+            kokler: self.kokler.clone(),
+            izler: self.izler.clone(),
+            iz_sirasi: HashMap::new(),
+            metot_haritasi: self.metot_haritasi.clone(),
+            taslaklar: self.taslaklar.clone(),
+            taslak_sirasi: HashMap::new(),
+            alt_gruplar,
+            alt_grup_sirasi: HashMap::new(),
+        };
+        (depo, tam_sira)
     }
 
     /// İkinci kümeleme turu: kayıtlar, logdaki sırasıyla, ilk turda öğrenilen değişken
@@ -604,8 +716,15 @@ impl Depo {
     }
 
     /// Seyrek dizin: her `DIZIN_ARALIGI` kayıtta bir kaydın girdideki konumu.
-    pub fn dizin(&self) -> &[u64] {
+    pub fn dizin(&self) -> &SeyrekDizin {
         &self.dizin
+    }
+
+    /// Girdi baştan başlıyor (canlı izlemede döndürülen dosya): bundan sonra gelen kayıtların
+    /// konumları yeni girdidedir. Yeni girdinin ilk kaydı dizine yazılır; onun bloğundaki
+    /// kayıtlar da yeni girdiden yeniden okunabilsin.
+    pub fn yeni_girdi(&mut self) {
+        self.yeni_girdi = true
     }
 
     /// Mesajı maskeler: maskeli mesajın numarası ve maskelemenin mesajı değiştirip
@@ -695,6 +814,7 @@ pub fn metinden_ayarlarla(metin: &str, ayarlar: &drain::Ayarlar) -> Depo {
 #[cfg(test)]
 mod testler {
     use super::*;
+    use crate::filtre::Filtre;
 
     /// `Zaman` olarak: "2026-10-24 10:00:00"
     fn zaman(metin: &str) -> Zaman {
@@ -1080,8 +1200,8 @@ mod testler {
         let ilkler: Vec<usize> = depo.alt_gruplar().iter().map(AltGrup::ilk_kayit).collect();
         assert_eq!(ilkler, [0, 1]);
         assert_eq!(
-            depo.dizin(),
-            [metin.find("[2026-10-24 10:00:01]").unwrap() as u64]
+            depo.dizin().kayitlar(),
+            [(0, metin.find("[2026-10-24 10:00:01]").unwrap() as u64)]
         );
         assert!(depo.filtre().is_some());
     }
@@ -1091,10 +1211,165 @@ mod testler {
         let satir = "[2026-10-24 10:00:00] local.INFO: x\n";
         let metin = format!("yetim\n{}", satir.repeat(2 * DIZIN_ARALIGI + 1));
         let depo = metinden(&metin);
-        let konum = |sira: usize| (6 + sira * satir.len()) as u64;
+        let konum = |sira: usize| (sira, (6 + sira * satir.len()) as u64);
         assert_eq!(
-            depo.dizin(),
+            depo.dizin().kayitlar(),
             [konum(0), konum(DIZIN_ARALIGI), konum(2 * DIZIN_ARALIGI)]
         );
+    }
+
+    #[test]
+    fn yeni_girdinin_ilk_kaydi_dizine_yazilir() {
+        // Canlı izlemede döndürülen dosya: konumlar yeni dosyada sıfırdan sayılır. Yeni dosyanın
+        // ilk kaydı dizinde olmasa onun bloğundaki kayıtlar eski dosyanın konumlarıyla aranırdı.
+        let eski = "[2026-10-24 10:00:00] local.ERROR: Eski 1\n\
+                    [2026-10-24 10:00:01] local.ERROR: Eski 2\n\
+                    [2026-10-24 10:00:02] local.ERROR: Eski 3\n";
+        let yeni = "[2026-10-24 10:00:03] local.INFO: Yeni 1\n\
+                    [2026-10-24 10:00:04] local.ERROR: Yeni 2\n\
+                    [2026-10-24 10:00:05] local.ERROR: Yeni 3\n";
+        let ayarlar = DepoAyarlari {
+            filtre: Some(
+                Filtre {
+                    seviye: Some(Seviye::Error),
+                    ..Filtre::default()
+                }
+                .coz(None)
+                .unwrap(),
+            ),
+            ..DepoAyarlari::default()
+        };
+        let mut depo = Depo::new(ayarlar);
+        let bicim = SatirBicimi::default();
+        okuyucu::oku(eski.as_bytes(), &bicim, &mut depo).unwrap();
+        depo.yeni_girdi();
+        let sonuc = okuyucu::oku(yeni.as_bytes(), &bicim, &mut depo).unwrap();
+        depo.okuma_bitti(sonuc);
+        // Yeni girdinin filtreye uyan ilk kaydı: 3. sırada, yeni dosyanın ikinci satırı
+        let ikinci_satir = yeni.find("[2026-10-24 10:00:04]").unwrap() as u64;
+        assert_eq!(depo.dizin().kayitlar(), [(0, 0), (3, ikinci_satir)]);
+        let mut kaynak = okuyucu::YenidenOkuyucu::new(
+            std::io::Cursor::new(yeni.as_bytes()),
+            depo.dizin().clone(),
+            depo.filtre().copied(),
+            None,
+        );
+        let istek = |sira: usize| OrnekIstegi {
+            sira,
+            maskeli: &depo.maskeliler
+                [depo.alt_gruplar[depo.sutunlar.iter().nth(sira).unwrap().1 as usize].maskeli()],
+            seviye: Seviye::Error,
+        };
+        let bulunan = kaynak.mesajlar(&[istek(3), istek(4)]).unwrap();
+        assert_eq!(bulunan[&3], "Yeni 2");
+        assert_eq!(bulunan[&4], "Yeni 3");
+        assert!(!kaynak.degisti());
+        // Eski girdinin kaydı yeni girdide aranırsa bulunamaz; aynı istekteki yeni kayıtlar
+        // yine kendi bloklarından bulunur
+        let bulunan = kaynak.mesajlar(&[istek(1), istek(3), istek(4)]).unwrap();
+        assert_eq!(bulunan.len(), 2);
+        assert_eq!(bulunan[&3], "Yeni 2");
+        assert!(kaynak.degisti());
+    }
+
+    #[test]
+    fn pencere_yalnizca_filtreye_uyan_kayitlari_toplar() {
+        let depo = metinden(
+            "[2026-10-24 10:00:00] production.ERROR: Ödeme alınamadı: 1\n\
+             [2026-10-24 10:20:00] production.WARNING: Yavaş sorgu (120 ms)\n\
+             [2026-10-24 10:40:00] production.ERROR: Ödeme alınamadı: 2\n\
+             [2026-10-24 11:00:00] production.INFO: Kullanıcı 7 giriş yaptı\n\
+             [2026-10-24 11:30:00] production.ERROR: Ödeme alınamadı: 3\n",
+        );
+        let filtre = Filtre {
+            seviye: Some(Seviye::Warning),
+            son: Some(3_600),
+            ..Filtre::default()
+        }
+        .coz(depo.en_yeni())
+        .unwrap();
+        let (pencere, tam_sira) = depo.pencere(filtre);
+        // 10:30'dan sonraki WARNING ve üstü: 10:40 ve 11:30'daki hatalar
+        assert_eq!(tam_sira, vec![2, 4]);
+        assert_eq!(pencere.kayit_sayisi(), 2);
+        assert_eq!(pencere.filtre(), Some(&filtre));
+        assert_eq!(
+            pencere.zaman_araligi(),
+            Some((zaman("2026-10-24 10:40:00"), zaman("2026-10-24 11:30:00")))
+        );
+        assert_eq!(pencere.seviye_sayilari(), vec![(Seviye::Error, 2)]);
+        let kayitlar: Vec<(i64, u32)> = pencere.kayitlar().collect();
+        assert_eq!(
+            kayitlar,
+            vec![
+                (zaman("2026-10-24 10:40:00").saniye(), 0),
+                (zaman("2026-10-24 11:30:00").saniye(), 0)
+            ]
+        );
+        // Alt grup pencerenin kayıtlarıyla: 2 kayıt, ilk kaydı pencerenin 0. kaydı
+        let alt = &pencere.alt_gruplar()[0];
+        assert_eq!(alt.adet(), 2);
+        assert_eq!(alt.ilk_kayit(), 0);
+        assert_eq!(alt.son_kayit(), 1);
+        assert_eq!(alt.ilk(), zaman("2026-10-24 10:40:00"));
+        assert_eq!(alt.son(), zaman("2026-10-24 11:30:00"));
+        // Örnek depodaki alt grubun ilk kaydınındır (pencere dışında): kesin değil, yeniden
+        // okunacak
+        assert_eq!(alt.ornek(), "Ödeme alınamadı: 1");
+        assert!(!alt.ornek_kesin());
+        // Kalıplar, maskeli mesajlar ve kökler paylaşılır; dizin yok
+        assert_eq!(pencere.kumeler().len(), depo.kumeler().len());
+        assert_eq!(pencere.maskeli_mesaj_sayisi(), depo.maskeli_mesaj_sayisi());
+        assert!(pencere.dizin().kayitlar().is_empty());
+        assert_eq!(pencere.sayilar(), depo.sayilar());
+        // Deponun kendisi değişmedi
+        assert_eq!(depo.kayit_sayisi(), 5);
+        assert_eq!(depo.alt_gruplar()[0].adet(), 3);
+        // İlk kaydıyla pencereye giren alt grubun örneği kesindir
+        let hepsi = Filtre::default().coz(None).unwrap();
+        let (pencere, tam_sira) = depo.pencere(hepsi);
+        assert_eq!(tam_sira, vec![0, 1, 2, 3, 4]);
+        assert!(pencere.alt_gruplar().iter().all(AltGrup::ornek_kesin));
+    }
+
+    #[test]
+    fn ara_durumdan_sonra_kayit_alinmaya_devam_edilir() {
+        // Değişken konum bulunan bir log: ara durumda ikinci tur yapılır, sonra gelen kayıtlar
+        // öğrenilen konumla kümelenir ve alt gruplar yeni küme numaralarıyla bulunur
+        let mut depo = Depo::new(DepoAyarlari::default());
+        let bicim = SatirBicimi::default();
+        // 101 farklı, rakamsız ad: "aaa", "aab", ...
+        let ad = |sira: usize| -> String {
+            [sira / 676, sira / 26, sira]
+                .iter()
+                .map(|basamak| char::from(b'a' + (basamak % 26) as u8))
+                .collect()
+        };
+        let mut metin = String::new();
+        for sira in 0..101 {
+            metin.push_str(&format!(
+                "[2026-10-24 10:00:00] production.WARNING: Bilinmeyen kullanıcı: {}\n",
+                ad(sira)
+            ));
+        }
+        let sonuc = okuyucu::oku(metin.as_bytes(), &bicim, &mut depo).unwrap();
+        assert!(depo.kumeleyici.ikinci_tur_gerekir());
+        depo.ara_durum(sonuc);
+        assert!(!depo.alt_grup_sirasi.is_empty(), "okuma durumu korunur");
+        let kume_sayisi = depo.kumeler().len();
+        assert_eq!(kume_sayisi, 1, "ikinci turda adlar tek kalıpta birleşir");
+        // Anahtar sözlüğü yeni küme numaralarıyla
+        for (no, alt) in depo.alt_gruplar().iter().enumerate() {
+            assert_eq!(depo.alt_grup_sirasi.get(&alt.anahtar), Some(&numara(no)));
+        }
+        let devam = "[2026-10-24 10:00:01] production.WARNING: Bilinmeyen kullanıcı: aac\n\
+                     [2026-10-24 10:00:02] production.WARNING: Bilinmeyen kullanıcı: yeni\n";
+        let sonuc = okuyucu::oku(devam.as_bytes(), &bicim, &mut depo).unwrap();
+        depo.okuma_bitti(sonuc);
+        assert_eq!(depo.kayit_sayisi(), 103);
+        assert_eq!(depo.kumeler().len(), 1);
+        // Tekrar eden mesaj eski alt grubuna katıldı, yenisi yeni bir alt grup açtı
+        assert_eq!(depo.alt_gruplar().len(), 102);
+        assert_eq!(depo.alt_gruplar()[2].adet(), 2);
     }
 }

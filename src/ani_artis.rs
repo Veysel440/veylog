@@ -426,7 +426,7 @@ mod testler {
     fn artislar(metin: &str, depo: &Depo, analiz: &KalipAnalizi, dakika: u16) -> AniArtislar {
         let mut kaynak = YenidenOkuyucu::new(
             Cursor::new(metin.as_bytes()),
-            depo.dizin().to_vec(),
+            depo.dizin().clone(),
             depo.filtre().copied(),
             depo.saat_dilimi(),
         );

@@ -7,6 +7,7 @@ mod farkli_sayac;
 mod filtre;
 mod istatistik;
 mod istisna_metni;
+mod izle;
 mod json;
 mod json_okuyucu;
 mod karsilastirma;
@@ -42,14 +43,14 @@ const STANDART_GIRDI: &str = "<standart girdi>";
 
 /// Okuma tamponunun boyu. Satırlar tampondan kopyalanmadan bulunur; büyük bir tampon daha az
 /// sistem çağrısı demektir.
-const TAMPON: usize = 1 << 16;
+pub(crate) const TAMPON: usize = 1 << 16;
 
 fn main() {
     // `args_os`: argümanları işletim sisteminin verdiği ham haliyle alır. `args` ise geçerli
     // UTF-8 olmayan bir argümanda (Linux'ta dosya adları herhangi bir bayt dizisi olabilir)
     // programı çökertir. `skip(1)`: ilk argüman programın kendi adıdır.
     let secenekler = match komut_satiri::ayristir(env::args_os().skip(1)) {
-        Ok(Komut::Ozet(secenekler)) => secenekler,
+        Ok(Komut::Ozet(secenekler)) => *secenekler,
         Ok(Komut::Yardim) => {
             yazma_sonucunu_denetle(io::stdout().write_all(komut_satiri::yardim_metni().as_bytes()));
             return;
@@ -84,36 +85,23 @@ fn main() {
     let yol_metni = yol.display().to_string();
     let gosterilen_yol = gorunur(&yol_metni);
 
+    if let Some(izleme) = secenekler.izleme {
+        let sonuc = izle::calistir(
+            &secenekler,
+            izleme,
+            standart_girdi,
+            &yol_metni,
+            &gosterilen_yol,
+        );
+        if let Err(hata) = sonuc {
+            hata_bildir(hata, &gosterilen_yol);
+        }
+        return;
+    }
+
     let ozet = match ozet_cikar(&secenekler, standart_girdi, &yol_metni, &gosterilen_yol) {
         Ok(ozet) => ozet,
-        Err(Hata::Okuma(hata)) => {
-            eprintln!(
-                "veylog: {gosterilen_yol} okunamadı: {}",
-                okuma_hatasi(&hata)
-            );
-            process::exit(1);
-        }
-        Err(Hata::Kopya(hata)) => {
-            eprintln!("veylog: girdi geçici bir dosyaya kopyalanamadı: {hata}");
-            process::exit(1);
-        }
-        Err(Hata::Ozet(OzetHatasi::Okuma(hata))) => {
-            eprintln!(
-                "veylog: {gosterilen_yol} yeniden okunamadı: {}",
-                okuma_hatasi(&hata)
-            );
-            process::exit(1);
-        }
-        // Karşılaştırma noktası logun dışındaysa ya da filtrenin aralığı boşsa bu, seçeneğin
-        // bu dosyaya uymadığı bir kullanım hatasıdır
-        Err(Hata::Ozet(hata @ OzetHatasi::Karsilastirma(_))) => {
-            eprintln!("veylog: {hata}");
-            process::exit(2);
-        }
-        Err(Hata::Filtre(hata)) => {
-            eprintln!("veylog: {hata}");
-            process::exit(2);
-        }
+        Err(hata) => hata_bildir(hata, &gosterilen_yol),
     };
 
     let mut cikti = BufWriter::new(io::stdout().lock());
@@ -128,7 +116,7 @@ fn main() {
 }
 
 /// Özet çıkarılırken olabilecek hatalar.
-enum Hata {
+pub(crate) enum Hata {
     /// Girdi okunamadı.
     Okuma(io::Error),
     /// Standart girdinin geçici kopyası yazılamadı.
@@ -136,6 +124,47 @@ enum Hata {
     /// Filtrenin aralığı boş.
     Filtre(FiltreHatasi),
     Ozet(OzetHatasi),
+    /// Çıktı yazılamadı (canlı izlemede her çizim yazılır).
+    Yazma(io::Error),
+}
+
+/// Hatayı yazar ve uygun kodla çıkar: kullanım hataları 2, dosya ve çıktı hataları 1.
+fn hata_bildir(hata: Hata, gosterilen_yol: &str) -> ! {
+    match hata {
+        Hata::Okuma(hata) => {
+            eprintln!(
+                "veylog: {gosterilen_yol} okunamadı: {}",
+                okuma_hatasi(&hata)
+            );
+            process::exit(1);
+        }
+        Hata::Kopya(hata) => {
+            eprintln!("veylog: girdi geçici bir dosyaya kopyalanamadı: {hata}");
+            process::exit(1);
+        }
+        Hata::Ozet(OzetHatasi::Okuma(hata)) => {
+            eprintln!(
+                "veylog: {gosterilen_yol} yeniden okunamadı: {}",
+                okuma_hatasi(&hata)
+            );
+            process::exit(1);
+        }
+        // Karşılaştırma noktası logun dışındaysa ya da filtrenin aralığı boşsa bu, seçeneğin
+        // bu dosyaya uymadığı bir kullanım hatasıdır
+        Hata::Ozet(hata @ OzetHatasi::Karsilastirma(_)) => {
+            eprintln!("veylog: {hata}");
+            process::exit(2);
+        }
+        Hata::Filtre(hata) => {
+            eprintln!("veylog: {hata}");
+            process::exit(2);
+        }
+        // Okuyan program kapandıysa (BrokenPipe) sessizce, başarıyla biter
+        Hata::Yazma(hata) => {
+            yazma_sonucunu_denetle(Err(hata));
+            process::exit(0);
+        }
+    }
 }
 
 /// Girdiyi okur ve özetler. Okunan satırlar bırakılır; bellekte depo kalır.
@@ -238,23 +267,10 @@ fn ozet_cikar(
     // Satır var ama hiçbiri bir kayıt başlatmıyor: büyük olasılıkla biçim uymuyor
     let sayilar = depo.sayilar();
     if sayilar.kayit == 0 && sayilar.satir > 0 {
-        let bicim = &secenekler.rapor.satir_bicimi;
-        if bicim.desenli() {
-            eprintln!(
-                "Uyarı: {gosterilen_yol} içinde --desen'e uyan satır yok; hiçbir kayıt okunmadı."
-            );
-        } else if bicim.zaman_bicimli() {
-            eprintln!(
-                "Uyarı: {gosterilen_yol} içinde zamanı --zaman-bicimi'ne uyan kayıt yok; hiçbir kayıt okunmadı."
-            );
-        } else {
-            eprintln!(
-                "Uyarı: {gosterilen_yol} içinde Laravel'in biçiminde kayıt yok; log başka bir biçimdeyse --desen ile tanıtılabilir."
-            );
-        }
+        kayit_yok_uyarisi(gosterilen_yol, &secenekler.rapor.satir_bicimi);
     }
 
-    let dizin = depo.dizin().to_vec();
+    let dizin = depo.dizin().clone();
     let (filtre, dilim) = (depo.filtre().copied(), depo.saat_dilimi());
     let bicim = depo.satir_bicimi().clone();
     let mut kaynak: Box<dyn OrnekKaynagi + '_> = match (girdi, &kopya) {
@@ -322,9 +338,26 @@ fn kopyayi_bitir<R: io::BufRead, W: Write>(kopyalayan: Kopyalayan<R, W>) -> Resu
         .map_err(Hata::Kopya)
 }
 
+/// Satır var ama hiçbiri bir kayıt başlatmıyor: büyük olasılıkla biçim uymuyor.
+pub(crate) fn kayit_yok_uyarisi(gosterilen_yol: &str, bicim: &satir_bicimi::SatirBicimi) {
+    if bicim.desenli() {
+        eprintln!(
+            "Uyarı: {gosterilen_yol} içinde --desen'e uyan satır yok; hiçbir kayıt okunmadı."
+        );
+    } else if bicim.zaman_bicimli() {
+        eprintln!(
+            "Uyarı: {gosterilen_yol} içinde zamanı --zaman-bicimi'ne uyan kayıt yok; hiçbir kayıt okunmadı."
+        );
+    } else {
+        eprintln!(
+            "Uyarı: {gosterilen_yol} içinde Laravel'in biçiminde kayıt yok; log başka bir biçimdeyse --desen ile tanıtılabilir."
+        );
+    }
+}
+
 /// Log dosyasını açar. Bir klasör verildiyse açmaya çalışmaz: Linux'ta bunun hatası "Is a
 /// directory", Windows'ta "Access is denied" olurdu; ikincisi yanıltıcıdır.
-fn dosyayi_ac(yol: &Path) -> io::Result<File> {
+pub(crate) fn dosyayi_ac(yol: &Path) -> io::Result<File> {
     if yol.is_dir() {
         return Err(io::Error::from(io::ErrorKind::IsADirectory));
     }
@@ -334,7 +367,7 @@ fn dosyayi_ac(yol: &Path) -> io::Result<File> {
 /// Yeniden okunamayan bir girdinin örnek kaynağı: hiçbir kaydı bulamaz. Standart girdi ani
 /// artış istenmediyse (ya da geçici dosya oluşturulamadıysa) böyle kalır; o zaman örnekler
 /// depodakilerden seçilir.
-struct OkunamazKaynak;
+pub(crate) struct OkunamazKaynak;
 
 impl OrnekKaynagi for OkunamazKaynak {
     fn mesajlar(&mut self, _: &[OrnekIstegi<'_>]) -> io::Result<HashMap<usize, String>> {
@@ -345,14 +378,14 @@ impl OrnekKaynagi for OkunamazKaynak {
 /// Standart girdinin geçici kopyası. Dosya oluşturulur oluşturulmaz silinir: açık kaldıkça
 /// okunup yazılabilir, program nasıl biterse bitsin (Ctrl+C dahil) diskte kalmaz. Silinemezse
 /// (bazı Windows kurulumları açık dosyanın silinmesine izin vermez) program bitince silinir.
-struct GeciciDosya {
+pub(crate) struct GeciciDosya {
     yol: PathBuf,
     dosya: Option<File>,
     silindi: bool,
 }
 
 impl GeciciDosya {
-    fn olustur() -> io::Result<GeciciDosya> {
+    pub(crate) fn olustur() -> io::Result<GeciciDosya> {
         let klasor = env::temp_dir();
         // Ad, başka bir veylog'unkiyle çakışmasın: süreç numarası ve an
         let an = SystemTime::now()
@@ -387,7 +420,7 @@ impl GeciciDosya {
     }
 
     /// Dosyanın kendisi. `&File` de okunup yazılabilir ve konumlanabilir: hepsi aynı dosyadır.
-    fn dosya(&self) -> &File {
+    pub(crate) fn dosya(&self) -> &File {
         self.dosya
             .as_ref()
             .expect("dosya ancak düşürülürken kapanır")

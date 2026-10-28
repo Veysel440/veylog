@@ -16,6 +16,7 @@ laravel.log
   → karşılaştırma     isteğe bağlı (--karsilastir): yeni çıkan, kaybolan, artan
   → ani artışlar      isteğe bağlı (--ani-artis): olağan seviyesinden sıçrayan anlar
   → özet              metin, JSON ya da Markdown olarak yazılır
+  → canlı izleme      isteğe bağlı (--izle): eklenen kayıtlar okunur, özet yeniden çizilir
 ```
 
 ## Kayıtlara ayırma
@@ -963,6 +964,71 @@ dolduramaz. Gerçek loglardaki en uzun satırlar bağlamında dev bir SQL sorgus
 istisnalardır (MySQL'in bir sorguya izin verdiği en büyük boy 64 MB'tır); onlar da sınırın
 çok altındadır. Saklanan kısım kaydın başıdır: istisnanın sınıfı ve yeri, uygulama kodunun
 çerçeveleri.
+
+### Canlı izleme
+
+`--izle` logu `tail -f` gibi izler: sonuna kadar okur, raporu yazar, sonra eklenen kayıtları
+okumaya devam eder ve yeni kayıt geldikçe raporu yeniden çizer. Dört parçadan oluşur.
+
+**Artımlı depo.** Girdi hiçbir çizimde yeniden okunmaz. Depo okuma durumunu (alt grupların
+anahtar sözlüğünü, toplanmakta olan kaydı) çizimler arasında korur; eklenen baytlar satırlara
+ayrılır, satırlar kayıt toplayıcıya, tamamlanan kayıtlar depoya gider. Rapor her çizimde
+depodan yeniden üretilir: maliyeti alt grupların sayısıyla orantılıdır, dosyanın boyuyla değil.
+Drain bir çizimde değişken bir konum bulduysa kayıtlar o çizimde yeniden kümelenir (ikinci
+tur); sonraki çizimlerde yeni bir değişken konum bulunursa bir tur daha yapılır ve önceki
+turlarda öğrenilenler unutulmaz. Log bir kerede okunurken en fazla iki tur vardır; izlemede
+konumlar parça parça öğrenildiği için kümeleme nadiren bir kerede okumadakinden farklı
+olabilir.
+
+**Kayıt tamamlanma kuralı.** Bir kaydın devam satırları (yığın izi) başlığından sonra gelir
+ve yazan süreç onları birkaç yazma işlemiyle yazabilir. Okunan son kayıt bu yüzden hemen
+depoya alınmaz: ondan sonra bir kayıt başlığı gelince ya da girdi bir aralık (`--aralik`,
+varsayılan 2 saniye) boyunca sessiz kalınca (hiç bayt gelmeyince) tamamlanmış sayılır.
+Laravel bir kaydı tek yazma işlemiyle yazar; kural, parça parça yazan süreçler ve satır
+ortasında kesilen okumalar içindir. `\n` ile bitmemiş son satır da bekletilir: bir okuma
+satırın ortasında bitebilir, satır o halde ne bir başlık ne de bir devam satırıdır. Sessizlikte
+o da son satır sayılır, tıpkı bir dosyanın satır sonu olmayan son satırı gibi. Böylece girdi bir
+aralık sessiz kaldıktan sonra çizilen rapor, o ana kadar gelen baytların bir kerede
+özetlenmesiyle aynıdır. Bedeli: bir kayıt en geç bir aralık sonra raporda görünür. Yazan süreç
+bir kaydın ya da satırın ortasında bir aralıktan uzun duraklarsa kalanı ayrı satırlar olur
+(devam satırları yetim sayılır).
+
+İzleme başlarken dosya bir aralıktan uzun süredir değişmemişse (değiştirilme zamanına
+bakılır) sessizlik o zamandan sayılır: durgun bir logun son kaydı ilk çizimde görünür, bir
+aralık sonra değil.
+
+**Döndürme.** Her aralıkta önce eldeki dosya sonuna kadar okunur, sonra yolundaki dosyayla
+karşılaştırılır; eski dosyaya döndürülmeden hemen önce yazılan kayıtlar böylece kaybolmaz.
+Unix'te yolun düğüm (inode) numarası değiştiyse (logrotate dosyayı yeniden adlandırıp yenisini
+açmıştır) eski dosya bitmiş sayılır (satır sonu olmayan son satırı da okunur), yeni dosya
+açılıp baştan okunur; eldeki dosya okunandan kısaysa (`copytruncate`) başa sarılır.
+Windows'ta düğüm numarası yoktur ve oluşturulma zamanı güvenilir değildir (yeniden
+adlandırılan bir dosyanın yerine hemen açılan yeni dosya eskisinin zamanını alabilir); yoldaki
+dosya her seferinde yeniden açılır, oluşturulma zamanı başkaysa ya da eldekinden kısaysa
+başka bir dosya sayılır. Depo korunur: eski dosyanın kayıtları raporda kalır, yalnızca
+örnekleri artık yeniden okunamaz. Yeni dosyanın ilk kaydı seyrek dizine yeni dosyadaki
+konumuyla yazılır; dizinin öteki kayıtları her 1024 kayıtta birdir ve döndürmenin ortasına
+düşen bloktaki yeni kayıtlar, o olmasa eski dosyanın konumlarıyla aranırdı. Yol geçici olarak yoksa (döndürmenin ortası) eldeki dosya
+okunmaya devam eder, sonraki aralıkta yeniden bakılır. Durum satırına `döndürüldü` yazılır.
+
+**Kayan pencere.** Zaman filtreleri okunurken değil her çizimde, o ana kadar okunan en yeni
+kayda göre uygulanır: `--son 1sa` hep son bir saati, `--baslangic 15:00` hep logun son
+gününün 15:00'inden sonrasını gösterir. Deponun pencere görünümü (`Depo::pencere`) kayıt
+sütunlarını bir kez dolaşıp alt grupların sayılarını ve zamanlarını yalnızca pencereye giren
+kayıtlardan toplar; kalıplar, maskeli mesajlar, parmak izleri ve proje kökleri okunan bütün
+kayıtlardan gelir (kümeleme yinelenmez; pencerenin dışına çıkan kayıtlar da öğretir). Farklı
+ham mesaj sayısı ve saat dilimi sayıları kayıt başına saklanmadığı için okunan bütün kayıtlar
+içindir. Seviye filtresi ise okunurken uygulanır: uymayan kayıt depoya hiç girmez.
+
+Standart girdi ayrı bir iş parçacığında okunur; ana döngü parçaları bir kanaldan alır ve bir
+aralık boyunca parça gelmezse sessizlik sayar. Girdi bitince son rapor yazılır ve çıkılır.
+`--ani-artis` istendiyse girdi okunurken geçici bir dosyaya da kopyalanır; artışların
+örnekleri ondan okunur. Dosya izlenirken örnekler dosyanın kendisinden okunur.
+
+Doğrulama: örnek log satır ortalarından üç parçaya bölünüp aralıklarla bir dosyaya eklenirken
+(ve standart girdiye yazılırken) izlenir; son çizim, durum satırı dışında, dosyanın bir kerede
+özetlenmesiyle birebir aynı çıkar (`tests/cli.rs`). Gerçek bir geliştirme logu parçalar
+halinde eklenerek de aynı denklik görüldü.
 
 ## Komut satırı
 

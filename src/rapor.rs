@@ -2223,7 +2223,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
         assert_eq!(tahmini.len(), 5);
         let mut kaynak = YenidenOkuyucu::new(
             Cursor::new(metin.as_bytes()),
-            depo.dizin().to_vec(),
+            depo.dizin().clone(),
             None,
             None,
         );
@@ -2643,7 +2643,7 @@ Ani artışlar (WARNING ve üstü, 1 dakikalık 241 dilim, puan > 3,5): 1
             let mut depo = Depo::doldur(depo_ayarlari, log_metni.as_bytes()).unwrap();
             let mut kaynak = YenidenOkuyucu::new(
                 Cursor::new(log_metni.as_bytes()),
-                depo.dizin().to_vec(),
+                depo.dizin().clone(),
                 depo.filtre().copied(),
                 depo.saat_dilimi(),
             )

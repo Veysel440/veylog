@@ -123,6 +123,35 @@ bir iştir ([yol haritası](../README.md#yol-haritası)).
 - Filtreler yalnızca seviyeye ve zamana göredir; mesaja, kanala ya da bağlama göre süzmek için
   JSON çıktısı `jq` ile süzülebilir.
 
+## Canlı izleme
+
+- `--izle` yalnızca metin biçiminde çalışır; `--karsilastir` ile kullanılamaz (izlenen logun
+  "sonra" yarısı hiç bitmez).
+- Okunan son kayıt, ondan sonra bir kayıt başlığı gelene ya da girdi bir aralık boyunca sessiz
+  kalana kadar depoya alınmaz: raporda en geç bir aralık (`--aralik`, varsayılan 2 sn) sonra
+  görünür. Yazan süreç bir kaydın ya da satırın ortasında bir aralıktan uzun duraklarsa
+  kalanı ayrı satırlar olur; devam satırları yetim sayılır.
+- Drain'in değişken konumları izlemede parça parça öğrenilir; her çizimde gerekiyorsa bir
+  kümeleme turu daha yapılır. Log bir kerede okunurken en fazla iki tur olduğu için, değişken
+  konumu çok olan bir logda izlemenin kalıpları bir kerede okumadakilerden nadiren farklı
+  olabilir.
+- `copytruncate` ile döndürülen bir dosyaya, kesildikten sonra bir aralıkta eski boyundan
+  fazlası yazılırsa döndürme fark edilmez ve okumaya eski konumdan devam edilir (`tail -f`'in
+  de sınırı). Dosyayı yeniden adlandıran döndürmede (logrotate'in varsayılanı) bu olmaz.
+- Zaman filtreleri izlemede her çizimde yeniden uygulanır (kayan pencere); kalıplar, farklı
+  mesaj sayısı ve saat dilimi sayıları ise o ana kadar okunan bütün kayıtlar içindir, yalnızca
+  penceredekiler için değil.
+- Windows'ta döndürme oluşturulma zamanı ve boyla anlaşılır: yeniden adlandırılan dosyanın
+  yerine açılan yeni dosya eskisinin oluşturulma zamanını alır ve eskisinden uzunsa fark
+  edilmez. Unix'te düğüm numarasıyla kesin anlaşılır.
+- Döndürmeden sonra eski dosyanın kayıtları raporda kalır ama örnekleri yeniden okunamaz;
+  ikinci turda bölünen bir alt grubun ya da bir ani artışın örneği eski dosyadaysa, aynı
+  kalıpta aynı seviyedeki ilk kaydın mesajı yazılır.
+- Standart girdide (`tail -f ... | veylog --izle -`) `--ani-artis` örnekleri için girdi geçici
+  bir dosyaya kopyalanır; kopya oluşturulamazsa örnekler depodakilerden seçilir.
+- Terminalde ekran ANSI kodlarıyla temizlenir; bunları tanımayan eski bir Windows
+  konsolunda (Windows Terminal ve PowerShell 7 tanır) çizimler art arda akar.
+
 ## Karşılaştırma ve ani artışlar
 
 - İkisi de kayıtları sayar. Trafik iki katına çıkarsa her kalıp iki kat sık görünür; veylog

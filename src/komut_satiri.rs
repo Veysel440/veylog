@@ -11,6 +11,7 @@
 //! veylog --desen '%datetime% [%level_name%] %message% %context%' storage/logs/app.log
 //! veylog --zaman-bicimi 'd.m.Y H:i:s' storage/logs/laravel.log
 //! veylog --konum satir storage/logs/laravel.log
+//! veylog --izle --son 1sa storage/logs/laravel.log
 //! zcat laravel-2026-10-24.log.gz | veylog -
 //! ```
 //!
@@ -26,9 +27,11 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::ani_artis::{EN_DUSUK_SEVIYE, EN_UZUN_DILIM};
-use crate::filtre::sure_ayristir;
+use crate::filtre::{milisaniye_ayristir, sure_ayristir};
+use crate::izle::{EN_KISA_ARALIK, VARSAYILAN_ARALIK, aralik_yaz};
 use crate::kayit::Seviye;
 use crate::parmak_izi::KonumTuru;
 use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
@@ -40,7 +43,7 @@ use crate::zaman_bicimi::ZamanBicimi;
 pub const KULLANIM: &str = "Kullanım: veylog [SEÇENEKLER] <log-dosyası>";
 
 /// Bilinen uzun seçenekler. Yazım hatası yapıldığında öneri bu listeden seçilir.
-const UZUN_SECENEKLER: [&str; 19] = [
+const UZUN_SECENEKLER: [&str; 21] = [
     "--esik",
     "--konum",
     "--ilk",
@@ -56,6 +59,8 @@ const UZUN_SECENEKLER: [&str; 19] = [
     "--saat-dilimi",
     "--desen",
     "--zaman-bicimi",
+    "--izle",
+    "--aralik",
     "--yardim",
     "--surum",
     "--help",
@@ -104,8 +109,9 @@ impl Bicim {
 /// Komut satırının istediği iş.
 #[derive(Debug)]
 pub enum Komut {
-    /// Log dosyasını özetle.
-    Ozet(Secenekler),
+    /// Log dosyasını özetle. Seçenekler kutudadır: yardım ve sürüm değerleri boşken enum,
+    /// içindeki en büyük değer kadar yer kaplamasın.
+    Ozet(Box<Secenekler>),
     /// Yardım metnini göster.
     Yardim,
     /// Sürümü göster.
@@ -118,6 +124,23 @@ pub struct Secenekler {
     pub dosya: PathBuf,
     pub rapor: RaporAyarlari,
     pub bicim: Bicim,
+    /// `--izle` verildiyse canlı izlemenin ayarları.
+    pub izleme: Option<Izleme>,
+}
+
+/// Canlı izlemenin ayarları (`--izle`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Izleme {
+    /// Girdiye ne sıklıkla bakılacağı ve raporun en sık ne kadarda bir çizileceği.
+    pub aralik: Duration,
+}
+
+impl Default for Izleme {
+    fn default() -> Self {
+        Izleme {
+            aralik: VARSAYILAN_ARALIK,
+        }
+    }
 }
 
 /// Komut satırındaki bir yanlışlık. Program bunu yazar ve 2 koduyla çıkar.
@@ -146,6 +169,14 @@ pub enum SecenekHatasi {
     BosDosyaAdi,
     /// Birlikte kullanılamayan iki seçenek: `--son` ile `--baslangic`.
     Celisen(&'static str, &'static str),
+    /// Yalnızca başka bir seçenekle anlamlı bir seçenek tek başına verilmiş: `--izle`siz
+    /// `--aralik`.
+    Gerektirir(&'static str, &'static str),
+    /// Seçenek canlı izlemeyle (`--izle`) kullanılamaz; nedeniyle.
+    IzlemeyleKullanilamaz {
+        secenek: String,
+        neden: &'static str,
+    },
 }
 
 impl fmt::Display for SecenekHatasi {
@@ -176,6 +207,12 @@ impl fmt::Display for SecenekHatasi {
             SecenekHatasi::Celisen(birinci, ikinci) => {
                 write!(f, "{birinci} ile {ikinci} birlikte kullanılamaz")
             }
+            SecenekHatasi::Gerektirir(secenek, gereken) => {
+                write!(f, "{secenek} yalnızca {gereken} ile kullanılabilir")
+            }
+            SecenekHatasi::IzlemeyleKullanilamaz { secenek, neden } => {
+                write!(f, "{secenek} ile --izle birlikte kullanılamaz: {neden}")
+            }
         }
     }
 }
@@ -199,6 +236,10 @@ where
     // derlenir. Seçeneğin yazıldığı ad hata mesajı için saklanır.
     let mut desen: Option<(String, String)> = None;
     let mut zaman_bicimi: Option<ZamanBicimi> = None;
+    let mut izle = false;
+    let mut aralik: Option<Duration> = None;
+    // `--bicim`in yazıldığı hali: `--izle` ile çelişirse hata mesajında
+    let mut bicim_yazimi: Option<String> = None;
     let mut secenekler_bitti = false;
     let mut argumanlar = argumanlar.into_iter();
 
@@ -254,6 +295,7 @@ where
             "-b" | "--bicim" => {
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
                 bicim = bicim_ayristir(ad, &deger)?;
+                bicim_yazimi = Some(format!("{ad} {deger}"));
             }
             "-k" | "--karsilastir" => {
                 let deger = deger_al(ad, bitisik, &mut argumanlar)?;
@@ -294,6 +336,14 @@ where
                         .map_err(|hata| gecersiz(ad, &deger, hata.to_string()))?,
                 );
             }
+            "--izle" => {
+                deger_almaz(ad, bitisik)?;
+                izle = true;
+            }
+            "--aralik" => {
+                let deger = deger_al(ad, bitisik, &mut argumanlar)?;
+                aralik = Some(aralik_ayristir(ad, &deger)?);
+            }
             "-h" | "--yardim" | "--help" => {
                 deger_almaz(ad, bitisik)?;
                 return Ok(Komut::Yardim);
@@ -323,12 +373,37 @@ where
             .map_err(|hata| gecersiz(ad, deger, hata.to_string()))?,
         None => SatirBicimi::new(None, zaman_bicimi).expect("desensiz biçim her zaman derlenir"),
     };
+    let izleme = if izle {
+        // İzlenen log sürekli uzar: rapor her çizimde baştan yazılır, bu yalnızca metin
+        // biçiminde okunabilir; karşılaştırmanın "sonra" yarısı da hiç bitmez
+        if bicim != Bicim::Metin {
+            return Err(SecenekHatasi::IzlemeyleKullanilamaz {
+                secenek: bicim_yazimi.unwrap_or_default(),
+                neden: "izleme yalnızca metin biçimindedir",
+            });
+        }
+        if rapor.karsilastir.is_some() {
+            return Err(SecenekHatasi::IzlemeyleKullanilamaz {
+                secenek: "--karsilastir".to_owned(),
+                neden: "izlenen log sürekli uzar; karşılaştırma için --izle olmadan çalıştırın",
+            });
+        }
+        Some(Izleme {
+            aralik: aralik.unwrap_or(VARSAYILAN_ARALIK),
+        })
+    } else {
+        if aralik.is_some() {
+            return Err(SecenekHatasi::Gerektirir("--aralik", "--izle"));
+        }
+        None
+    };
     let dosya = dosya.ok_or(SecenekHatasi::DosyaYok)?;
-    Ok(Komut::Ozet(Secenekler {
+    Ok(Komut::Ozet(Box::new(Secenekler {
         dosya,
         rapor,
         bicim,
-    }))
+        izleme,
+    })))
 }
 
 /// `--yardim` ile gösterilen metin. Varsayılan değerler ayarların kendisinden okunur; böylece
@@ -396,6 +471,17 @@ Filtreler (raporu yalnızca uyan kayıtlarla çıkarır; satır ve kayıt sayıl
       --son <süre>        Logun son kısmı: en yeni kayıttan bu kadar öncesinden bu yana.
                           Süre: 30dk, 2sa, 1g, 1sa30dk (sn, dk, sa, g).
 
+Canlı izleme (yalnızca metin biçiminde; --karsilastir ile kullanılamaz):
+      --izle              Logu sonuna kadar oku, raporu yaz, sonra eklenen kayıtları
+                          okumaya devam et; yeni kayıt geldikçe raporu yeniden çiz. Zaman
+                          filtreleri (--son 1sa) her çizimde o ana kadarki en yeni kayda
+                          göre uygulanır: kayan pencere. Döndürülen log baştan okunur.
+                          Standart girdide girdi bitince son rapor yazılır ve çıkılır
+                          (tail -f laravel.log | veylog --izle -).
+      --aralik <süre>     Girdiye bu sıklıkla bak; raporu en sık bu kadarda bir çiz. Süre
+                          --son gibi, ms de olur (500ms); en az {en_kisa_aralik}.
+                          [varsayılan: {aralik}]
+
   -h, --yardim            Bu yardımı göster.
   -V, --surum             Sürümü göster.
 
@@ -424,9 +510,12 @@ sırasını belirler; ani artışlar puanı en yüksek olan başta olacak şekil
   veylog --desen '%datetime% [%level_name%] %message% %context%' storage/logs/app.log
   veylog --zaman-bicimi 'd.m.Y H:i:s' storage/logs/laravel.log
   veylog --konum satir storage/logs/laravel.log
+  veylog --izle --son 1sa storage/logs/laravel.log
   zcat laravel-2026-10-24.log.gz | veylog -
 ",
         surum = env!("CARGO_PKG_VERSION"),
+        en_kisa_aralik = aralik_yaz(EN_KISA_ARALIK),
+        aralik = aralik_yaz(Izleme::default().aralik),
         esik = ondalik(varsayilan.drain.benzerlik_esigi),
         konum = varsayilan.konum_turu.ad(),
         siralama = varsayilan.siralama.ad(),
@@ -610,6 +699,21 @@ fn son_ayristir(ad: &str, deger: &str) -> Result<u64, SecenekHatasi> {
     })
 }
 
+/// `--aralik`: bir süre, milisaniyeye kadar; en az `EN_KISA_ARALIK`.
+fn aralik_ayristir(ad: &str, deger: &str) -> Result<Duration, SecenekHatasi> {
+    match milisaniye_ayristir(&sadelestir(deger)).map(Duration::from_millis) {
+        Some(aralik) if aralik >= EN_KISA_ARALIK => Ok(aralik),
+        _ => Err(gecersiz(
+            ad,
+            deger,
+            format!(
+                "en az {} olan bir süre olmalı (ör. 500ms, 2sn, 1dk; birimler: ms, sn, dk, sa, g)",
+                aralik_yaz(EN_KISA_ARALIK)
+            ),
+        )),
+    }
+}
+
 /// `--ani-artis`: dilimlerin uzunluğu, 1 dakika ile 1 gün (1440 dakika) arası bir tam sayı.
 fn ani_artis_ayristir(ad: &str, deger: &str) -> Result<u16, SecenekHatasi> {
     match deger.parse::<u16>() {
@@ -692,7 +796,7 @@ mod testler {
     /// Özet bekleyen testler için: ayrıştırır ve seçenekleri döndürür.
     fn ozet(argumanlar: &[&str]) -> Secenekler {
         match ayir(argumanlar) {
-            Ok(Komut::Ozet(secenekler)) => secenekler,
+            Ok(Komut::Ozet(secenekler)) => *secenekler,
             diger => panic!("özet bekleniyordu, gelen: {diger:?}"),
         }
     }
@@ -906,6 +1010,77 @@ mod testler {
             hata(&["a.log", "--konum"]),
             SecenekHatasi::DegerEksik("--konum".to_string())
         );
+    }
+
+    #[test]
+    fn izleme_secenekleri() {
+        assert_eq!(ozet(&["a.log"]).izleme, None);
+        assert_eq!(
+            ozet(&["--izle", "a.log"]).izleme,
+            Some(Izleme {
+                aralik: Duration::from_secs(2)
+            })
+        );
+        for (argumanlar, beklenen) in [
+            (&["--izle", "--aralik", "500ms", "a.log"][..], 500),
+            (&["--izle", "--aralık=1sn500ms", "a.log"], 1_500),
+            (&["a.log", "--aralik", "1dk", "--izle"], 60_000),
+            // İkinci yazılan geçerli
+            (
+                &["--izle", "--aralik", "1sn", "--aralik", "3sn", "a.log"],
+                3_000,
+            ),
+        ] {
+            assert_eq!(
+                ozet(argumanlar).izleme.map(|izleme| izleme.aralik),
+                Some(Duration::from_millis(beklenen)),
+                "{argumanlar:?}"
+            );
+        }
+        // Öteki seçeneklerle birlikte
+        let secenekler = ozet(&[
+            "--izle", "--son", "1sa", "-a", "1", "--seviye", "error", "a.log",
+        ]);
+        assert!(secenekler.izleme.is_some());
+        assert_eq!(secenekler.rapor.filtre.son, Some(3_600));
+        assert_eq!(secenekler.rapor.ani_artis, Some(1));
+        assert_eq!(
+            hata(&["--aralik", "1sn", "a.log"]),
+            SecenekHatasi::Gerektirir("--aralik", "--izle")
+        );
+        for deger in ["50ms", "0sn", "iki", "1.5sn"] {
+            assert_eq!(
+                hata(&["--izle", "--aralik", deger, "a.log"]).to_string(),
+                format!(
+                    "--aralik için geçersiz değer \"{deger}\": en az 100 ms olan bir süre olmalı (ör. 500ms, 2sn, 1dk; birimler: ms, sn, dk, sa, g)"
+                ),
+                "{deger}"
+            );
+        }
+        assert_eq!(
+            hata(&["--izle", "--bicim", "json", "a.log"]).to_string(),
+            "--bicim json ile --izle birlikte kullanılamaz: izleme yalnızca metin biçimindedir"
+        );
+        assert_eq!(
+            hata(&["--izle", "-b", "markdown", "a.log"]).to_string(),
+            "-b markdown ile --izle birlikte kullanılamaz: izleme yalnızca metin biçimindedir"
+        );
+        // Metin biçimi açıkça verilebilir
+        assert!(
+            ozet(&["--izle", "--bicim", "metin", "a.log"])
+                .izleme
+                .is_some()
+        );
+        assert_eq!(
+            hata(&["--izle", "--karsilastir", "15:00", "a.log"]).to_string(),
+            "--karsilastir ile --izle birlikte kullanılamaz: izlenen log sürekli uzar; karşılaştırma için --izle olmadan çalıştırın"
+        );
+        assert_eq!(
+            hata(&["--izle=evet", "a.log"]),
+            SecenekHatasi::DegerAlmaz("--izle".to_string())
+        );
+        assert_eq!(oneri_bul("--izl"), Some("--izle"));
+        assert_eq!(oneri_bul("--aralk"), Some("--aralik"));
     }
 
     #[test]
@@ -1164,7 +1339,7 @@ mod testler {
         use std::os::unix::ffi::OsStringExt;
         let ad = OsString::from_vec(b"bozuk-\xff.log".to_vec());
         let secenekler = match ayristir([ad.clone()]) {
-            Ok(Komut::Ozet(secenekler)) => secenekler,
+            Ok(Komut::Ozet(secenekler)) => *secenekler,
             diger => panic!("özet bekleniyordu, gelen: {diger:?}"),
         };
         assert_eq!(secenekler.dosya, PathBuf::from(ad));

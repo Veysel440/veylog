@@ -35,6 +35,11 @@ impl Filtre {
         *self == Filtre::default()
     }
 
+    /// Zaman sınırı var mı (`--baslangic`, `--bitis`, `--son`)?
+    pub fn zaman_sinirli(&self) -> bool {
+        self.baslangic.is_some() || self.bitis.is_some() || self.son.is_some()
+    }
+
     /// Sınırları çözmek için logun sonunu (en yeni kaydı) bilmek gerekiyor mu?
     pub fn sonu_gerekir(&self) -> bool {
         self.son.is_some()
@@ -117,9 +122,17 @@ impl fmt::Display for FiltreHatasi {
 
 impl std::error::Error for FiltreHatasi {}
 
-/// `--son` değeri: bir süre. Birimler: `sn`/`s` saniye, `dk`/`m` dakika, `sa`/`h` saat,
-/// `g`/`d` gün; birleştirilebilir: `1sa30dk`. En az bir saniye.
+/// `--son` değeri: bir süre, saniye olarak. Birimler: `sn`/`s` saniye, `dk`/`m` dakika,
+/// `sa`/`h` saat, `g`/`d` gün; birleştirilebilir: `1sa30dk`. En az bir saniye; saniyenin
+/// kesri (`500ms`) kabul edilmez.
 pub fn sure_ayristir(metin: &str) -> Option<u64> {
+    let milisaniye = milisaniye_ayristir(metin)?;
+    (milisaniye % 1_000 == 0).then_some(milisaniye / 1_000)
+}
+
+/// Bir süre, milisaniye olarak. `sure_ayristir`in birimlerine ek olarak `ms` milisaniye
+/// (`--aralik 500ms`). En az bir milisaniye.
+pub fn milisaniye_ayristir(metin: &str) -> Option<u64> {
     let mut kalan = metin.trim();
     if kalan.is_empty() {
         return None;
@@ -138,10 +151,11 @@ pub fn sure_ayristir(metin: &str) -> Option<u64> {
             .find(|harf: char| harf.is_ascii_digit())
             .unwrap_or(kalan.len());
         let carpan = match kalan[..birim_sonu].to_lowercase().as_str() {
-            "s" | "sn" | "saniye" => 1,
-            "m" | "dk" | "dakika" => 60,
-            "h" | "sa" | "saat" => 3_600,
-            "d" | "g" | "gun" | "gün" => 86_400,
+            "ms" | "msn" | "milisaniye" => 1,
+            "s" | "sn" | "saniye" => 1_000,
+            "m" | "dk" | "dakika" => 60_000,
+            "h" | "sa" | "saat" => 3_600_000,
+            "d" | "g" | "gun" | "gün" => 86_400_000,
             _ => return None,
         };
         toplam = toplam.checked_add(sayi.checked_mul(carpan)?)?;
@@ -156,6 +170,25 @@ mod testler {
 
     fn zaman(metin: &str) -> Zaman {
         Zaman::kayittan(metin)
+    }
+
+    #[test]
+    fn milisaniyeli_sureler_okunur() {
+        for (metin, beklenen) in [
+            ("500ms", 500),
+            ("200MS", 200),
+            ("1sn500ms", 1_500),
+            ("2sn", 2_000),
+            ("1dk", 60_000),
+            ("1sa", 3_600_000),
+            ("1g", 86_400_000),
+            ("1milisaniye", 1),
+        ] {
+            assert_eq!(milisaniye_ayristir(metin), Some(beklenen), "{metin}");
+        }
+        for metin in ["", "0ms", "ms", "1.5sn", "500 ms", "99999999999999999999ms"] {
+            assert_eq!(milisaniye_ayristir(metin), None, "{metin:?}");
+        }
     }
 
     #[test]
@@ -196,6 +229,9 @@ mod testler {
             // Taşma
             "99999999999999999999g",
             "999999999999999g",
+            // Saniyenin kesri
+            "500ms",
+            "1sn500ms",
         ] {
             assert_eq!(sure_ayristir(metin), None, "{metin:?}");
         }

@@ -9,6 +9,21 @@ aynıdır. `--ilk` ve `--siralama` her biçimde geçerlidir.
 | JSON | `--bicim json` | Betikler, `jq`, CI adımları |
 | Markdown | `--bicim markdown` | GitHub issue ve PR açıklamaları |
 
+Canlı izlemede (`--izle`) yalnızca metin biçimi vardır. Her çizim, olağan metin raporunun
+başına bir durum satırı eklenmiş halidir:
+
+```text
+İzleniyor: storage/logs/laravel.log · her 2 sn · 59 kayıt · son kayıt 2026-10-24 18:31:07
+storage/logs/laravel.log: 205 satır
+  Kayıt         : 59
+...
+```
+
+Durum satırında izlenen dosya, aralık, depodaki kayıt sayısı, en yeni kaydın zamanı ve dosya
+döndürüldüyse `döndürüldü` yazar. Çıktı bir terminalse her çizimden önce ekran temizlenir
+(ANSI `ESC[2J ESC[H`). Bir dosyaya ya da boruya yazılıyorsa çizimler, aralarında 40 `─`
+karakterinden oluşan bir ayırıcı satırla art arda yazılır; son çizim son ayırıcıdan sonrakidir.
+
 ## JSON
 
 Örnek logun yalnızca ilk satırıyla (`--ilk 1`):

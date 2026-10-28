@@ -122,7 +122,7 @@ impl Default for Ayarlar {
 }
 
 /// Aynı kalıba uyan mesajlar.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Kume {
     /// Kalıbın belirteçleri; değişen konumlarda iç joker işareti. Gösterilecek hali `metin`.
     kalip: Vec<String>,
@@ -272,12 +272,33 @@ impl Kumeleyici {
         !self.drain.degiskenler.is_empty()
     }
 
-    /// Boş bir kümeleyici; bu turda öğrenilen değişken konumları bilir. İkinci turun kendi
-    /// bulduğu değişken konumlar kullanılmaz: üçüncü bir tur yoktur.
+    /// Boş bir kümeleyici; bu turda öğrenilen değişken konumları (ve bu kümeleyicinin
+    /// önceki turlardan bildiklerini) bilir. Log bir kerede okunurken ikinci turun kendi
+    /// bulduğu değişken konumlar kullanılmaz: üçüncü bir tur yoktur. Canlı izlemede ise
+    /// kümeleyici her çizimde gerekiyorsa yeniden kurulur; bir yaprakta sonradan bulunan bir
+    /// değişken konum o yaprağın bütün konumlarıyla birlikte kaydedildiği için
+    /// (`degiskenler`), bilinenlerin üstüne yazılması hiçbirini unutturmaz.
     pub fn ikinci_tur(&self) -> Kumeleyici {
+        let mut ogrenilen = self.drain.ogrenilen.clone();
+        for (yol, degiskenler) in &self.drain.degiskenler {
+            ogrenilen.insert(yol.clone(), degiskenler.clone());
+        }
         Kumeleyici {
             drain: Drain {
-                ogrenilen: self.drain.degiskenler.clone(),
+                ogrenilen,
+                ..Drain::new(self.drain.ayarlar.clone())
+            },
+            onbellek: Vec::new(),
+        }
+    }
+
+    /// Yalnızca kümeleri (kalıplarını ve adetlerini) taşıyan bir kopya: ağacı yoktur, mesaj
+    /// eklenemez. Deponun bir zaman penceresindeki görünümü (`Depo::pencere`) kalıpları
+    /// buradan okur; ağacı kopyalamak gerekmez.
+    pub fn kumelerin_kopyasi(&self) -> Kumeleyici {
+        Kumeleyici {
+            drain: Drain {
+                kumeler: self.drain.kumeler.clone(),
                 ..Drain::new(self.drain.ayarlar.clone())
             },
             onbellek: Vec::new(),
@@ -1336,6 +1357,46 @@ mod testler {
         );
         assert!(numaralar[..101].iter().all(|&numara| numara == 0));
         assert_eq!(numaralar[101..], [1, 2]);
+    }
+
+    #[test]
+    fn sonraki_turlar_oncekilerde_ogrenilenleri_unutmaz() {
+        // Canlı izleme: ilk turda bir yaprakta değişken konum bulunur, ikinci tur kurulur;
+        // sonra gelen mesajlar başka bir yaprakta değişken konum bulur, üçüncü tur kurulur.
+        // Üçüncü tur ikisini de bilmeli.
+        let mut birinci = Kumeleyici::new(Ayarlar::default());
+        for (no, mesaj) in bilinmeyen_kullanicilar(101).iter().enumerate() {
+            birinci.ekle(no, mesaj);
+        }
+        assert!(birinci.ikinci_tur_gerekir());
+        let mut ikinci = birinci.ikinci_tur();
+        assert_eq!(ikinci.drain.ogrenilen.len(), 1);
+        assert!(!ikinci.ikinci_tur_gerekir());
+        let gorevler: Vec<String> = (0..101)
+            .map(|sira| format!("Görev bitti: {}", ad(sira)))
+            .collect();
+        for (no, mesaj) in gorevler.iter().enumerate() {
+            ikinci.ekle(200 + no, mesaj);
+        }
+        assert!(ikinci.ikinci_tur_gerekir());
+        let ucuncu = ikinci.ikinci_tur();
+        assert_eq!(ucuncu.drain.ogrenilen.len(), 2);
+        // Sonuç: iki aile de baştan tek kalıpta
+        let mut sonuc = ucuncu;
+        for (no, mesaj) in bilinmeyen_kullanicilar(101).iter().enumerate() {
+            sonuc.ekle(no, mesaj);
+        }
+        for (no, mesaj) in gorevler.iter().enumerate() {
+            sonuc.ekle(200 + no, mesaj);
+        }
+        assert_eq!(
+            ozetle(sonuc.kumeler()),
+            ["101 × Bilinmeyen kullanıcı: <*>", "101 × Görev bitti: <*>"]
+        );
+        // Yalnızca kümeleri taşıyan kopya: kalıplar aynı, ağaç boş
+        let kopya = sonuc.kumelerin_kopyasi();
+        assert_eq!(ozetle(kopya.kumeler()), ozetle(sonuc.kumeler()));
+        assert!(kopya.drain.uzunluklar.is_empty());
     }
 
     #[test]

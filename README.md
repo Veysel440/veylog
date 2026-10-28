@@ -100,6 +100,10 @@ biri kategori sayfasında, öteki ürün sayfasında oluşan iki ayrı hata.
 - **Ani artışlar.** `--ani-artis 5` her kalıbın WARNING ve üstündeki kayıtlarını beşer
   dakikalık dilimlerde sayar ve olağan seviyesinden sıçradığı anları bulur. Olağan seviye
   medyanla, dalgalanma MAD ile ölçülür; aranan patlama kendi ölçüsünü bozmaz.
+- **Canlı izleme.** `--izle` logu sonuna kadar okur, raporu yazar, sonra eklenen kayıtları
+  okumaya devam eder ve yeni kayıt geldikçe raporu yeniden çizer; `--son 1sa` ile hep son bir
+  saat görünür. Döndürülen log baştan okunur, `tail -f` ile gelen bir akış da izlenebilir.
+  Girdi yeniden okunmaz: her çizim yalnızca yeni baytları işler.
 - **Üç çıktı biçimi.** Terminal için tablo, betikler ve CI adımları için JSON, GitHub
   issue'larına yapıştırmak için Markdown.
 - **Gerçek loglara dayanıklı.** Laravel'in metin biçimi ve Monolog'un JSON satırları (aynı
@@ -197,6 +201,8 @@ veylog [SEÇENEKLER] <log-dosyası>
 | `--saat-dilimi <dilim>` | Zamanları bu saat diliminde göster: `+03:00`, `-05:30`, `Z` (UTC). Saat dilimi yazılı kayıtlar bu dilime çevrilir. | logda yazılı ilk dilim |
 | `--desen <desen>` | Bir kaydı başlatan satırın biçimi: Monolog'un biçim dizgesi (`"%datetime% [%level_name%] %message% %context%"`) ya da adlandırılmış gruplu bir düzenli ifade. | Laravel'in biçimi |
 | `--zaman-bicimi <biçim>` | Zamanın biçimi, PHP'nin `date()` dizgesiyle: `"d.m.Y H:i:s"`, `"d/M/Y:H:i:s O"`, `"U"`. | ISO 8601 |
+| `--izle` | Logu canlı izle: sonuna kadar oku, raporu yaz, eklenen kayıtlar geldikçe yeniden çiz. Yalnızca metin biçiminde; `--karsilastir` ile kullanılamaz. | |
+| `--aralik <süre>` | İzlemede girdiye bu sıklıkla bak; raporu en sık bu kadarda bir çiz. Süre `--son` gibi, `ms` de olur (`500ms`); en az 100 ms. | `2sn` |
 | `-h`, `--yardim` | Yardımı göster (`--help` da olur). | |
 | `-V`, `--surum` | Sürümü göster (`--version` da olur). | |
 
@@ -230,6 +236,10 @@ veylog --desen '%datetime% [%level_name%] %message% %context%' --zaman-bicimi 'd
 zcat laravel-2026-10-24.log.gz | veylog -
 ssh sunucu 'cat /var/www/magaza/storage/logs/laravel.log' | veylog -
 
+# Logu canlı izle: her 2 saniyede yeni kayıtlara bak, son bir saati göster; Ctrl+C ile çık
+veylog --izle --son 1sa storage/logs/laravel.log
+ssh sunucu 'tail -f /var/www/magaza/storage/logs/laravel.log' | veylog --izle --ani-artis 1 -
+
 # WSL'den, Windows'taki bir Herd projesinin logu
 veylog /mnt/c/Users/Ad/Herd/proje/storage/logs/laravel.log
 ```
@@ -254,6 +264,19 @@ gününe uygulanır. `--son` ve yalnızca saat verilmiş sınırlar logun sonunu
 log önce bir kez taranır (standart girdi o sırada geçici bir dosyaya kopyalanır). Filtreye
 uymayan kayıtlar maskelenmediği ve kümelenmediği için filtreli bir rapor daha hızlı çıkar:
 500 MB'lık bir logun son iki saati 2,5 saniyede özetlenir.
+
+`--izle` logu canlı izler: sonuna kadar okur, raporu yazar, sonra eklenen kayıtları okumaya
+devam eder ve yeni kayıt geldikçe raporu yeniden çizer (terminalde ekranı temizleyerek; bir
+dosyaya ya da boruya yazılıyorsa çizimler bir ayırıcı satırla art arda). Girdi yeniden
+okunmaz: her çizim yalnızca o çizimden beri eklenen baytları işler, rapor depodan yeniden
+üretilir. Raporun başındaki satır kaç kaydın okunduğunu ve en yeni kaydın zamanını söyler.
+Zaman filtreleri izlemede kayan penceredir: `--son 1sa` her çizimde o ana kadarki en yeni
+kayda göre uygulanır, rapor hep son bir saati gösterir. Döndürülen log (logrotate,
+`copytruncate`) baştan okunur, önceki kayıtlar raporda kalır. Standart girdi (`tail -f ... |
+veylog --izle -`) bitince son rapor yazılır ve çıkılır; dosya Ctrl+C'ye kadar izlenir. Bir
+kaydın yığın izi birkaç yazma işlemiyle gelebileceği için okunan son kayıt, ondan sonra bir
+kayıt başlığı gelince ya da girdi bir aralık (`--aralik`, varsayılan 2 saniye) boyunca sessiz
+kalınca depoya alınır ([ayrıntılar](docs/nasil-calisir.md#canlı-izleme)).
 
 Kayıtlarda saat dilimi yazılıysa (Monolog'un ISO 8601 biçimi ve JSON satırları:
 `2026-10-24T14:03:11+03:00`) bütün zamanlar tek bir dilime, raporun saat dilimine çevrilir:
@@ -433,6 +456,10 @@ laravel.log
    yalnızca böler: aynı mesaj iki yerden geliyorsa iki ayrı hatadır.
 5. **İstatistik.** Karşılaştırmada iki Poisson sıklığını karşılaştıran koşullu binom testi;
    ani artışlarda dilim başına kayıt sayılarının medyanı ve MAD'ı.
+6. **Canlı izleme.** `--izle` ile depo okuma durumunu korur: eklenen baytlar satırlara,
+   satırlar kayıtlara, kayıtlar depoya akar; rapor her çizimde depodan yeniden üretilir.
+   Okunan son kayıt, devam satırları gelebileceği için, bir sonraki kayıt başlayınca ya da
+   girdi bir aralık boyunca sessiz kalınca tamamlanmış sayılır.
 
 Her adımın ayrıntısı, gerekçesi ve gerçek loglarda nasıl sınandığı
 [nasıl çalışır](docs/nasil-calisir.md) ve
@@ -476,7 +503,7 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
 
 ## Kalite
 
-- **Testler:** 303 birim testi her modülü ayrı ayrı, 39 uçtan uca test derlenmiş programı
+- **Testler:** 322 birim testi her modülü ayrı ayrı, 45 uçtan uca test derlenmiş programı
   çalıştırıp kullanıcının gördüğünü sınar: çıktı metinleri karakter karakter, JSON
   serde_json ile ayrıştırılarak, Markdown tablosu satır satır.
 - **Referans karşılaştırmaları:** yukarıdaki tabloda. Kümeleme gerçek ve sentetik loglarda
@@ -485,7 +512,7 @@ eklenmeden önce aynı log yaklaşık bir dakika sürüyor ve 40 bin satırlık 
   ([ayrıntılar](docs/nasil-calisir.md#değişken-konumlar)).
 - **Mutasyon testleri:** koda bilerek küçük hatalar yerleştirilip (bir karşılaştırmayı
   çevirmek, bir sınırı kaydırmak, bir kuralı silmek) testlerin yakaladığı denetlendi;
-  geliştirme adımlarında denenen 281 mutasyonun 280'i yakalandı. Kalan biri sonucu hiç
+  geliştirme adımlarında denenen 322 mutasyonun 321'i yakalandı. Kalan biri sonucu hiç
   değiştirmeyen (eşdeğer) bir mutasyondu.
 - **CI/CD:** `main` dalına her gönderimde ve her PR'da Linux, macOS ve Windows'ta testler;
   `rustfmt`, `clippy -D warnings` ve en düşük Rust sürümü (1.88). Her sürüm etiketinde dört
@@ -525,6 +552,7 @@ src/
 ├── main.rs          girişi açar (dosya ya da standart girdi), özeti istenen biçimde yazar
 ├── komut_satiri.rs  seçenekler, yardım metni, hata mesajları, yazım hatasına öneri
 ├── okuyucu.rs       girdiyi satır satır okur; bir kaydı yeniden okumak için seyrek dizin
+├── izle.rs          --izle: eklenen baytları satırlara ayırır, döndürmeyi algılar, raporu yeniden çizer
 ├── kayit.rs         satırları kayıtlara toplar: başlık ya da JSON satırı, seviye, mesaj
 ├── satir_bicimi.rs  başlık satırının biçimi: Laravel'inki ya da --desen (Monolog dizgesi, düzenli ifade)
 ├── zaman_bicimi.rs  --zaman-bicimi: PHP'nin date() dizgesiyle yazılmış zamanları okur
@@ -556,6 +584,7 @@ ornekler/            kurgusal örnek loglar
 - [x] `Log::error($e)` ile metne çevrilmiş istisnalar; kendi satır ve tarih biçimleri
 - [x] Satır numarasından bağımsız parmak izi: hata, satırın içinde bulunduğu fonksiyonla tanınır
 - [x] Kategorik konumlar: koddan gelen değerler biçimleriyle tanınır, en sık değerleri raporda
+- [x] Canlı izleme: `--izle` ile log eklendikçe rapor yeniden çizilir
 
 Sürümlerde nelerin değiştiği: [CHANGELOG.md](CHANGELOG.md).
 
@@ -595,7 +624,9 @@ correctly. Exceptions logged as strings (`Log::error($e)`) are parsed from PHP's
 and grouped with the same exception logged through the context; custom line formats are
 given as a Monolog format string or a regex with named groups (`--desen`), and custom date
 formats as a PHP `date()` format (`--zaman-bicimi`). The file is streamed line by line into
-a compact store, so a 2 GB log is summarized with 30 MB of memory. Its only dependency is
+a compact store, so a 2 GB log is summarized with 30 MB of memory. `--izle` follows a log
+live, like `tail -f`: new records are fed into the same store, the report is redrawn as they
+arrive, time filters become a sliding window and rotated files are picked up. Its only dependency is
 `regex`; the JSON reader and writer, statistics and argument parser are hand-written and
 tested against serde_json, scipy and Drain3. Prebuilt binaries for Linux (static), macOS and
 Windows are on the [Releases](https://github.com/Veysel440/veylog/releases/latest) page. The

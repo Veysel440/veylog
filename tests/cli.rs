@@ -1415,3 +1415,372 @@ fn kategorik_konumlar_raporda_degerleriyle_gorunur() {
         "{stdout}"
     );
 }
+
+/// Canlı izlemede (`--izle`) çizimlerin arasındaki ayırıcı: `izle` modülündeki `AYIRICI`.
+const AYIRICI: &str = "────────────────────────────────────────";
+
+/// İzleme modunda çalışan veylog: çıktısı ayrı bir iş parçacığında sürekli okunur, testler
+/// beklenen çizimi bekleyerek yoklar (yavaş makinede sabit bir bekleme yetmeyebilir).
+struct Izlenen {
+    surec: process::Child,
+    stdout: Arc<Mutex<Vec<u8>>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+}
+
+use std::io::Read;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// Çıktıyı bitene kadar okuyup biriktiren iş parçacığı.
+fn biriktir(mut okunan: impl Read + Send + 'static) -> Arc<Mutex<Vec<u8>>> {
+    let biriken = Arc::new(Mutex::new(Vec::new()));
+    let yazilan = Arc::clone(&biriken);
+    thread::spawn(move || {
+        let mut parca = [0u8; 4096];
+        while let Ok(okunan) = okunan.read(&mut parca) {
+            if okunan == 0 {
+                break;
+            }
+            yazilan.lock().unwrap().extend_from_slice(&parca[..okunan]);
+        }
+    });
+    biriken
+}
+
+impl Izlenen {
+    fn baslat(argumanlar: &[&str]) -> Izlenen {
+        let mut surec = Command::new(env!("CARGO_BIN_EXE_veylog"))
+            .args(argumanlar)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("veylog çalıştırılamadı");
+        let stdout = biriktir(surec.stdout.take().unwrap());
+        let stderr = biriktir(surec.stderr.take().unwrap());
+        Izlenen {
+            surec,
+            stdout,
+            stderr,
+        }
+    }
+
+    fn stdout(&self) -> String {
+        metin(&self.stdout.lock().unwrap())
+    }
+
+    fn stderr(&self) -> String {
+        metin(&self.stderr.lock().unwrap())
+    }
+
+    /// Çıktı koşulu sağlayana kadar bekler; 30 saniyede sağlamazsa çıktıyla birlikte durur.
+    fn bekle(&self, aciklama: &str, kosul: impl Fn(&str) -> bool) {
+        let baslangic = Instant::now();
+        while !kosul(&self.stdout()) {
+            assert!(
+                baslangic.elapsed() < Duration::from_secs(30),
+                "{aciklama} beklenirken zaman aşımı\nstdout:\n{}\nstderr:\n{}",
+                self.stdout(),
+                self.stderr()
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Standart girdiye yazar.
+    fn yaz(&mut self, baytlar: &[u8]) {
+        self.surec
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(baytlar)
+            .unwrap();
+    }
+
+    /// Standart girdiyi kapatır ve sürecin bitmesini bekler; çıkış kodunu ve çıktıları verir.
+    fn girdiyi_kapat(mut self) -> (Option<i32>, String, String) {
+        drop(self.surec.stdin.take());
+        let durum = self.surec.wait().unwrap();
+        // Çıktı okuyucuları boru kapanınca biter; birikeni almadan önce kısa bir an verilir
+        thread::sleep(Duration::from_millis(100));
+        (durum.code(), self.stdout(), self.stderr())
+    }
+
+    /// Süreci sonlandırır; çıktıları verir.
+    fn bitir(mut self) -> (String, String) {
+        self.surec.kill().ok();
+        self.surec.wait().ok();
+        thread::sleep(Duration::from_millis(100));
+        (self.stdout(), self.stderr())
+    }
+}
+
+/// Son çizim: ayırıcıdan sonraki kısım.
+fn son_cizim(cikti: &str) -> &str {
+    cikti
+        .rsplit_once(&format!("{AYIRICI}\n"))
+        .map_or(cikti, |(_, son)| son)
+}
+
+/// Çizimin durum satırından sonrası: olağan rapor.
+fn rapor_kismi(cizim: &str) -> &str {
+    cizim.split_once('\n').map_or("", |(_, rapor)| rapor)
+}
+
+/// Örnek logu üç parçaya böler: sınırlar satır ortasına düşer.
+fn ornek_parcalari() -> (Vec<u8>, [std::ops::Range<usize>; 3]) {
+    let log = fs::read("ornekler/laravel.log").unwrap();
+    let (bir, iki) = (log.len() / 3 + 7, 2 * log.len() / 3 + 11);
+    assert_ne!(log[bir - 1], b'\n');
+    assert_ne!(log[iki - 1], b'\n');
+    let uzunluk = log.len();
+    (log, [0..bir, bir..iki, iki..uzunluk])
+}
+
+#[test]
+fn izleme_dosyaya_eklenenleri_okur_ve_normal_raporla_ayni_sonucu_verir() {
+    let (log, parcalar) = ornek_parcalari();
+    let yol = gecici_dosya("izlenen.log", &log[parcalar[0].clone()]);
+    let yol_metni = yol.to_str().unwrap();
+    let izlenen = Izlenen::baslat(&["--izle", "--aralik", "500ms", yol_metni]);
+    izlenen.bekle("ilk çizim", |cikti| cikti.starts_with("İzleniyor: "));
+    let mut dosya = fs::OpenOptions::new().append(true).open(&yol).unwrap();
+    for parca in &parcalar[1..] {
+        dosya.write_all(&log[parca.clone()]).unwrap();
+        dosya.flush().unwrap();
+        thread::sleep(Duration::from_millis(50));
+    }
+    drop(dosya);
+    let normal = metin(&veylog(&[yol_metni]).stdout);
+    assert!(normal.contains("  Kayıt         : 59\n"), "{normal}");
+    izlenen.bekle("tam rapor", |cikti| rapor_kismi(son_cizim(cikti)) == normal);
+    let (stdout, stderr) = izlenen.bitir();
+    fs::remove_file(&yol).ok();
+    assert!(stderr.is_empty(), "{stderr}");
+    // Terminal değil: çizimler ayırıcıyla art arda, ilk çizimden önce ayırıcı yok
+    assert!(stdout.starts_with("İzleniyor: "), "{stdout}");
+    assert!(
+        stdout.contains(&format!("\n{AYIRICI}\nİzleniyor: ")),
+        "{stdout}"
+    );
+    let son = son_cizim(&stdout);
+    assert!(
+        son.starts_with(&format!(
+            "İzleniyor: {yol_metni} · her 500 ms · 59 kayıt · son kayıt 2026-10-24 18:31:07\n"
+        )),
+        "{son}"
+    );
+    assert_eq!(rapor_kismi(son), normal);
+}
+
+#[test]
+fn izleme_standart_girdide_girdi_bitince_son_raporu_yazip_cikar() {
+    let (log, parcalar) = ornek_parcalari();
+    // Son satırın sonu yazılmaz: girdi bitince bekleyen satır da okunmalı
+    assert_eq!(log.last(), Some(&b'\n'));
+    let log = &log[..log.len() - 1];
+    let mut izlenen = Izlenen::baslat(&["--izle", "--aralik", "200ms", "-"]);
+    for parca in &parcalar {
+        izlenen.yaz(&log[parca.start..parca.end.min(log.len())]);
+        thread::sleep(Duration::from_millis(50));
+    }
+    let (kod, stdout, stderr) = izlenen.girdiyi_kapat();
+    assert_eq!(kod, Some(0), "{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let normal = Command::new(env!("CARGO_BIN_EXE_veylog"))
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .and_then(|mut surec| {
+            surec.stdin.take().unwrap().write_all(log)?;
+            surec.wait_with_output()
+        })
+        .unwrap();
+    let normal = metin(&normal.stdout);
+    assert!(
+        normal.starts_with("<standart girdi>: 205 satır\n"),
+        "{normal}"
+    );
+    let son = son_cizim(&stdout);
+    assert!(
+        son.starts_with("İzleniyor: <standart girdi> · her 200 ms · "),
+        "{son}"
+    );
+    assert_eq!(rapor_kismi(son), normal);
+}
+
+#[test]
+fn izleme_standart_girdide_ani_artisin_ornegi_kopyadan_okunur() {
+    // Ani artışların örnekleri girdinin geçici kopyasından okunur. İlk parçadaki artışın
+    // örneği parçaların arasındaki çizimde okunur; okuma kopyanın konumunu değiştirir (aynı
+    // dosya tutamacı) ama ikinci parça yine kopyanın sonuna yazılmalı ki oradaki artışın
+    // örneği doğru okunsun. Kopya okuma tamponundan (64 KB) büyük olsun: okuma dosyanın
+    // ortasında kalsın.
+    let zaman = |dakika: u32| {
+        let (gun, kalan) = (dakika / 1_440, dakika % 1_440);
+        format!("2026-10-{:02} {:02}:{:02}", 1 + gun, kalan / 60, kalan % 60)
+    };
+    let mut satirlar = Vec::new();
+    for dakika in (0..20 * 1_440).step_by(10) {
+        satirlar.push(format!(
+            "[{}:30] local.WARNING: Kuyruk {} dolu",
+            zaman(dakika),
+            1_000 + dakika
+        ));
+    }
+    for (dakika, ilk) in [(6 * 60, 50), (19 * 1_440 + 6 * 60, 70)] {
+        for saniye in 0..8 {
+            satirlar.push(format!(
+                "[{}:{:02}] local.WARNING: Kuyruk {} dolu",
+                zaman(dakika),
+                saniye * 5 + 1,
+                ilk + saniye
+            ));
+        }
+    }
+    satirlar.sort();
+    let log = satirlar.join("\n");
+    assert!(log.len() > 128 * 1024, "{}", log.len());
+    let bolme = log.find("[2026-10-13 00:00:30]").unwrap() + 7;
+    assert!(bolme > 64 * 1024, "{bolme}");
+    let mut izlenen = Izlenen::baslat(&["--izle", "--aralik", "200ms", "-a", "1", "-"]);
+    izlenen.yaz(&log.as_bytes()[..bolme]);
+    // İlk parçanın tamamı okunup çizilsin: çizim ilk artışın örneğini kopyadan okur
+    let ilk_parca = log[..bolme].matches('\n').count();
+    izlenen.bekle("ilk parçanın raporu", |cikti| {
+        let son = son_cizim(cikti);
+        son.contains(&format!(" · {ilk_parca} kayıt · ")) && son.contains("örnek: Kuyruk 50 dolu\n")
+    });
+    izlenen.yaz(&log.as_bytes()[bolme..]);
+    let (kod, stdout, stderr) = izlenen.girdiyi_kapat();
+    assert_eq!(kod, Some(0), "{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let son = son_cizim(&stdout);
+    let (kaliplar, artislar) = son.split_once("\nAni artışlar").unwrap();
+    assert!(kaliplar.contains("örnek: Kuyruk 1000 dolu\n"), "{son}");
+    assert!(artislar.contains("örnek: Kuyruk 50 dolu\n"), "{son}");
+    assert!(artislar.contains("örnek: Kuyruk 70 dolu\n"), "{son}");
+}
+
+#[test]
+fn izleme_kisalan_dosyayi_bastan_okur_depoyu_korur() {
+    let (log, parcalar) = ornek_parcalari();
+    // İlk parça bir kayıt başlığıyla bitsin: kayıt sayısı kesin olsun
+    let ilk = &log[..log[parcalar[0].clone()]
+        .iter()
+        .rposition(|&bayt| bayt == b'\n')
+        .unwrap()
+        + 1];
+    let yol = gecici_dosya("kisalan-izlenen.log", ilk);
+    let yol_metni = yol.to_str().unwrap();
+    let ilk_kayit = metin(&veylog(&[yol_metni]).stdout);
+    let ilk_kayit = ilk_kayit
+        .split_once("  Kayıt         : ")
+        .unwrap()
+        .1
+        .split_once('\n')
+        .unwrap()
+        .0
+        .parse::<usize>()
+        .unwrap();
+    let izlenen = Izlenen::baslat(&["--izle", "--aralik", "200ms", yol_metni]);
+    izlenen.bekle("ilk dosyanın raporu", |cikti| {
+        son_cizim(cikti).contains(&format!(" · {ilk_kayit} kayıt · "))
+    });
+    // copytruncate: dosya sıfırlanıp yeni kayıtlar yazılır
+    let yeni = "[2026-10-24 19:00:00] production.ERROR: Döndürmeden sonraki ilk hata\n";
+    fs::write(&yol, yeni).unwrap();
+    izlenen.bekle("döndürme", |cikti| {
+        son_cizim(cikti).contains(&format!(
+            " · {} kayıt · son kayıt 2026-10-24 19:00:00 · döndürüldü\n",
+            ilk_kayit + 1
+        ))
+    });
+    let (stdout, stderr) = izlenen.bitir();
+    fs::remove_file(&yol).ok();
+    assert!(stderr.is_empty(), "{stderr}");
+    let son = son_cizim(&stdout);
+    assert!(son.contains("Döndürmeden sonraki ilk hata"), "{son}");
+    // Eski dosyanın kayıtları duruyor
+    assert!(
+        son.contains("Zaman aralığı : 2026-10-24 08:59:58 → 2026-10-24 19:00:00"),
+        "{son}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn izleme_yeniden_adlandirilan_dosyanin_yerine_aciliani_okur() {
+    let yol = gecici_dosya(
+        "donen-izlenen.log",
+        b"[2026-10-24 10:00:00] production.ERROR: Eski dosyadaki hata\n",
+    );
+    let yol_metni = yol.to_str().unwrap();
+    let izlenen = Izlenen::baslat(&["--izle", "--aralik", "200ms", yol_metni]);
+    izlenen.bekle("ilk dosyanın raporu", |cikti| {
+        son_cizim(cikti).contains(" · 1 kayıt · ")
+    });
+    let yedek = yol.with_extension("log.1");
+    fs::rename(&yol, &yedek).unwrap();
+    // Döndürmenin ortası: yol yok, izleme sürer
+    thread::sleep(Duration::from_millis(400));
+    fs::write(
+        &yol,
+        b"[2026-10-24 10:05:00] production.ERROR: Yeni dosyadaki hata\n",
+    )
+    .unwrap();
+    izlenen.bekle("yeni dosya", |cikti| {
+        son_cizim(cikti).contains(" · 2 kayıt · son kayıt 2026-10-24 10:05:00 · döndürüldü\n")
+    });
+    let (stdout, stderr) = izlenen.bitir();
+    fs::remove_file(&yol).ok();
+    fs::remove_file(&yedek).ok();
+    assert!(stderr.is_empty(), "{stderr}");
+    let son = son_cizim(&stdout);
+    assert!(
+        son.contains("Eski dosyadaki hata") && son.contains("Yeni dosyadaki hata"),
+        "{son}"
+    );
+}
+
+#[test]
+fn izleme_secenekleri_denetlenir() {
+    for (argumanlar, hata) in [
+        (
+            &["--izle", "--bicim", "json", "ornekler/laravel.log"][..],
+            "--bicim json ile --izle birlikte kullanılamaz: izleme yalnızca metin biçimindedir",
+        ),
+        (
+            &["--izle", "--karsilastir", "15:00", "ornekler/laravel.log"][..],
+            "--karsilastir ile --izle birlikte kullanılamaz: izlenen log sürekli uzar",
+        ),
+        (
+            &["--aralik", "1sn", "ornekler/laravel.log"][..],
+            "--aralik yalnızca --izle ile kullanılabilir",
+        ),
+        (
+            &["--izle", "--aralik", "50ms", "ornekler/laravel.log"][..],
+            "--aralik için geçersiz değer \"50ms\": en az 100 ms olan bir süre olmalı",
+        ),
+        (
+            &["--izle=evet", "ornekler/laravel.log"][..],
+            "--izle değer almaz",
+        ),
+    ] {
+        let cikti = veylog(argumanlar);
+        assert_eq!(cikti.status.code(), Some(2), "{argumanlar:?}");
+        assert!(cikti.stdout.is_empty(), "{argumanlar:?}");
+        let stderr = metin(&cikti.stderr);
+        assert!(stderr.contains(hata), "{argumanlar:?}\n{stderr}");
+    }
+    // Olmayan dosya izlenemez: okuma hatası
+    let cikti = veylog(&["--izle", "olmayan-izlenecek.log"]);
+    assert_eq!(cikti.status.code(), Some(1));
+    assert!(metin(&cikti.stderr).contains("olmayan-izlenecek.log okunamadı: dosya bulunamadı"));
+    // Yardımda var
+    let yardim = metin(&veylog(&["--yardim"]).stdout);
+    assert!(yardim.contains("      --izle "), "{yardim}");
+    assert!(yardim.contains("      --aralik <süre>"), "{yardim}");
+}

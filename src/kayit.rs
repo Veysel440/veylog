@@ -418,6 +418,12 @@ impl KayitToplayici {
         self.sayilar
     }
 
+    /// Toplanmakta olan, henüz alıcıya verilmemiş bir kayıt var mı? Canlı izlemede girdi bir
+    /// süre sessiz kalınca böyle bir kayıt tamamlanmış sayılır (`bitir`).
+    pub fn bekliyor(&self) -> bool {
+        matches!(self.bekleyen, Bekleyen::Metin(..) | Bekleyen::Json(..))
+    }
+
     /// Yeni başlayan kaydın bilgisi: sıra numarası ve konumu.
     fn yeni_kayit(&mut self, konum: u64) -> KayitBilgisi {
         let bilgi = KayitBilgisi {

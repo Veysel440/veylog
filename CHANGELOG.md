@@ -118,6 +118,32 @@ numaraları [Anlamsal Sürümleme](https://semver.org/lang/tr/) kurallarına uya
   değerleri de böylece görünür.
 - Yeni örnek log `ornekler/kuyruk.log`: iş sınıfları, olay adları ve durum sabitleri.
 
+### Canlı izleme
+
+- `--izle`: log sonuna kadar okunur ve rapor yazılır; sonra eklenen kayıtlar okunmaya devam
+  eder, yeni kayıt geldikçe rapor yeniden çizilir (terminalde ekran temizlenerek, bir dosyaya
+  ya da boruya yazılıyorsa bir ayırıcı satırla art arda). Girdi yeniden okunmaz: depo okuma
+  durumunu korur, her çizim yalnızca yeni baytları işler; Drain değişken bir konum bulursa
+  kayıtlar o çizimde yeniden kümelenir. Raporun başında bir durum satırı vardır: dosya,
+  aralık, kayıt sayısı, en yeni kaydın zamanı.
+- `--aralik 500ms`: girdiye ne sıklıkla bakılacağı ve raporun en sık ne kadarda bir
+  çizileceği (varsayılan 2 sn, en az 100 ms). Süre sözdizimine `ms` birimi eklendi.
+- Okunan son kayıt, ondan sonra bir kayıt başlığı gelince ya da girdi bir aralık boyunca sessiz
+  kalınca depoya alınır: yığın izi birkaç yazma işlemiyle gelen bir kayıt bölünmez. Satır
+  ortasında kesilen okumalar da bekletilir; sessizlikte satır sonu gelmemiş satır da okunur.
+  Böylece sessiz bir anda çizilen rapor, o ana kadar gelen baytların bir kerede
+  özetlenmesiyle aynıdır. Bir süredir değişmeyen bir dosyanın son kaydı ilk çizimde görünür.
+- Döndürülen log (logrotate, `copytruncate`) fark edilir ve baştan okunur; önceki kayıtlar
+  raporda kalır, durum satırına `döndürüldü` yazılır. Eski dosya önce sonuna kadar okunur:
+  döndürülmeden hemen önce yazılan kayıtlar kaybolmaz. Seyrek dizin kayıtların sıra
+  numaralarını da tutar; yeni dosyanın kayıtları yeni dosyadaki konumlarıyla yeniden okunur.
+- Zaman filtreleri izlemede kayan penceredir: `--son 1sa` her çizimde o ana kadarki en yeni
+  kayda göre uygulanır.
+- Standart girdi izlenebilir (`tail -f laravel.log | veylog --izle -`): girdi bitince son
+  rapor yazılır ve çıkılır. `--ani-artis` örnekleri için girdi geçici bir dosyaya kopyalanır.
+- `--izle` yalnızca metin biçimindedir; `--bicim json`, `--bicim markdown` ve `--karsilastir`
+  ile kullanım hatası verir.
+
 ## [0.1.0] - 2026-10-26
 
 İlk sürüm.
