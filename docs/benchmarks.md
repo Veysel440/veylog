@@ -151,3 +151,36 @@ The misses, all known and documented:
   variable only after more than 100 different values); two one-token JSON payloads.
 - Template misses: SQLSTATE codes, driver error codes, HTTP status codes and cURL error
   numbers are masked to `<NUM>`, so the pattern cannot keep them; the user names above.
+
+## Evaluated and rejected
+
+Optimizations that were implemented, measured on the baseline above and dropped because the
+measurements showed no gain. Kept here so that they are not tried again without new evidence.
+
+### Pattern-side token shape cache (after the module split)
+
+Idea: `compare` classifies the pattern's token (`token_shape`) for every candidate cluster a
+message is compared with; cache the shape per cluster position (the pattern's tokens are those of
+the opening message and never change, so the cache needs no invalidation).
+
+Call counts, from an instrumented build: the pattern's shape is only asked for when the message's
+token at that position is code-like and differs, and that is rare.
+
+| Workload | `compare` calls | pattern-side `token_shape` calls |
+|---|---:|---:|
+| high_cardinality 10k | 378 006 | 0 |
+| high_cardinality 100k | 22 240 550 | 0 |
+| repeated 100k | 885 338 | 0 |
+| realistic 100k | 10 170 | 8 |
+| two real Laravel logs (0.3 MB, 13 MB) | 3, 231 | 2, 63 |
+
+Measurements (3 criterion runs before and after, same build settings; callgrind instruction
+counts; GNU time, 3 runs): no benchmark improved. `drain/high_cardinality/10000` 114–121 ms →
+118–122 ms, `/50000` 2.12–2.18 s → 2.20–2.25 s, `drain/repeated/100000` 92–103 ms → 104–110 ms,
+`drain/realistic/100000` 8.3–8.9 ms → 8.6–9.1 ms, all within noise or slightly worse.
+Instructions: high_cardinality 10k +2.4%, repeated 10k +0.5% (one more allocation per cluster and
+a cell check per position). Peak RSS: high_cardinality 100k 135 MB → 140 MB (+3.5%), 10k
+18.7 MB → 20.1 MB; other workloads unchanged. Golden outputs and the accuracy baseline were
+unchanged. The 8% of `token_shape` in the high-cardinality profile is the message side, already
+computed once per message; the cost of that workload is the number of candidates compared, not
+the shape classification.
