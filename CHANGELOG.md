@@ -23,6 +23,9 @@ All notable changes to this project are documented in this file. The format is b
   clustering against a labeled set of 182 messages (pairwise precision, recall, F1, false
   merges, false splits, template accuracy) and asserts the measured baseline. See
   `docs/benchmarks.md`.
+- `src/drain.rs` is split into `src/drain/` by responsibility (tree, cluster, similarity,
+  token shapes, tests). No change in behaviour: the golden outputs, the unit tests and the
+  accuracy baseline are unchanged.
 
 ## [0.3.0] - 2026-10-28
 

@@ -602,7 +602,13 @@ src/
 ├── distinct.rs      farklı mesaj sayacı: tam, çok sayıda farklı değerde HyperLogLog
 ├── json_okuyucu.rs  Monolog'un JSON satırları için kütüphanesiz JSON okuyucu
 ├── mask.rs          değişkenleri yer tutucularla değiştirir: <SAYI>, <IP>, <YOL>...
-├── drain.rs         Drain: maskelenmiş mesajlardan kalıp çıkarır; esnek eşik, kodsal biçimler, değişken konumlar
+├── drain/           Drain: maskelenmiş mesajlardan kalıp çıkarır
+│   ├── mod.rs       ağaç, önbellekli kümeleyici ve ikinci geçiş; ayarlar
+│   ├── cluster.rs   bir küme: kaynak mesaj, joker aralıkları, sayı, kalıp metni
+│   ├── tree.rs      ağaç düğümleri, yaprak yolları, değişken konumlar, dal anahtarları
+│   ├── similarity.rs mesajın kümeyle karşılaştırılması: esnek eşik, kategorik konumlar
+│   ├── shape.rs     belirteç biçimleri (sınıf adı, sabit, tanımlayıcı...) ve token_core
+│   └── tests.rs     birim testleri
 ├── parmak_izi.rs    istisna sınıfı, uygulama kodundaki ilk satır ve fonksiyonu
 ├── istisna_metni.rs PHP'nin istisna metni (Log::error($e)): sınıf, yer, yığın izi, Next
 ├── rapor.rs         özet ve kalıp tablosu; metin çıktısı, kontrol karakterlerinin temizlenmesi

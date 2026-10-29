@@ -661,7 +661,13 @@ src/
 ├── distinct.rs      distinct message counter: exact, HyperLogLog for many distinct values
 ├── json_okuyucu.rs  dependency-free JSON reader for Monolog's JSON lines
 ├── mask.rs          replaces variables with placeholders: <NUM>, <IP>, <PATH>...
-├── drain.rs         Drain: extracts patterns from masked messages; flexible threshold, code-like shapes, variable positions
+├── drain/           Drain: extracts patterns from masked messages
+│   ├── mod.rs       the tree, the clusterer with its cache and the second pass; settings
+│   ├── cluster.rs   a cluster: origin message, wildcard spans, count, pattern text
+│   ├── tree.rs      tree nodes, leaf paths, variable positions, branch keys
+│   ├── similarity.rs comparison of a message with a cluster: flexible threshold, categorical positions
+│   ├── shape.rs     token shapes (class name, constant, identifier...) and token_core
+│   └── tests.rs     unit tests
 ├── parmak_izi.rs    exception class, first application frame and its function
 ├── istisna_metni.rs PHP's exception text (Log::error($e)): class, location, stack trace, Next
 ├── rapor.rs         summary and pattern table; text output, control character cleanup

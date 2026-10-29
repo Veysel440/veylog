@@ -21,14 +21,14 @@
 //! change in behaviour is noticed and has to be deliberate. The known shortcomings behind the
 //! baseline are listed at the end of the test.
 
-#[path = "../src/drain.rs"]
+#[path = "../src/drain/mod.rs"]
 #[allow(dead_code, unused_imports)]
 mod drain;
 #[path = "../src/mask.rs"]
 #[allow(dead_code, unused_imports)]
 mod mask;
 
-/// The unit tests of `drain.rs` are compiled and run with this file too. One of them reads the
+/// The unit tests of `drain` are compiled and run with this file too. One of them reads the
 /// sample log through the record collector of the crate; this is a minimal stand-in for it that
 /// reads only Laravel header lines (time, level, message without the context), which is all that
 /// test needs.

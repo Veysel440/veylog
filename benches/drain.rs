@@ -7,14 +7,14 @@
 //! two runs of the same build see the same input. Compare builds with `--save-baseline` and
 //! `--baseline` (`cargo bench --bench drain -- --save-baseline before`).
 
-#[path = "../src/drain.rs"]
+#[path = "../src/drain/mod.rs"]
 #[allow(dead_code, unused_imports)]
 mod drain;
 #[path = "../src/mask.rs"]
 #[allow(dead_code, unused_imports)]
 mod mask;
 
-/// `cargo bench` compiles the benchmark with `cfg(test)`, so the unit tests of `drain.rs` are
+/// `cargo bench` compiles the benchmark with `cfg(test)`, so the unit tests of `drain` are
 /// compiled too (never run). They use the record collector of the crate; this stub only makes
 /// them type-check.
 #[cfg(test)]
