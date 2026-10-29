@@ -2,8 +2,8 @@
 
 mod ani_artis;
 mod columns;
+mod datetime;
 mod depo;
-mod dil;
 mod distinct;
 mod drain;
 mod filtre;
@@ -14,6 +14,7 @@ mod json_okuyucu;
 mod karsilastirma;
 mod kayit;
 mod komut_satiri;
+mod lang;
 mod markdown;
 mod maske;
 mod okuyucu;
@@ -21,8 +22,7 @@ mod parmak_izi;
 mod rapor;
 mod satir_bicimi;
 mod stats;
-mod zaman;
-mod zaman_bicimi;
+mod time_format;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -35,15 +35,15 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use depo::{Depo, DepoAyarlari};
-use dil::Dil;
 use filtre::FiltreHatasi;
 use komut_satiri::{Bicim, DIL_DEGISKENLERI, Komut, Secenekler};
+use lang::Lang;
 use okuyucu::{Kopyalayan, OrnekIstegi, OrnekKaynagi, YenidenOkuyucu};
 use rapor::{Ozet, OzetHatasi, gorunur};
 
 /// Dosya adı yerine `-` verilince raporda gösterilen ad.
 fn standart_girdi_adi() -> &'static str {
-    dil::sec("<standart girdi>", "<standard input>")
+    lang::pick("<standart girdi>", "<standard input>")
 }
 
 /// JSON çıktısında standart girdinin adı: JSON dilden bağımsızdır ve İngilizcedir, her dilde
@@ -82,7 +82,7 @@ fn main() {
             eprintln!("{}", komut_satiri::kullanim());
             eprintln!(
                 "{}",
-                dil::sec(
+                lang::pick(
                     "Ayrıntılar için: veylog --dil tr --yardim",
                     "For details: veylog --help"
                 )
@@ -147,8 +147,8 @@ fn dil_sec(argumanlar: &[OsString]) {
             .filter(|deger| !deger.trim().is_empty())
             .map(|deger| (ad, deger))
     });
-    let ortam_dili = ortam.as_ref().and_then(|(_, deger)| Dil::ayristir(deger));
-    dil::ayarla(arguman_dili.or(ortam_dili).unwrap_or_default());
+    let ortam_dili = ortam.as_ref().and_then(|(_, deger)| Lang::parse(deger));
+    lang::set(arguman_dili.or(ortam_dili).unwrap_or_default());
     if arguman_dili.is_none()
         && ortam_dili.is_none()
         && let Some((ad, deger)) = ortam
@@ -178,24 +178,24 @@ fn hata_bildir(hata: Hata, gosterilen_yol: &str) -> ! {
     match hata {
         Hata::Okuma(hata) => {
             let neden = okuma_hatasi(&hata);
-            match dil::simdiki() {
-                Dil::Tr => eprintln!("veylog: {gosterilen_yol} okunamadı: {neden}"),
-                Dil::En => eprintln!("veylog: cannot read {gosterilen_yol}: {neden}"),
+            match lang::current() {
+                Lang::Tr => eprintln!("veylog: {gosterilen_yol} okunamadı: {neden}"),
+                Lang::En => eprintln!("veylog: cannot read {gosterilen_yol}: {neden}"),
             }
             process::exit(1);
         }
         Hata::Kopya(hata) => {
-            match dil::simdiki() {
-                Dil::Tr => eprintln!("veylog: girdi geçici bir dosyaya kopyalanamadı: {hata}"),
-                Dil::En => eprintln!("veylog: cannot copy the input to a temporary file: {hata}"),
+            match lang::current() {
+                Lang::Tr => eprintln!("veylog: girdi geçici bir dosyaya kopyalanamadı: {hata}"),
+                Lang::En => eprintln!("veylog: cannot copy the input to a temporary file: {hata}"),
             }
             process::exit(1);
         }
         Hata::Ozet(OzetHatasi::Okuma(hata)) => {
             let neden = okuma_hatasi(&hata);
-            match dil::simdiki() {
-                Dil::Tr => eprintln!("veylog: {gosterilen_yol} yeniden okunamadı: {neden}"),
-                Dil::En => eprintln!("veylog: cannot read {gosterilen_yol} again: {neden}"),
+            match lang::current() {
+                Lang::Tr => eprintln!("veylog: {gosterilen_yol} yeniden okunamadı: {neden}"),
+                Lang::En => eprintln!("veylog: cannot read {gosterilen_yol} again: {neden}"),
             }
             process::exit(1);
         }
@@ -360,11 +360,11 @@ fn ozet_cikar(
     )
     .map_err(Hata::Ozet)?;
     if kaynak.degisti() {
-        match dil::simdiki() {
-            Dil::Tr => eprintln!(
+        match lang::current() {
+            Lang::Tr => eprintln!(
                 "Uyarı: {gosterilen_yol} özetlenirken değişti (ör. log döndürüldü); yeniden okunamayan örneklerin yerine aynı kalıpta aynı seviyedeki ilk kaydın mesajı yazıldı."
             ),
-            Dil::En => eprintln!(
+            Lang::En => eprintln!(
                 "Warning: {gosterilen_yol} changed while being summarized (e.g. the log was rotated); samples that could not be read again were replaced by the message of the first record with the same pattern and level."
             ),
         }
@@ -376,7 +376,7 @@ fn ozet_cikar(
 /// bulunan en yeni kaydın zamanı; filtre logun sonunu gerektirmiyorsa None.
 fn depoyu_doldur(
     secenekler: &Secenekler,
-    en_yeni: Option<zaman::Zaman>,
+    en_yeni: Option<datetime::DateTime>,
     girdi: impl io::BufRead,
 ) -> Result<Depo, Hata> {
     let rapor = &secenekler.rapor;
@@ -405,23 +405,23 @@ fn kopyayi_bitir<R: io::BufRead, W: Write>(kopyalayan: Kopyalayan<R, W>) -> Resu
 
 /// Satır var ama hiçbiri bir kayıt başlatmıyor: büyük olasılıkla biçim uymuyor.
 pub(crate) fn kayit_yok_uyarisi(gosterilen_yol: &str, bicim: &satir_bicimi::SatirBicimi) -> String {
-    match (dil::simdiki(), bicim.desenli(), bicim.zaman_bicimli()) {
-        (Dil::Tr, true, _) => format!(
+    match (lang::current(), bicim.desenli(), bicim.zaman_bicimli()) {
+        (Lang::Tr, true, _) => format!(
             "Uyarı: {gosterilen_yol} içinde --desen'e uyan satır yok; hiçbir kayıt okunmadı."
         ),
-        (Dil::Tr, false, true) => format!(
+        (Lang::Tr, false, true) => format!(
             "Uyarı: {gosterilen_yol} içinde zamanı --zaman-bicimi'ne uyan kayıt yok; hiçbir kayıt okunmadı."
         ),
-        (Dil::Tr, false, false) => format!(
+        (Lang::Tr, false, false) => format!(
             "Uyarı: {gosterilen_yol} içinde Laravel'in biçiminde kayıt yok; log başka bir biçimdeyse --desen ile tanıtılabilir."
         ),
-        (Dil::En, true, _) => {
+        (Lang::En, true, _) => {
             format!("Warning: no line in {gosterilen_yol} matches --pattern; no records were read.")
         }
-        (Dil::En, false, true) => format!(
+        (Lang::En, false, true) => format!(
             "Warning: no record in {gosterilen_yol} has a time matching --time-format; no records were read."
         ),
-        (Dil::En, false, false) => format!(
+        (Lang::En, false, false) => format!(
             "Warning: {gosterilen_yol} has no records in Laravel's format; if the log has another format, describe it with --pattern."
         ),
     }
@@ -429,24 +429,24 @@ pub(crate) fn kayit_yok_uyarisi(gosterilen_yol: &str, bicim: &satir_bicimi::Sati
 
 /// `--desen`'e uyan bazı satırların seviyesi tanınmadı: bu satırlar kayıt sayılmadı.
 pub(crate) fn taninmayan_seviye_uyarisi(gosterilen_yol: &str, sayi: usize) -> String {
-    match dil::simdiki() {
-        Dil::Tr => format!(
+    match lang::current() {
+        Lang::Tr => format!(
             "Uyarı: {gosterilen_yol} içinde --desen'e uyan {sayi} satırın seviyesi tanınmadı; bu satırlar kayıt sayılmadı. Seviye grubu DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY ya da bunların bilinen kısaltmalarından birini (WARN, ERR, FATAL...) yakalamalı."
         ),
-        Dil::En => format!(
+        Lang::En => format!(
             "Warning: the level of {} in {gosterilen_yol} matching --pattern was not recognized; they were not counted as records. The level group should capture DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY or a known abbreviation of them (WARN, ERR, FATAL...).",
-            dil::sayili(sayi, "satır", "line", "lines")
+            lang::counted(sayi, "satır", "line", "lines")
         ),
     }
 }
 
 /// Girdide geçersiz UTF-8 baytları vardı.
 pub(crate) fn gecersiz_utf8_uyarisi(gosterilen_yol: &str) -> String {
-    match dil::simdiki() {
-        Dil::Tr => format!(
+    match lang::current() {
+        Lang::Tr => format!(
             "Uyarı: {gosterilen_yol} geçersiz UTF-8 baytları içeriyor; bunlar � ile değiştirildi."
         ),
-        Dil::En => format!(
+        Lang::En => format!(
             "Warning: {gosterilen_yol} contains invalid UTF-8 bytes; they were replaced by �."
         ),
     }
@@ -455,11 +455,11 @@ pub(crate) fn gecersiz_utf8_uyarisi(gosterilen_yol: &str) -> String {
 /// Standart girdinin geçici kopyası oluşturulamadı ya da yazılamadı: girdi yeniden
 /// okunamayacak.
 pub(crate) fn kopya_uyarisi(hata: &io::Error) -> String {
-    match dil::simdiki() {
-        Dil::Tr => format!(
+    match lang::current() {
+        Lang::Tr => format!(
             "Uyarı: girdinin geçici kopyası tutulamadı ({hata}); girdi yeniden okunamayacak, bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
         ),
-        Dil::En => format!(
+        Lang::En => format!(
             "Warning: cannot keep a temporary copy of the input ({hata}); the input cannot be read again, some samples will be the message of the first record with the same pattern and level."
         ),
     }
@@ -576,7 +576,7 @@ impl GeciciDosya {
         }
         Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            dil::sec(
+            lang::pick(
                 "geçici dosya için boş bir ad bulunamadı",
                 "no free name for a temporary file",
             ),
@@ -604,9 +604,9 @@ impl Drop for GeciciDosya {
 /// Okuma hatasının açıklaması: sık görülenler Türkçe, ötekiler işletim sisteminin mesajıyla.
 fn okuma_hatasi(hata: &io::Error) -> Cow<'static, str> {
     match hata.kind() {
-        io::ErrorKind::NotFound => dil::sec("dosya bulunamadı", "file not found").into(),
-        io::ErrorKind::PermissionDenied => dil::sec("okuma izni yok", "permission denied").into(),
-        io::ErrorKind::IsADirectory => dil::sec(
+        io::ErrorKind::NotFound => lang::pick("dosya bulunamadı", "file not found").into(),
+        io::ErrorKind::PermissionDenied => lang::pick("okuma izni yok", "permission denied").into(),
+        io::ErrorKind::IsADirectory => lang::pick(
             "bu bir klasör; log dosyasını verin (ör. storage/logs/laravel.log)",
             "this is a directory; give the log file (e.g. storage/logs/laravel.log)",
         )
@@ -623,9 +623,9 @@ fn yazma_sonucunu_denetle(sonuc: io::Result<()>) {
     if let Err(hata) = sonuc
         && hata.kind() != io::ErrorKind::BrokenPipe
     {
-        match dil::simdiki() {
-            Dil::Tr => eprintln!("veylog: çıktı yazılamadı: {hata}"),
-            Dil::En => eprintln!("veylog: cannot write the output: {hata}"),
+        match lang::current() {
+            Lang::Tr => eprintln!("veylog: çıktı yazılamadı: {hata}"),
+            Lang::En => eprintln!("veylog: cannot write the output: {hata}"),
         }
         process::exit(1);
     }

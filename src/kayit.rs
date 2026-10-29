@@ -31,10 +31,10 @@ use std::borrow::Cow;
 use std::iter;
 use std::mem;
 
+use crate::datetime;
 use crate::istisna_metni::{self, IstisnaMetni};
 use crate::json_okuyucu::{self, Deger};
 use crate::satir_bicimi::{Baslik, BaslikYeri, SatirBicimi, Tanima};
-use crate::zaman;
 
 /// Laravel log seviyeleri. Sıralama önem sırasıdır: Debug en düşük, Emergency en yüksek.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -136,7 +136,7 @@ impl<'a> Kayit<'a> {
 
     /// Kaydın zamanı, iç biçimde. İlk 19 karakteri her zaman takvimde var olan bir
     /// tarih-saattir (`2026-10-24 14:03:11` ya da `2026-10-24T14:03:11`);
-    /// `zaman::kayit_zamani_mi` bunu denetler.
+    /// `datetime::is_record_time` bunu denetler.
     pub fn zaman(&self) -> &str {
         &self.zaman
     }
@@ -507,7 +507,7 @@ fn json_satiri_ayristir(satir: &str) -> Option<Kayit<'_>> {
     let deger = json_okuyucu::kayit_oku(satir).ok()?;
     // Zaman kaçış içeremez (rakamlar, `-`, `:`, `T`, `+`); ham hali doğrudan denetlenir
     let zaman = deger.alan("datetime")?.ham_metin()?;
-    if !zaman::kayit_zamani_mi(zaman) {
+    if !datetime::is_record_time(zaman) {
         return None;
     }
     let seviye = Seviye::ayristir(deger.alan("level_name")?.ham_metin()?)?;
@@ -609,7 +609,7 @@ pub mod deneme {
 mod testler {
     use super::deneme::{ToplananKayit, topla, topla_bicimle};
     use super::*;
-    use crate::zaman_bicimi::ZamanBicimi;
+    use crate::time_format::TimeFormat;
 
     /// Laravel'in biçimindeki bir başlık satırından kayıt, devam satırları olmadan.
     fn baslik_ayristir(satir: &str) -> Option<Kayit<'_>> {
@@ -1119,7 +1119,7 @@ Stack trace:
     fn desenle_okunan_kayitlar() {
         let bicim = SatirBicimi::new(
             Some("%datetime% [%level_name%] %message% %context%"),
-            Some(ZamanBicimi::derle("d.m.Y H:i:s").unwrap()),
+            Some(TimeFormat::compile("d.m.Y H:i:s").unwrap()),
         )
         .unwrap();
         let metin = [

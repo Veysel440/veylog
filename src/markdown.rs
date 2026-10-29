@@ -9,20 +9,20 @@
 use std::io::{self, Write};
 
 use crate::ani_artis::AniArtislar;
-use crate::dil::{self, Dil};
+use crate::datetime::format_duration;
 use crate::karsilastirma::Karsilastirma;
+use crate::lang::{self, Lang};
 use crate::rapor::{
     Hucreler, KALIP_GENISLIGI, KalipSatiri, Ozet, ZamanGosterimi, ani_artis_basligi,
     degerler_metni, dilim_araligi, gorunur, karsilastirma_basligi, karsilastirma_bolumleri,
     kat_yaz, kisalt, ondalik, ondalik_kisa, zaman_goster,
 };
-use crate::zaman::sure_yaz;
 
 /// Özeti Markdown olarak yazar. `--ilk` ve `--siralama` burada da geçerlidir.
 pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     writeln!(cikti, "## veylog: {}", kod(&gorunur(&ozet.dosya)))?;
     writeln!(cikti)?;
-    let [satir, kayit, devam, yetim] = dil::sec(
+    let [satir, kayit, devam, yetim] = lang::pick(
         ["Satır", "Kayıt", "Devam satırı", "Yetim satır"],
         ["Lines", "Records", "Continuations", "Orphan lines"],
     );
@@ -35,7 +35,7 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
         writeln!(
             cikti,
             "- **{}:** {}",
-            dil::sec("Filtre", "Filter"),
+            lang::pick("Filtre", "Filter"),
             filtre.aciklama()
         )?;
     }
@@ -43,14 +43,14 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
         writeln!(
             cikti,
             "- **{}:** {en_eski} → {en_yeni}",
-            dil::sec("Zaman aralığı", "Time range")
+            lang::pick("Zaman aralığı", "Time range")
         )?;
     }
     if let Some(dilim) = &ozet.saat_dilimi {
         writeln!(
             cikti,
             "- **{}:** {}",
-            dil::sec("Saat dilimi", "Time zone"),
+            lang::pick("Saat dilimi", "Time zone"),
             dilim.aciklama()
         )?;
     }
@@ -62,13 +62,13 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
     writeln!(
         cikti,
         "- **{}:** {}",
-        dil::sec("Seviyeler", "Levels"),
+        lang::pick("Seviyeler", "Levels"),
         seviyeler.join(" · ")
     )?;
     writeln!(
         cikti,
         "- **{}:** {}",
-        dil::sec("Kalıplar", "Patterns"),
+        lang::pick("Kalıplar", "Patterns"),
         ozet.kalip_cumlesi()
     )?;
 
@@ -79,7 +79,7 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
         writeln!(
             cikti,
             "| {} | {} |",
-            dil::sec("Adet", "Count"),
+            lang::pick("Adet", "Count"),
             kalip_basliklari()
         )?;
         // ---: sütunu sağa yaslar
@@ -108,7 +108,7 @@ pub fn yaz(cikti: &mut impl Write, ozet: &Ozet) -> io::Result<()> {
 /// Kalıp tablolarının sayılardan sonraki sütun başlıkları: Seviye, İlk, Son, Kalıp, Örnek,
 /// Değerler, Konum.
 fn kalip_basliklari() -> &'static str {
-    dil::sec(
+    lang::pick(
         "Seviye | İlk | Son | Kalıp | Örnek | Değerler | Konum",
         "Level | First | Last | Pattern | Sample | Values | Location",
     )
@@ -124,17 +124,21 @@ fn karsilastirma_yaz(
     writeln!(cikti)?;
     writeln!(cikti, "### {}", karsilastirma_basligi(karsilastirma))?;
     writeln!(cikti)?;
-    let [once, sonra] = dil::sec(["Önce", "Sonra"], ["Before", "After"]);
+    let [once, sonra] = lang::pick(["Önce", "Sonra"], ["Before", "After"]);
     for (ad, pencere) in [(once, &karsilastirma.once), (sonra, &karsilastirma.sonra)] {
-        let (bas, bit, sure) = (pencere.baslangic, pencere.bitis, sure_yaz(pencere.saniye));
+        let (bas, bit, sure) = (
+            pencere.baslangic,
+            pencere.bitis,
+            format_duration(pencere.saniye),
+        );
         let saatlik = ondalik_kisa(pencere.saatlik(pencere.kayit_sayisi));
-        let kayit = dil::sayili(pencere.kayit_sayisi, "kayıt", "record", "records");
-        match dil::simdiki() {
-            Dil::Tr => writeln!(
+        let kayit = lang::counted(pencere.kayit_sayisi, "kayıt", "record", "records");
+        match lang::current() {
+            Lang::Tr => writeln!(
                 cikti,
                 "- **{ad}:** {bas} → {bit} · {sure} · {kayit}, saatte {saatlik}"
             )?,
-            Dil::En => writeln!(
+            Lang::En => writeln!(
                 cikti,
                 "- **{ad}:** {bas} → {bit} · {sure} · {kayit}, {saatlik} per hour"
             )?,
@@ -144,7 +148,7 @@ fn karsilastirma_yaz(
     for (baslik, degisimler) in karsilastirma_bolumleri(karsilastirma) {
         writeln!(cikti)?;
         if degisimler.is_empty() {
-            writeln!(cikti, "#### {baslik}: {}", dil::sec("yok", "none"))?;
+            writeln!(cikti, "#### {baslik}: {}", lang::pick("yok", "none"))?;
             continue;
         }
         writeln!(cikti, "#### {baslik}: {}", degisimler.len())?;
@@ -190,7 +194,7 @@ fn ani_artis_yaz(
     writeln!(
         cikti,
         "| {} | {} |",
-        dil::sec("Zirve | Olağan | Puan", "Peak | Usual | Score"),
+        lang::pick("Zirve | Olağan | Puan", "Peak | Usual | Score"),
         kalip_basliklari()
     )?;
     writeln!(cikti, "|---:|---:|---:|---|---|---|---|---|---|---|")?;
@@ -225,7 +229,7 @@ fn satir_yaz(
         zaman_goster(hucreler.ilk, gosterim),
         zaman_goster(hucreler.son, gosterim),
         kod(&kisalt(
-            &dil::yer_tutucular(&gorunur(&satir.kalip)),
+            &lang::placeholders(&gorunur(&satir.kalip)),
             KALIP_GENISLIGI,
         )),
         ornek(hucreler.ornek, &satir.kalip),
@@ -245,12 +249,12 @@ fn satir_yaz(
 fn gizlenen_yaz(cikti: &mut impl Write, gizlenen: usize) -> io::Result<()> {
     if gizlenen > 0 {
         writeln!(cikti)?;
-        match dil::simdiki() {
-            Dil::Tr => writeln!(
+        match lang::current() {
+            Lang::Tr => writeln!(
                 cikti,
                 "… {gizlenen} satır daha; tümünü görmek için `--hepsi`"
             )?,
-            Dil::En => writeln!(
+            Lang::En => writeln!(
                 cikti,
                 "… {gizlenen} more {}; use `--all` to see them all",
                 if gizlenen == 1 { "row" } else { "rows" }
@@ -275,7 +279,7 @@ fn ornek(ornek: &str, kalip: &str) -> String {
 fn degerler(satir: &KalipSatiri) -> String {
     degerler_metni(&satir.degiskenler, |deger| {
         kod(&kisalt(
-            &dil::yer_tutucular(&gorunur(deger)),
+            &lang::placeholders(&gorunur(deger)),
             KALIP_GENISLIGI,
         ))
     })
@@ -292,7 +296,7 @@ fn konum(satir: &KalipSatiri) -> String {
             Some(yer) => format!("{} {}", kod(&gorunur(&yer)), parmak_izi.kisa_sinif()),
             None => format!(
                 "{} ({})",
-                dil::sec(
+                lang::pick(
                     "uygulama kodunda bulunamadı",
                     "not found in application code"
                 ),
@@ -339,8 +343,8 @@ fn hucre(metin: &str) -> String {
 mod testler {
     use super::*;
     use crate::ani_artis::{deneme_logu, karisik_seviyeli_log};
+    use crate::datetime::TimePoint;
     use crate::rapor::RaporAyarlari;
-    use crate::zaman::ZamanNoktasi;
 
     const ORNEK_LOG: &str = include_str!("../ornekler/laravel.log");
 
@@ -359,7 +363,7 @@ mod testler {
     /// Örnek logun, verilen anda bölünmüş karşılaştırmalı raporu. Kısa kalsın diye `--ilk 2`.
     fn karsilastirmali(nokta: &str) -> String {
         let ayarlar = RaporAyarlari {
-            karsilastir: ZamanNoktasi::ayristir(nokta),
+            karsilastir: TimePoint::parse(nokta),
             ilk: Some(2),
             ..RaporAyarlari::default()
         };
@@ -476,7 +480,7 @@ mod testler {
 
     #[test]
     fn ingilizce_markdown() {
-        let _dil = crate::dil::gecici(Dil::En);
+        let _dil = crate::lang::scoped(Lang::En);
         let metin = markdown(ORNEK_LOG, "ornekler/laravel.log");
         assert!(metin.starts_with(
             "## veylog: `ornekler/laravel.log`\n\n- **Lines:** 205 · **Records:** 59 · **Continuations:** 143 · **Orphan lines:** 3\n- **Time range:** 2026-10-24 08:59:58 → 2026-10-24 18:31:07\n- **Levels:** CRITICAL 2 · ERROR 16 · WARNING 6 · NOTICE 1 · INFO 31 · DEBUG 3\n- **Patterns:** 45 distinct messages → 27 after masking → 23 Drain patterns (threshold 0.7) → 24 groups by fingerprint\n"

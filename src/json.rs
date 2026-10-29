@@ -11,10 +11,10 @@
 use std::io::{self, Write};
 
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_AZ_MAD, EN_DUSUK_SEVIYE, ESIK};
-use crate::dil;
+use crate::datetime::DateTime;
 use crate::karsilastirma::{ANLAMLILIK, ARTIS_KATI, Degisim, EN_AZ_KAYIT, Karsilastirma, Pencere};
+use crate::lang;
 use crate::rapor::{FiltreOzeti, KalipSatiri, Ozet, SaatDilimiOzeti};
-use crate::zaman::Zaman;
 
 /// Bir JSON değeri. Nesnelerde alanlar eklendikleri sırayla yazılır.
 #[derive(Debug, Clone, PartialEq)]
@@ -199,7 +199,7 @@ fn ozet_json(ozet: &Ozet) -> Json {
 /// Filtrenin JSON'u: verilmeyen sınırlar null'dır. `records` filtreye uyan kayıtlardır;
 /// dosyanın bütün kayıtları en üstteki `records`tır.
 fn filtre_json(filtre: &FiltreOzeti) -> Json {
-    let zaman_ya_da_yok = |zaman: Option<Zaman>| zaman.map_or(Json::Yok, self::zaman);
+    let zaman_ya_da_yok = |zaman: Option<DateTime>| zaman.map_or(Json::Yok, self::zaman);
     Json::Nesne(vec![
         (
             "min_level",
@@ -389,10 +389,7 @@ fn satir_alanlari(satir: &KalipSatiri) -> Vec<(&'static str, Json)> {
         ("level", metin(satir.seviye.ad())),
         ("first", zaman(satir.ilk)),
         ("last", zaman(satir.son)),
-        (
-            "pattern",
-            metin(&dil::ingilizce_yer_tutucular(&satir.kalip)),
-        ),
+        ("pattern", metin(&lang::english_placeholders(&satir.kalip))),
         ("sample", metin(&satir.ornek)),
         ("variables", degiskenler_json(satir)),
         ("exception", istisna),
@@ -429,7 +426,7 @@ fn metin(metin: &str) -> Json {
 }
 
 /// Bir an, raporun saat diliminde: "2026-10-24 16:10:00"
-fn zaman(zaman: Zaman) -> Json {
+fn zaman(zaman: DateTime) -> Json {
     Json::Metin(zaman.to_string())
 }
 
@@ -437,9 +434,9 @@ fn zaman(zaman: Zaman) -> Json {
 mod testler {
     use super::*;
     use crate::ani_artis::{CARPAN, deneme_logu};
+    use crate::datetime::TimePoint;
     use crate::parmak_izi::KonumTuru;
     use crate::rapor::RaporAyarlari;
-    use crate::zaman::ZamanNoktasi;
 
     const ORNEK_LOG: &str = include_str!("../ornekler/laravel.log");
 
@@ -673,7 +670,7 @@ mod testler {
         let ayarlar = RaporAyarlari {
             filtre: Filtre {
                 seviye: Some(Seviye::Warning),
-                baslangic: ZamanNoktasi::ayristir("16:00"),
+                baslangic: TimePoint::parse("16:00"),
                 ..Filtre::default()
             },
             ..RaporAyarlari::default()
@@ -709,7 +706,7 @@ mod testler {
         assert!(normal.get("comparison").is_none());
 
         let rapor = ornek_rapor(&RaporAyarlari {
-            karsilastir: ZamanNoktasi::ayristir("16:11"),
+            karsilastir: TimePoint::parse("16:11"),
             ..RaporAyarlari::default()
         });
         let karsilastirma = &rapor["comparison"];

@@ -95,10 +95,10 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter;
 
-use crate::dil;
 use crate::istisna_metni::IstisnaMetni;
 use crate::json_okuyucu::{Deger, metni_coz};
 use crate::kayit::Kayit;
+use crate::lang;
 
 /// Her isteğin ya da komutun geçtiği giriş dosyaları. Yığın izinin en dibinde hep bunlar
 /// bulunur; hatanın nerede oluştuğu hakkında bilgi vermezler. `server.php` Laravel 8 ve
@@ -208,17 +208,17 @@ impl KonumTuru {
 
     /// Seçili dildeki adı: yardım metni ve hata mesajları için.
     pub fn gosterilen_ad(self) -> &'static str {
-        dil::sec(self.ad(), self.ingilizce_ad())
+        lang::pick(self.ad(), self.ingilizce_ad())
     }
 
     /// Yardım metnindeki açıklaması.
     pub fn aciklama(self) -> &'static str {
         match self {
-            KonumTuru::Metot => dil::sec(
+            KonumTuru::Metot => lang::pick(
                 "dosya ve fonksiyon: satırlar kaysa da hata aynı kalır",
                 "file and function: survives shifted line numbers",
             ),
-            KonumTuru::Satir => dil::sec("dosya ve satır", "file and line"),
+            KonumTuru::Satir => lang::pick("dosya ve satır", "file and line"),
         }
     }
 
@@ -385,7 +385,7 @@ impl fmt::Display for ParmakIzi {
             None => write!(
                 f,
                 "{} ({})",
-                dil::sec(
+                lang::pick(
                     "uygulama kodunda bulunamadı",
                     "not found in application code"
                 ),

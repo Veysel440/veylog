@@ -49,14 +49,14 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::datetime::format_duration_full;
 use crate::depo::{Depo, DepoAyarlari};
-use crate::dil::{self, Dil};
 use crate::filtre::Filtre;
 use crate::kayit::{KayitToplayici, SatirSayilari};
 use crate::komut_satiri::{Izleme, Secenekler};
+use crate::lang::{self, Lang};
 use crate::okuyucu::{OkumaSonucu, OrnekIstegi, OrnekKaynagi, SATIR_SINIRI, YenidenOkuyucu};
 use crate::rapor::{self, Ozet, OzetHatasi};
-use crate::zaman::sure_tam_yaz;
 use crate::{GeciciDosya, Hata, OkunamazKaynak, TAMPON, dosyayi_ac, duz_dosya_mi};
 
 /// `--aralik`ın en küçük değeri: daha sık bakmak işlemciyi boşuna yorar.
@@ -77,8 +77,8 @@ pub fn aralik_yaz(aralik: Duration) -> String {
     let milisaniye = aralik.subsec_millis();
     match (saniye, milisaniye) {
         (0, milisaniye) => format!("{milisaniye} ms"),
-        (saniye, 0) => sure_tam_yaz(saniye),
-        (saniye, milisaniye) => format!("{} {milisaniye} ms", sure_tam_yaz(saniye)),
+        (saniye, 0) => format_duration_full(saniye),
+        (saniye, milisaniye) => format!("{} {milisaniye} ms", format_duration_full(saniye)),
     }
 }
 
@@ -940,17 +940,17 @@ impl<'a> Izleyici<'a> {
             aralik_yaz(self.aralik),
             self.depo.kayit_sayisi(),
         );
-        let mut parcalar = match dil::simdiki() {
-            Dil::Tr => vec![format!("İzleniyor: {yol}"), format!("her {aralik}")],
-            Dil::En => vec![format!("Watching: {yol}"), format!("every {aralik}")],
+        let mut parcalar = match lang::current() {
+            Lang::Tr => vec![format!("İzleniyor: {yol}"), format!("her {aralik}")],
+            Lang::En => vec![format!("Watching: {yol}"), format!("every {aralik}")],
         };
-        parcalar.push(dil::sayili(sayi, "kayıt", "record", "records"));
+        parcalar.push(lang::counted(sayi, "kayıt", "record", "records"));
         parcalar.push(match self.depo.okunan_en_yeni() {
-            Some(en_yeni) => format!("{} {en_yeni}", dil::sec("son kayıt", "last record")),
-            None => dil::sec("henüz kayıt yok", "no records yet").to_owned(),
+            Some(en_yeni) => format!("{} {en_yeni}", lang::pick("son kayıt", "last record")),
+            None => lang::pick("henüz kayıt yok", "no records yet").to_owned(),
         });
         if self.donduruldu {
-            parcalar.push(dil::sec("döndürüldü", "rotated").to_owned());
+            parcalar.push(lang::pick("döndürüldü", "rotated").to_owned());
         }
         parcalar.join(" · ")
     }
@@ -1039,11 +1039,11 @@ impl<'a> Izleyici<'a> {
 /// Standart girdinin geçici kopyası sınırını (`KOPYA_SINIRI`) aştı.
 fn kopya_siniri_uyarisi(sinir: u64) -> String {
     let mb = sinir >> 20;
-    match dil::simdiki() {
-        Dil::Tr => format!(
+    match lang::current() {
+        Lang::Tr => format!(
             "Uyarı: girdinin geçici kopyası {mb} MB'ı aştı ve bırakıldı; bundan sonraki bazı örnekler aynı kalıpta aynı seviyedeki ilk kaydın mesajı olacak."
         ),
-        Dil::En => format!(
+        Lang::En => format!(
             "Warning: the temporary copy of the input exceeded {mb} MB and was dropped; some later samples will be the message of the first record with the same pattern and level."
         ),
     }
@@ -1490,7 +1490,7 @@ mod testler {
 
     #[test]
     fn ingilizce_durum_satiri() {
-        let _dil = dil::gecici(Dil::En);
+        let _dil = lang::scoped(Lang::En);
         let secenekler = secenekler(&["--watch", "--interval", "1500ms", "deneme.log"]);
         let yazilan = Yazilan::default();
         let mut izleyici = izleyici(&secenekler, &yazilan);

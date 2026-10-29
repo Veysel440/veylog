@@ -643,13 +643,13 @@ and comments are still in Turkish.
 src/
 ├── main.rs          opens the input (file or standard input), writes the summary in the requested format
 ├── komut_satiri.rs  command line: options, help text, error messages, typo suggestions
-├── dil.rs           interface language (--lang): text in the selected language, numbers and lists
+├── lang.rs          interface language (--lang): text in the selected language, numbers and lists
 ├── okuyucu.rs       reads the input line by line; sparse index for re-reading a record
 ├── izle.rs          --watch: splits appended bytes into lines, detects rotation, redraws the report
 ├── filtre.rs        --level, --since, --until, --last: resolves bounds relative to the end of the log
 ├── kayit.rs         gathers lines into records: header or JSON line, level, message
 ├── satir_bicimi.rs  format of the header line: Laravel's or --pattern (Monolog string, regular expression)
-├── zaman_bicimi.rs  --time-format: reads times written with a PHP date() format
+├── time_format.rs   --time-format: reads times written with a PHP date() format
 ├── depo.rs          what the summary needs from each record, collected while reading: subgroups, columns, roots
 ├── columns.rs       record times and subgroups, compressed with delta and LEB128 encoding
 ├── distinct.rs      distinct message counter: exact, HyperLogLog for many distinct values
@@ -662,7 +662,7 @@ src/
 ├── karsilastirma.rs comparison of two time ranges
 ├── ani_artis.rs     slices, median and MAD, modified z-score, double threshold
 ├── stats.rs         binomial tail; median and MAD over sparse arrays
-├── zaman.rs         date and time arithmetic, time zones
+├── datetime.rs      date and time arithmetic, time zones
 ├── json.rs          JSON output
 └── markdown.rs      Markdown output
 tests/cli.rs         end-to-end tests that run the compiled binary

@@ -590,13 +590,13 @@ Tam liste: [sınırlamalar](docs/sinirlamalar.md).
 src/
 ├── main.rs          girişi açar (dosya ya da standart girdi), özeti istenen biçimde yazar
 ├── komut_satiri.rs  seçenekler, yardım metni, hata mesajları, yazım hatasına öneri
-├── dil.rs           arayüzün dili (--dil): seçili dildeki metin, sayıların ve listelerin yazılışı
+├── lang.rs          arayüzün dili (--dil): seçili dildeki metin, sayıların ve listelerin yazılışı
 ├── okuyucu.rs       girdiyi satır satır okur; bir kaydı yeniden okumak için seyrek dizin
 ├── izle.rs          --izle: eklenen baytları satırlara ayırır, döndürmeyi algılar, raporu yeniden çizer
 ├── filtre.rs        --seviye, --baslangic, --bitis, --son: sınırların logun sonuna göre çözülmesi
 ├── kayit.rs         satırları kayıtlara toplar: başlık ya da JSON satırı, seviye, mesaj
 ├── satir_bicimi.rs  başlık satırının biçimi: Laravel'inki ya da --desen (Monolog dizgesi, düzenli ifade)
-├── zaman_bicimi.rs  --zaman-bicimi: PHP'nin date() dizgesiyle yazılmış zamanları okur
+├── time_format.rs   --zaman-bicimi: PHP'nin date() dizgesiyle yazılmış zamanları okur
 ├── depo.rs          okunurken her kayıttan özet için gerekenler: alt gruplar, sütunlar, kökler
 ├── columns.rs       kayıtların zamanları ve alt grupları, delta ve LEB128 ile sıkıştırılmış
 ├── distinct.rs      farklı mesaj sayacı: tam, çok sayıda farklı değerde HyperLogLog
@@ -609,7 +609,7 @@ src/
 ├── karsilastirma.rs iki zaman aralığının karşılaştırılması
 ├── ani_artis.rs     dilimler, medyan ve MAD, değiştirilmiş z puanı, çift eşik
 ├── stats.rs         binom dağılımının kuyruğu; seyrek dizilerde medyan ve MAD
-├── zaman.rs         tarih ve saat hesapları, saat dilimleri
+├── datetime.rs      tarih ve saat hesapları, saat dilimleri
 ├── json.rs          JSON çıktısı
 └── markdown.rs      Markdown çıktısı
 tests/cli.rs         derlenmiş programı çalıştıran uçtan uca testler

@@ -30,11 +30,11 @@ use std::ops::Range;
 
 use regex::Regex;
 
-use crate::dil::{self, Dil};
+use crate::datetime;
 use crate::json_okuyucu::{self, Onek};
 use crate::kayit::Seviye;
-use crate::zaman;
-use crate::zaman_bicimi::ZamanBicimi;
+use crate::lang::{self, Lang};
+use crate::time_format::TimeFormat;
 
 /// `--zaman-bicimi` verilmemiş bir desende `%datetime%`'ın yerine konan ifade: Laravel'in ve
 /// Monolog'un varsayılan zaman biçimleri.
@@ -46,7 +46,7 @@ pub struct SatirBicimi {
     /// `--desen`; None ise Laravel'in biçimi. Kutuda: çoğu zaman yoktur, ayarlar küçük kalsın.
     desen: Option<Box<Desen>>,
     /// `--zaman-bicimi`; None ise ISO 8601 benzeri.
-    zaman: Option<ZamanBicimi>,
+    zaman: Option<TimeFormat>,
 }
 
 /// Derlenmiş bir desen ve gruplarının numaraları.
@@ -156,7 +156,7 @@ pub enum DesenHatasi {
 
 impl fmt::Display for DesenHatasi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if dil::simdiki() == Dil::En {
+        if lang::current() == Lang::En {
             return match self {
                 DesenHatasi::Gecersiz(aciklama) => {
                     write!(f, "the regular expression cannot be compiled: {aciklama}")
@@ -217,10 +217,7 @@ fn grup_ingilizce(ad: &str) -> &str {
 impl SatirBicimi {
     /// `desen`: `--desen` (Monolog'un biçim dizgesi ya da düzenli ifade); None ise Laravel'in
     /// biçimi. `zaman`: `--zaman-bicimi`.
-    pub fn new(
-        desen: Option<&str>,
-        zaman: Option<ZamanBicimi>,
-    ) -> Result<SatirBicimi, DesenHatasi> {
+    pub fn new(desen: Option<&str>, zaman: Option<TimeFormat>) -> Result<SatirBicimi, DesenHatasi> {
         let desen = match desen {
             Some(desen) => Some(Box::new(desen_derle(desen, zaman.as_ref())?)),
             None => None,
@@ -325,8 +322,8 @@ impl SatirBicimi {
     /// zaten iç biçimdedir: satırdan ödünç alınır.
     fn zaman_coz<'a>(&self, metin: &'a str) -> Option<Cow<'a, str>> {
         match &self.zaman {
-            Some(bicim) => bicim.coz(metin).map(Cow::Owned),
-            None => zaman::kayit_zamani_mi(metin).then_some(Cow::Borrowed(metin)),
+            Some(bicim) => bicim.normalize(metin).map(Cow::Owned),
+            None => datetime::is_record_time(metin).then_some(Cow::Borrowed(metin)),
         }
     }
 }
@@ -511,7 +508,7 @@ fn seviye_oku(metin: &str) -> Option<Seviye> {
 
 /// `--desen`'i derler: Monolog'un biçim dizgesiyse (`%message%` içeriyorsa) önce düzenli
 /// ifadeye çevrilir.
-fn desen_derle(desen: &str, zaman: Option<&ZamanBicimi>) -> Result<Desen, DesenHatasi> {
+fn desen_derle(desen: &str, zaman: Option<&TimeFormat>) -> Result<Desen, DesenHatasi> {
     let ifade = if desen.contains("%message%") {
         monolog_bicimi(desen, zaman)?
     } else {
@@ -563,7 +560,7 @@ fn derleme_hatasi(hata: regex::Error) -> DesenHatasi {
 
 /// Monolog'un biçim dizgesini düzenli ifadeye çevirir. `%message%`'dan sonrası atılır: mesaj
 /// satırın geri kalanını alır.
-fn monolog_bicimi(bicim: &str, zaman: Option<&ZamanBicimi>) -> Result<String, DesenHatasi> {
+fn monolog_bicimi(bicim: &str, zaman: Option<&TimeFormat>) -> Result<String, DesenHatasi> {
     let (once, sonra) = bicim
         .split_once("%message%")
         .expect("Monolog biçimi %message% içerir");
@@ -588,7 +585,7 @@ fn monolog_bicimi(bicim: &str, zaman: Option<&ZamanBicimi>) -> Result<String, De
                 let (grup, govde) = match ad {
                     "datetime" => (
                         "zaman",
-                        zaman.map_or(ISO_8601.to_string(), ZamanBicimi::duzenli_ifade),
+                        zaman.map_or(ISO_8601.to_string(), TimeFormat::regex),
                     ),
                     "level_name" => ("seviye", "[A-Za-z]+".to_string()),
                     "level" => ("seviye", "[0-9]+".to_string()),
@@ -633,7 +630,7 @@ mod testler {
     }
 
     fn zamanli(desen: Option<&str>, zaman: &str) -> SatirBicimi {
-        SatirBicimi::new(desen, Some(ZamanBicimi::derle(zaman).unwrap())).unwrap()
+        SatirBicimi::new(desen, Some(TimeFormat::compile(zaman).unwrap())).unwrap()
     }
 
     /// Başlığın alanları kısaca: (zaman, seviye, mesaj, bağlam)

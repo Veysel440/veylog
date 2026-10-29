@@ -20,13 +20,13 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 
+use crate::datetime::{DateTime, TimeZone, ZoneConverter};
 use crate::filtre::CozulmusFiltre;
 use crate::kayit::{
     Kayit, KayitAlici, KayitBilgisi, KayitToplayici, SatirSayilari, Seviye, kayit_baslangici,
 };
 use crate::maske::maskele;
 use crate::satir_bicimi::SatirBicimi;
-use crate::zaman::{DilimCevirici, SaatDilimi, Zaman};
 
 /// Bir satırın en fazla bu kadar baytı (256 MB) okunur; ötesi atlanır. Gerçek bir logda en
 /// uzun satırlar, bağlamında dev bir SQL sorgusu taşıyan istisnalardır; onlar da bunun çok
@@ -225,15 +225,15 @@ pub fn oku<R: BufRead, A: KayitAlici + ?Sized>(
 pub fn en_yeni_zaman<R: BufRead>(
     girdi: R,
     bicim: &SatirBicimi,
-    dilim: Option<SaatDilimi>,
-) -> io::Result<Option<Zaman>> {
+    dilim: Option<TimeZone>,
+) -> io::Result<Option<DateTime>> {
     let mut okuyucu = SatirOkuyucu::new(girdi);
-    let mut cevirici = DilimCevirici::new(dilim);
+    let mut cevirici = ZoneConverter::new(dilim);
     let mut en_yeni = None;
     while let Some((satir, _)) = okuyucu.sonraki()? {
         if let Some(kayit) = kayit_baslangici(bicim, &satir) {
-            let (zaman, _) = cevirici.cevir(kayit.zaman());
-            en_yeni = Some(en_yeni.map_or(zaman, |en_yeni: Zaman| en_yeni.max(zaman)));
+            let (zaman, _) = cevirici.convert(kayit.zaman());
+            en_yeni = Some(en_yeni.map_or(zaman, |en_yeni: DateTime| en_yeni.max(zaman)));
         }
     }
     Ok(en_yeni)
@@ -339,7 +339,7 @@ pub struct YenidenOkuyucu<R> {
     /// Filtre raporun saat dilimindedir: kayıtlar depodaki gibi çevrilir. Çevirici deponun
     /// bulduğu dilimle başlar; dilim belliyken her kaydın zamanı yalnızca kendisine bağlıdır,
     /// logun ortasından okumaya başlamak sonucu değiştirmez.
-    cevirici: DilimCevirici,
+    cevirici: ZoneConverter,
     /// Satırların biçimi: ilk okumadaki gibi.
     bicim: SatirBicimi,
     degisti: bool,
@@ -351,13 +351,13 @@ impl<R: BufRead + Seek> YenidenOkuyucu<R> {
         girdi: R,
         dizin: SeyrekDizin,
         filtre: Option<CozulmusFiltre>,
-        dilim: Option<SaatDilimi>,
+        dilim: Option<TimeZone>,
     ) -> Self {
         YenidenOkuyucu {
             girdi,
             dizin,
             filtre,
-            cevirici: DilimCevirici::new(dilim),
+            cevirici: ZoneConverter::new(dilim),
             bicim: SatirBicimi::default(),
             degisti: false,
         }
@@ -373,7 +373,7 @@ impl<R: BufRead + Seek> YenidenOkuyucu<R> {
 /// depoya giren kayıtlar arasındadır.
 struct Arayan<'b, 'i> {
     filtre: Option<&'b CozulmusFiltre>,
-    cevirici: &'b mut DilimCevirici,
+    cevirici: &'b mut ZoneConverter,
     /// Bir sonraki kaydın sıra numarası.
     siradaki: usize,
     /// Bloktaki, henüz gelmemiş istekler; sıralı.
@@ -405,12 +405,12 @@ impl KayitAlici for Arayan<'_, '_> {
 /// Kayıt depoya girmiş miydi? Filtre yoksa her kayıt girer.
 fn depoda_mi(
     filtre: Option<&CozulmusFiltre>,
-    cevirici: &mut DilimCevirici,
+    cevirici: &mut ZoneConverter,
     kayit: &Kayit<'_>,
 ) -> bool {
     filtre.is_none_or(|filtre| {
-        let (zaman, _) = cevirici.cevir(kayit.zaman());
-        filtre.gecer(zaman.saniye(), kayit.seviye())
+        let (zaman, _) = cevirici.convert(kayit.zaman());
+        filtre.gecer(zaman.epoch_seconds(), kayit.seviye())
     })
 }
 
@@ -770,7 +770,7 @@ mod testler {
                      [2026-10-24 09:00:00] local.INFO: d";
         assert_eq!(
             en_yeni_zaman(metin.as_bytes(), &SatirBicimi::default(), None).unwrap(),
-            Some(Zaman::kayittan("2026-10-24 11:00:00"))
+            Some(DateTime::from_record("2026-10-24 11:00:00"))
         );
 
         // Zamanlar raporun saat diliminde karşılaştırılır: 09:30+00:00, 12:30+03:00'dır
@@ -778,24 +778,24 @@ mod testler {
                      [2026-10-24T09:30:00+00:00] local.INFO: b";
         assert_eq!(
             en_yeni_zaman(metin.as_bytes(), &SatirBicimi::default(), None).unwrap(),
-            Some(Zaman::kayittan("2026-10-24 12:30:00"))
+            Some(DateTime::from_record("2026-10-24 12:30:00"))
         );
         assert_eq!(
             en_yeni_zaman(
                 metin.as_bytes(),
                 &SatirBicimi::default(),
-                SaatDilimi::ayristir("Z")
+                TimeZone::parse("Z")
             )
             .unwrap(),
-            Some(Zaman::kayittan("2026-10-24 09:30:00"))
+            Some(DateTime::from_record("2026-10-24 09:30:00"))
         );
     }
 
     #[test]
     fn yeniden_okuma_deponun_saat_dilimiyle_suzer() {
+        use crate::datetime::TimePoint;
         use crate::depo::{Depo, DepoAyarlari};
         use crate::filtre::Filtre;
-        use crate::zaman::ZamanNoktasi;
         // Çift kayıtlar 10:00+03:00, tekler 08:30+00:00 (11:30+03:00). Raporun dilimi ilk
         // kaydınki (+03:00); 11:00'dan sonrası yalnızca tek kayıtlardır. Yeniden okuma logun
         // ortasındaki bir bloktan başlasa da kayıtları aynı dilimle çevirmeli: ilk gördüğü kayıt
@@ -812,7 +812,7 @@ mod testler {
             .collect();
         let metin = satirlar.join("\n");
         let filtre = Filtre {
-            baslangic: ZamanNoktasi::ayristir("2026-10-24 11:00"),
+            baslangic: TimePoint::parse("2026-10-24 11:00"),
             ..Filtre::default()
         }
         .coz(None)
@@ -982,10 +982,10 @@ mod testler {
 
     #[test]
     fn desenle_okunan_log_ayni_desenle_yeniden_okunur() {
-        use crate::zaman_bicimi::ZamanBicimi;
+        use crate::time_format::TimeFormat;
         let bicim = SatirBicimi::new(
             Some("%datetime% %level_name% %message%"),
-            Some(ZamanBicimi::derle("d.m.Y H:i:s").unwrap()),
+            Some(TimeFormat::compile("d.m.Y H:i:s").unwrap()),
         )
         .unwrap();
         let satirlar: Vec<String> = (0..DIZIN_ARALIGI + 5)
@@ -1019,7 +1019,7 @@ mod testler {
         // Ön tarama da desenle okur
         assert_eq!(
             en_yeni_zaman(metin.as_bytes(), &bicim, None).unwrap(),
-            Some(Zaman::kayittan("2026-10-24 10:00:00"))
+            Some(DateTime::from_record("2026-10-24 10:00:00"))
         );
         assert_eq!(
             en_yeni_zaman(metin.as_bytes(), &SatirBicimi::default(), None).unwrap(),

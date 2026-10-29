@@ -25,7 +25,7 @@
 //!   adlı dosya ise standart girdidir (okunması `main`'in işidir).
 //! - Türkçe karakterli yazımlar da geçerlidir: `--eşik`, `--sıralama önem`.
 //! - Her uzun seçeneğin ve her değer adının İngilizcesi de her dilde geçerlidir: `--threshold`,
-//!   `--sort count` (`dil::SECENEK_ADLARI`). Yardım ve mesajlar seçili dildeki adları gösterir.
+//!   `--sort count` (`lang::OPTION_NAMES`). Yardım ve mesajlar seçili dildeki adları gösterir.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -33,15 +33,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::ani_artis::{EN_DUSUK_SEVIYE, EN_UZUN_DILIM};
-use crate::dil::{self, Dil, SECENEK_ADLARI};
+use crate::datetime::{TimePoint, TimeZone};
 use crate::filtre::{milisaniye_ayristir, sure_ayristir};
 use crate::izle::{EN_KISA_ARALIK, EN_UZUN_ARALIK, VARSAYILAN_ARALIK, aralik_yaz};
 use crate::kayit::Seviye;
+use crate::lang::{self, Lang, OPTION_NAMES};
 use crate::parmak_izi::KonumTuru;
 use crate::rapor::{RaporAyarlari, Siralama, VARSAYILAN_ILK, ondalik};
 use crate::satir_bicimi::SatirBicimi;
-use crate::zaman::{SaatDilimi, ZamanNoktasi};
-use crate::zaman_bicimi::ZamanBicimi;
+use crate::time_format::TimeFormat;
 
 /// Dili seçen ortam değişkenleri, önce okunandan başlayarak: `VEYLOG_LANG=tr` ve Türkçe adıyla
 /// `VEYLOG_DIL=tr`. `--lang` (`--dil`) verilirse o geçerlidir.
@@ -49,7 +49,7 @@ pub const DIL_DEGISKENLERI: [&str; 2] = ["VEYLOG_LANG", "VEYLOG_DIL"];
 
 /// Kısa kullanım satırı; hata mesajlarının altında da gösterilir.
 pub fn kullanim() -> &'static str {
-    dil::sec(
+    lang::pick(
         "Kullanım: veylog [SEÇENEKLER] <log-dosyası>",
         "Usage: veylog [OPTIONS] <log-file>",
     )
@@ -89,18 +89,18 @@ impl Bicim {
 
     /// Seçili dildeki adı: yardım metni ve hata mesajları için.
     pub fn gosterilen_ad(self) -> &'static str {
-        dil::sec(self.ad(), self.ingilizce_ad())
+        lang::pick(self.ad(), self.ingilizce_ad())
     }
 
     /// Yardım metnindeki açıklaması.
     pub fn aciklama(self) -> &'static str {
         match self {
-            Bicim::Metin => dil::sec("terminal için tablo", "table for the terminal"),
-            Bicim::Json => dil::sec(
+            Bicim::Metin => lang::pick("terminal için tablo", "table for the terminal"),
+            Bicim::Json => lang::pick(
                 "başka programlar için (jq, CI adımları)",
                 "for other programs (jq, CI steps)",
             ),
-            Bicim::Markdown => dil::sec(
+            Bicim::Markdown => lang::pick(
                 "GitHub issue ve PR'larına yapıştırmak için",
                 "to paste into GitHub issues and PRs",
             ),
@@ -191,7 +191,7 @@ pub enum SecenekHatasi {
 
 impl fmt::Display for SecenekHatasi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ingilizce = dil::simdiki() == Dil::En;
+        let ingilizce = lang::current() == Lang::En;
         match self {
             SecenekHatasi::BilinmeyenSecenek { secenek, oneri } => {
                 // "--esik mi" ama "--siralama mı": soru eki ünlü uyumuna uyar. Kalıp cümle
@@ -228,7 +228,7 @@ impl fmt::Display for SecenekHatasi {
                 }
             }
             SecenekHatasi::DosyaYok => {
-                f.write_str(dil::sec("log dosyası verilmedi", "no log file given"))
+                f.write_str(lang::pick("log dosyası verilmedi", "no log file given"))
             }
             SecenekHatasi::FazlaDosya(fazla) if ingilizce => write!(
                 f,
@@ -238,12 +238,12 @@ impl fmt::Display for SecenekHatasi {
                 f,
                 "fazladan argüman: {fazla} (yalnızca bir log dosyası verilebilir)"
             ),
-            SecenekHatasi::BosDosyaAdi => f.write_str(dil::sec(
+            SecenekHatasi::BosDosyaAdi => f.write_str(lang::pick(
                 "dosya adı boş olamaz",
                 "the file name cannot be empty",
             )),
             SecenekHatasi::Celisen(birinci, ikinci) => {
-                let (birinci, ikinci) = (dil::secenek(birinci), dil::secenek(ikinci));
+                let (birinci, ikinci) = (lang::option_name(birinci), lang::option_name(ikinci));
                 if ingilizce {
                     write!(f, "{birinci} and {ikinci} cannot be used together")
                 } else {
@@ -251,7 +251,7 @@ impl fmt::Display for SecenekHatasi {
                 }
             }
             SecenekHatasi::Gerektirir(secenek, gereken) => {
-                let (secenek, gereken) = (dil::secenek(secenek), dil::secenek(gereken));
+                let (secenek, gereken) = (lang::option_name(secenek), lang::option_name(gereken));
                 if ingilizce {
                     write!(f, "{secenek} can only be used with {gereken}")
                 } else {
@@ -282,7 +282,7 @@ impl std::error::Error for SecenekHatasi {}
 /// Argümanlar ayrıştırılmadan önce bakılır: ayrıştırma hataları da seçilen dilde yazılsın.
 /// Tanınmayan bir `--dil` değerini ayrıştırıcı ayrıca hata olarak bildirir. Seçenek birden
 /// çok kez yazıldıysa sonuncusu geçerlidir; `--`'dan sonrası dosya adıdır.
-pub fn dil_bul(argumanlar: &[OsString]) -> Option<Dil> {
+pub fn dil_bul(argumanlar: &[OsString]) -> Option<Lang> {
     let mut bulunan = None;
     let mut argumanlar = argumanlar.iter();
     while let Some(arguman) = argumanlar.next() {
@@ -298,7 +298,7 @@ pub fn dil_bul(argumanlar: &[OsString]) -> Option<Dil> {
                 Some(deger) => Some(deger),
                 None => argumanlar.next().and_then(|deger| deger.to_str()),
             };
-            if let Some(dil) = deger.and_then(Dil::ayristir) {
+            if let Some(dil) = deger.and_then(Lang::parse) {
                 bulunan = Some(dil);
             }
         }
@@ -320,7 +320,7 @@ where
     // Desen zaman biçimine bağlıdır (Monolog'un dizgesinde `%datetime%`): ikisi de okununca
     // derlenir. Seçeneğin yazıldığı ad hata mesajı için saklanır.
     let mut desen: Option<(String, String)> = None;
-    let mut zaman_bicimi: Option<ZamanBicimi> = None;
+    let mut zaman_bicimi: Option<TimeFormat> = None;
     let mut izle = false;
     let mut aralik: Option<Duration> = None;
     // `--bicim`in yazıldığı hali: `--izle` ile çelişirse hata mesajında
@@ -419,7 +419,7 @@ where
         }
         if rapor.karsilastir.is_some() {
             return Err(SecenekHatasi::IzlemeyleKullanilamaz {
-                secenek: dil::secenek("--karsilastir").to_owned(),
+                secenek: lang::option_name("--karsilastir").to_owned(),
                 neden: [
                     "izlenen log sürekli uzar; karşılaştırma için --izle olmadan çalıştırın",
                     "a watched log keeps growing; run without --watch to compare",
@@ -451,7 +451,7 @@ struct Durum<'a> {
     /// `--bicim`in yazıldığı hali: `--izle` ile çelişirse hata mesajında
     bicim_yazimi: &'a mut Option<String>,
     desen: &'a mut Option<(String, String)>,
-    zaman_bicimi: &'a mut Option<ZamanBicimi>,
+    zaman_bicimi: &'a mut Option<TimeFormat>,
     izle: &'a mut bool,
     aralik: &'a mut Option<Duration>,
 }
@@ -526,7 +526,7 @@ fn secenek_isle(
         "--zaman-bicimi" | "--time-format" => {
             let deger = deger_al(ad, bitisik, argumanlar)?;
             *durum.zaman_bicimi = Some(
-                ZamanBicimi::derle(&deger)
+                TimeFormat::compile(&deger)
                     .map_err(|hata| gecersiz(ad, &deger, hata.to_string()))?,
             );
         }
@@ -620,7 +620,7 @@ pub fn yardim_metni() -> String {
     let seviye = EN_DUSUK_SEVIYE.ad();
     let seviyeler = seviye_adlari().join(", ");
     let [lang_degiskeni, dil_degiskeni] = DIL_DEGISKENLERI;
-    if dil::simdiki() == Dil::En {
+    if lang::current() == Lang::En {
         return format!(
             "\
 veylog {surum}: summarizes Laravel log files.
@@ -864,9 +864,9 @@ fn deger_almaz(ad: &str, bitisik: Option<&str>) -> Result<(), SecenekHatasi> {
 /// "şunlardan biri olmalı: a, b, c" ya da "must be one of: a, b, c"
 fn biri_olmali(adlar: &[&str]) -> String {
     let adlar = adlar.join(", ");
-    match dil::simdiki() {
-        Dil::Tr => format!("şunlardan biri olmalı: {adlar}"),
-        Dil::En => format!("must be one of: {adlar}"),
+    match lang::current() {
+        Lang::Tr => format!("şunlardan biri olmalı: {adlar}"),
+        Lang::En => format!("must be one of: {adlar}"),
     }
 }
 
@@ -880,7 +880,7 @@ fn esik_ayristir(ad: &str, deger: &str) -> Result<f64, SecenekHatasi> {
         _ => Err(gecersiz(
             ad,
             deger,
-            dil::sec(
+            lang::pick(
                 "0 ile 1 arasında bir sayı olmalı (ör. 0,7)",
                 "must be a number between 0 and 1 (e.g. 0.7)",
             ),
@@ -895,7 +895,7 @@ fn ilk_ayristir(ad: &str, deger: &str) -> Result<usize, SecenekHatasi> {
         _ => Err(gecersiz(
             ad,
             deger,
-            dil::sec(
+            lang::pick(
                 "1 ya da daha büyük bir tam sayı olmalı (tablonun tamamı için --hepsi)",
                 "must be a whole number of at least 1 (for the whole table: --all)",
             ),
@@ -937,21 +937,21 @@ fn bicim_ayristir(ad: &str, deger: &str) -> Result<Bicim, SecenekHatasi> {
 }
 
 /// `--dil`: dillerden birinin adı.
-fn dil_ayristir(ad: &str, deger: &str) -> Result<Dil, SecenekHatasi> {
-    Dil::ayristir(deger).ok_or_else(|| {
-        let adlar: Vec<&str> = Dil::HEPSI.iter().map(|dil| dil.ad()).collect();
+fn dil_ayristir(ad: &str, deger: &str) -> Result<Lang, SecenekHatasi> {
+    Lang::parse(deger).ok_or_else(|| {
+        let adlar: Vec<&str> = Lang::ALL.iter().map(|dil| dil.code()).collect();
         gecersiz(ad, deger, biri_olmali(&adlar))
     })
 }
 
 /// `--karsilastir`: bir zaman. Logun aralığına uyup uymadığı dosya okununca denetlenir.
-fn karsilastir_ayristir(ad: &str, deger: &str) -> Result<ZamanNoktasi, SecenekHatasi> {
-    ZamanNoktasi::ayristir(deger).ok_or_else(|| {
+fn karsilastir_ayristir(ad: &str, deger: &str) -> Result<TimePoint, SecenekHatasi> {
+    TimePoint::parse(deger).ok_or_else(|| {
         // Biçimi doğru ama takvimde olmayan bir tarih de (2026-02-29) buraya düşer
         gecersiz(
             ad,
             deger,
-            dil::sec(
+            lang::pick(
                 "geçerli bir tarih ya da saat olmalı (ör. 15:00, 15:00:30, 2026-10-24, \"2026-10-24 15:00\")",
                 "must be a valid date or time (e.g. 15:00, 15:00:30, 2026-10-24, \"2026-10-24 15:00\")",
             ),
@@ -980,12 +980,12 @@ fn seviye_ayristir(ad: &str, deger: &str) -> Result<Seviye, SecenekHatasi> {
 }
 
 /// `--baslangic` ve `--bitis`: bir zaman, `--karsilastir` gibi.
-fn sinir_ayristir(ad: &str, deger: &str) -> Result<ZamanNoktasi, SecenekHatasi> {
-    ZamanNoktasi::ayristir(deger).ok_or_else(|| {
+fn sinir_ayristir(ad: &str, deger: &str) -> Result<TimePoint, SecenekHatasi> {
+    TimePoint::parse(deger).ok_or_else(|| {
         gecersiz(
             ad,
             deger,
-            dil::sec(
+            lang::pick(
                 "geçerli bir tarih ya da saat olmalı (ör. 15:00, 2026-10-24, \"2026-10-24 15:00\")",
                 "must be a valid date or time (e.g. 15:00, 2026-10-24, \"2026-10-24 15:00\")",
             ),
@@ -994,12 +994,12 @@ fn sinir_ayristir(ad: &str, deger: &str) -> Result<ZamanNoktasi, SecenekHatasi> 
 }
 
 /// `--saat-dilimi`: bir saat dilimi farkı.
-fn saat_dilimi_ayristir(ad: &str, deger: &str) -> Result<SaatDilimi, SecenekHatasi> {
-    SaatDilimi::ayristir(deger).ok_or_else(|| {
+fn saat_dilimi_ayristir(ad: &str, deger: &str) -> Result<TimeZone, SecenekHatasi> {
+    TimeZone::parse(deger).ok_or_else(|| {
         gecersiz(
             ad,
             deger,
-            dil::sec(
+            lang::pick(
                 "bir saat dilimi olmalı (ör. +03:00, -05:30, +0530, Z; en fazla ±23:59)",
                 "must be a time zone offset (e.g. +03:00, -05:30, +0530, Z; at most ±23:59)",
             ),
@@ -1013,7 +1013,7 @@ fn son_ayristir(ad: &str, deger: &str) -> Result<u64, SecenekHatasi> {
         gecersiz(
             ad,
             deger,
-            dil::sec(
+            lang::pick(
                 "bir süre olmalı (ör. 30dk, 2sa, 1g, 1sa30dk; birimler: sn, dk, sa, g)",
                 "must be a duration (e.g. 30m, 2h, 1d, 1h30m; units: s, m, h, d)",
             ),
@@ -1030,11 +1030,11 @@ fn aralik_ayristir(ad: &str, deger: &str) -> Result<Duration, SecenekHatasi> {
             Err(gecersiz(
                 ad,
                 deger,
-                match dil::simdiki() {
-                    Dil::Tr => format!(
+                match lang::current() {
+                    Lang::Tr => format!(
                         "{en_kisa} ile {en_uzun} arasında bir süre olmalı (ör. 500ms, 2sn, 1dk; birimler: ms, sn, dk, sa, g)"
                     ),
-                    Dil::En => format!(
+                    Lang::En => format!(
                         "must be a duration between {en_kisa} and {en_uzun} (e.g. 500ms, 2s, 1m; units: ms, s, m, h, d)"
                     ),
                 },
@@ -1050,11 +1050,11 @@ fn ani_artis_ayristir(ad: &str, deger: &str) -> Result<u16, SecenekHatasi> {
         _ => Err(gecersiz(
             ad,
             deger,
-            match dil::simdiki() {
-                Dil::Tr => format!(
+            match lang::current() {
+                Lang::Tr => format!(
                     "1 ile {EN_UZUN_DILIM} arasında bir dakika sayısı olmalı (ör. 1, 5, 60)"
                 ),
-                Dil::En => format!(
+                Lang::En => format!(
                     "must be a number of minutes between 1 and {EN_UZUN_DILIM} (e.g. 1, 5, 60)"
                 ),
             },
@@ -1097,15 +1097,15 @@ fn sadelestir(metin: &str) -> String {
 /// Bilinen uzun seçenekler, Türkçe ve İngilizce adlarıyla; seçili dildekiler önce. Yazım
 /// hatası yapıldığında öneri bu listeden seçilir: eşit yakınlıkta seçili dildeki ad önerilir.
 fn uzun_secenekler() -> impl Iterator<Item = &'static str> {
-    let ingilizce_once = dil::simdiki() == Dil::En;
+    let ingilizce_once = lang::current() == Lang::En;
     let ad = |&(tr, en): &(&'static str, &'static str), ingilizce: bool| {
         if ingilizce { en } else { tr }
     };
-    SECENEK_ADLARI
+    OPTION_NAMES
         .iter()
         .map(move |cift| ad(cift, ingilizce_once))
         .chain(
-            SECENEK_ADLARI
+            OPTION_NAMES
                 .iter()
                 .map(move |cift| ad(cift, !ingilizce_once)),
         )
@@ -1197,8 +1197,8 @@ mod testler {
         let filtre = ozet(&["--başlangıç", "15:00", "--bitiş=2026-10-25", "a.log"])
             .rapor
             .filtre;
-        assert_eq!(filtre.baslangic, ZamanNoktasi::ayristir("15:00"));
-        assert_eq!(filtre.bitis, ZamanNoktasi::ayristir("2026-10-25"));
+        assert_eq!(filtre.baslangic, TimePoint::parse("15:00"));
+        assert_eq!(filtre.bitis, TimePoint::parse("2026-10-25"));
         assert!(filtre.sonu_gerekir());
         assert!(matches!(
             hata(&["--bitis", "2026-02-30", "a.log"]),
@@ -1302,7 +1302,7 @@ mod testler {
 
     #[test]
     fn karsilastirma_noktasi_okunur() {
-        let saat_15 = ZamanNoktasi::ayristir("15:00");
+        let saat_15 = TimePoint::parse("15:00");
         for argumanlar in [
             &["--karsilastir", "15:00", "a.log"][..],
             &["-k", "15:00", "a.log"],
@@ -1319,7 +1319,7 @@ mod testler {
             ozet(&["--karsilastir", "2026-10-24 15:00", "a.log"])
                 .rapor
                 .karsilastir,
-            ZamanNoktasi::ayristir("2026-10-24T15:00")
+            TimePoint::parse("2026-10-24T15:00")
         );
         assert_eq!(
             hata(&["--karsilastir", "25:00", "a.log"]).to_string(),
@@ -1747,8 +1747,8 @@ mod testler {
     #[test]
     fn yardim_metninin_satirlari_kisa() {
         // Terminalde satırlar bölünmesin: en uzunu 92 karakter; iki dilde de
-        for dil in Dil::HEPSI {
-            let _dil = dil::gecici(dil);
+        for dil in Lang::ALL {
+            let _dil = lang::scoped(dil);
             for satir in yardim_metni().lines() {
                 assert!(satir.chars().count() <= 92, "{dil:?}: {satir}");
             }
@@ -1922,18 +1922,18 @@ mod testler {
             dil_bul(&argumanlar)
         };
         assert_eq!(bul(&["a.log"]), None);
-        assert_eq!(bul(&["--dil", "en", "a.log"]), Some(Dil::En));
-        assert_eq!(bul(&["a.log", "--lang=en"]), Some(Dil::En));
-        assert_eq!(bul(&["--dıl", "EN"]), Some(Dil::En));
+        assert_eq!(bul(&["--dil", "en", "a.log"]), Some(Lang::En));
+        assert_eq!(bul(&["a.log", "--lang=en"]), Some(Lang::En));
+        assert_eq!(bul(&["--dıl", "EN"]), Some(Lang::En));
         // Sonuncusu geçerli; tanınmayan değer yok sayılır (ayrıştırıcı hata verir)
-        assert_eq!(bul(&["--dil", "en", "--dil", "tr"]), Some(Dil::Tr));
-        assert_eq!(bul(&["--dil", "en", "--dil", "de"]), Some(Dil::En));
+        assert_eq!(bul(&["--dil", "en", "--dil", "tr"]), Some(Lang::Tr));
+        assert_eq!(bul(&["--dil", "en", "--dil", "de"]), Some(Lang::En));
         assert_eq!(bul(&["--dil", "de"]), None);
         // Değersiz seçenek ve `--`'dan sonrası
         assert_eq!(bul(&["--dil"]), None);
         assert_eq!(bul(&["--", "--dil", "en"]), None);
         // Ayrıştırma hatası seçilen dilde yazılır: hata dilden önce gelse de
-        let _dil = dil::gecici(bul(&["--esk", "1", "--lang", "en", "a.log"]).unwrap());
+        let _dil = lang::scoped(bul(&["--esk", "1", "--lang", "en", "a.log"]).unwrap());
         assert_eq!(
             hata(&["--esk", "1", "--lang", "en", "a.log"]).to_string(),
             "unknown option: --esk (did you mean --esik?)"
@@ -1942,7 +1942,7 @@ mod testler {
 
     #[test]
     fn hata_mesajlari_ingilizce() {
-        let _dil = dil::gecici(Dil::En);
+        let _dil = lang::scoped(Lang::En);
         for (argumanlar, beklenen) in [
             (
                 &["--treshold", "a.log"][..],
@@ -2044,18 +2044,18 @@ mod testler {
         assert_eq!(kullanim(), "Usage: veylog [OPTIONS] <log-file>");
         // Eşit yakınlıkta seçili dildeki ad önerilir: "--sor" hem --son hem --sort'a bir harf
         assert_eq!(oneri_bul("--sor"), Some("--sort"));
-        let _turkce = dil::gecici(Dil::Tr);
+        let _turkce = lang::scoped(Lang::Tr);
         assert_eq!(oneri_bul("--sor"), Some("--son"));
     }
 
     #[test]
     fn ingilizce_yardim_metni() {
-        let _dil = dil::gecici(Dil::En);
+        let _dil = lang::scoped(Lang::En);
         let metin = yardim_metni();
         assert!(metin.starts_with("veylog "), "{metin}");
         assert!(metin.contains("Usage: veylog [OPTIONS] <log-file>"));
         // Her seçeneğin İngilizce adı yazılır; Türkçe harf yoktur
-        for &(_, ingilizce) in &SECENEK_ADLARI {
+        for &(_, ingilizce) in &OPTION_NAMES {
             assert!(metin.contains(&format!("{ingilizce} ")), "{ingilizce}");
         }
         assert!(
@@ -2088,7 +2088,7 @@ mod testler {
         // Türkçe yardımda bütün Türkçe adlar ve İngilizce yardımın yolu
         drop(_dil);
         let metin = yardim_metni();
-        for &(turkce, _) in &SECENEK_ADLARI {
+        for &(turkce, _) in &OPTION_NAMES {
             assert!(metin.contains(&format!("{turkce} ")), "{turkce}");
         }
         assert!(metin.contains("English: veylog --lang en --help (or VEYLOG_LANG=en)\n"));

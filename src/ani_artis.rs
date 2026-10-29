@@ -34,12 +34,12 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::io;
 
+use crate::datetime::DateTime;
 use crate::depo::Depo;
 use crate::kayit::Seviye;
 use crate::okuyucu::{OrnekIstegi, OrnekKaynagi};
 use crate::rapor::KalipAnalizi;
 use crate::stats::median_and_mad;
-use crate::zaman::Zaman;
 
 /// Sıçrama sayılmak için puanın geçmesi gereken eşik (Iglewicz ve Hoaglin, 1993).
 pub const ESIK: f64 = 3.5;
@@ -73,16 +73,16 @@ pub struct AniArtis {
     /// Kalıbın olağan dalgalanması: sayıların medyandan mutlak sapmalarının medyanı.
     pub mad: f64,
     /// Artışın ilk diliminin başı ve son diliminin sonu.
-    pub baslangic: Zaman,
-    pub bitis: Zaman,
+    pub baslangic: DateTime,
+    pub bitis: DateTime,
     pub dilim_sayisi: usize,
     pub kayit_sayisi: usize,
     /// Artıştaki ilk ve son kaydın zamanı.
-    pub ilk: Zaman,
-    pub son: Zaman,
+    pub ilk: DateTime,
+    pub son: DateTime,
     /// En çok kaydın düştüğü dilim (eşitlikte ilki): başı, sonu ve kayıt sayısı.
-    pub zirve_baslangic: Zaman,
-    pub zirve_bitis: Zaman,
+    pub zirve_baslangic: DateTime,
+    pub zirve_bitis: DateTime,
     pub zirve_adet: usize,
     /// Zirve dilimin puanı; artışın en yüksek puanı.
     pub puan: f64,
@@ -94,7 +94,7 @@ pub struct AniArtislar {
     /// Bir dilimin uzunluğu, dakika.
     pub dilim_dakika: u16,
     /// İzlenen süre: ilk dilimin başı ve son dilimin sonu. Logda kayıt yoksa None.
-    pub aralik: Option<(Zaman, Zaman)>,
+    pub aralik: Option<(DateTime, DateTime)>,
     /// Kayıtlar filtrelendi mi? Kayıt yoksa nedeni böyle söylenir.
     pub filtreli: bool,
     pub dilim_sayisi: usize,
@@ -160,7 +160,7 @@ impl AniArtislar {
         // dilimler saat başlarına hizalanır: 10 dakikalık dilimler 16:00, 16:10, 16:20... diye
         // başlar. `div_euclid` 1970'ten önceki (eksi) saniyelerde de aşağı yuvarlar.
         let dilim = |saniye: i64| saniye.div_euclid(dilim_saniye);
-        let dilim_basi = |numara: i64| Zaman::saniyeden(numara * dilim_saniye);
+        let dilim_basi = |numara: i64| DateTime::from_epoch_seconds(numara * dilim_saniye);
 
         let mut sonuc = AniArtislar {
             dilim_dakika,
@@ -172,7 +172,7 @@ impl AniArtislar {
         let (Some(ilk), Some(son)) = (depo.en_eski(), depo.en_yeni()) else {
             return Ok(sonuc);
         };
-        let (ilk_dilim, son_dilim) = (dilim(ilk.saniye()), dilim(son.saniye()));
+        let (ilk_dilim, son_dilim) = (dilim(ilk.epoch_seconds()), dilim(son.epoch_seconds()));
         sonuc.aralik = Some((dilim_basi(ilk_dilim), dilim_basi(son_dilim + 1)));
         // 64 bitlik sistemlerde her zaman sığar
         sonuc.dilim_sayisi = usize::try_from(son_dilim - ilk_dilim + 1).unwrap_or(usize::MAX);
@@ -252,8 +252,8 @@ impl AniArtislar {
                     bitis: dilim_basi(son.numara + 1),
                     dilim_sayisi: grup.len(),
                     kayit_sayisi: grup.iter().map(|dilim| dilim.adet).sum(),
-                    ilk: Zaman::saniyeden(ilk.ilk),
-                    son: Zaman::saniyeden(son.son),
+                    ilk: DateTime::from_epoch_seconds(ilk.ilk),
+                    son: DateTime::from_epoch_seconds(son.son),
                     zirve_baslangic: dilim_basi(zirve.numara),
                     zirve_bitis: dilim_basi(zirve.numara + 1),
                     zirve_adet: zirve.adet,
@@ -330,9 +330,9 @@ fn mesajlari_bul(
 #[cfg(test)]
 pub fn karisik_seviyeli_log() -> String {
     let mut satirlar = vec!["[2026-10-24 10:05:00] local.CRITICAL: Kuyruk 1 dolu".to_string()];
-    let ilk = Zaman::kayittan("2026-10-24 10:00:30").saniye();
+    let ilk = DateTime::from_record("2026-10-24 10:00:30").epoch_seconds();
     for dakika in (0..120).step_by(10) {
-        let an = Zaman::saniyeden(ilk + dakika * 60);
+        let an = DateTime::from_epoch_seconds(ilk + dakika * 60);
         satirlar.push(format!("[{an}] local.WARNING: Kuyruk 2 dolu"));
     }
     for saniye in (0..40).step_by(5) {
@@ -360,7 +360,7 @@ pub fn karisik_seviyeli_log() -> String {
 /// `#[cfg(test)]`: yalnızca testler derlenirken var olur, programın içine girmez.
 #[cfg(test)]
 pub fn deneme_logu() -> String {
-    let saat_10 = Zaman::kayittan("2026-10-24 10:00:00").saniye();
+    let saat_10 = DateTime::from_record("2026-10-24 10:00:00").epoch_seconds();
     let mut satirlar = Vec::new();
     for dakika in 0..120 {
         let yavas = if dakika == 45 { 9 } else { 2 };
@@ -376,7 +376,7 @@ pub fn deneme_logu() -> String {
             (kuyruk, 30, "ERROR", "Kuyruk dolu"),
         ] {
             for saniye in ilk_saniye..ilk_saniye + adet {
-                let an = Zaman::saniyeden(saat_10 + dakika * 60 + saniye);
+                let an = DateTime::from_epoch_seconds(saat_10 + dakika * 60 + saniye);
                 satirlar.push(format!("[{an}] local.{seviye}: {mesaj}"));
             }
         }
@@ -400,9 +400,11 @@ mod testler {
     fn log_metni(kayitlar: &[(&str, &str, &str, u32, u32)]) -> String {
         let mut satirlar = Vec::new();
         for &(baslangic, seviye, mesaj, kac, aralik) in kayitlar {
-            let zaman = Zaman::kayittan(&format!("2026-10-24 {baslangic}"));
+            let zaman = DateTime::from_record(&format!("2026-10-24 {baslangic}"));
             for tekrar in 0..kac {
-                let an = Zaman::saniyeden(zaman.saniye() + i64::from(tekrar * aralik));
+                let an = DateTime::from_epoch_seconds(
+                    zaman.epoch_seconds() + i64::from(tekrar * aralik),
+                );
                 satirlar.push(format!("[{an}] local.{seviye}: {mesaj}"));
             }
         }
@@ -570,7 +572,7 @@ mod testler {
         // Yarım saatlerde dakikada 1, 3, 5 ve 7 kayıt; yalnızca 10:45'te 14, 11:15'te 17. Medyan
         // 5, MAD 2: eşik 5 + 3,5 × 2 / 0,6745 ≈ 15,4. Seyrek bir kalıpta sıçrama olacak 14 burada
         // olağan dalgalanmanın içinde kalır (puan 3,0); 17 sıçrar (puan 4,0).
-        let saat_10 = Zaman::kayittan("2026-10-24 10:00:00").saniye();
+        let saat_10 = DateTime::from_record("2026-10-24 10:00:00").epoch_seconds();
         let mut satirlar = vec![log_metni(&IKI_SAAT)];
         for dakika in 0..120 {
             let adet = match dakika {
@@ -579,7 +581,7 @@ mod testler {
                 _ => 1 + 2 * (dakika / 30),
             };
             for kayit in 0..adet {
-                let an = Zaman::saniyeden(saat_10 + dakika * 60 + kayit + 1);
+                let an = DateTime::from_epoch_seconds(saat_10 + dakika * 60 + kayit + 1);
                 satirlar.push(format!("[{an}] local.ERROR: Sepet hesaplanamadı"));
             }
         }
@@ -675,7 +677,7 @@ mod testler {
     /// kayıt yazılacağını söyler: (INFO giriş, WARNING başarısız giriş). Bir dakikanın kayıtları
     /// birer saniye arayla yazılır.
     fn giris_logu(dakika_sayisi: i64, adetler: impl Fn(i64) -> (i64, i64)) -> String {
-        let saat_10 = Zaman::kayittan("2026-10-24 10:00:00").saniye();
+        let saat_10 = DateTime::from_record("2026-10-24 10:00:00").epoch_seconds();
         let mut satirlar = Vec::new();
         for dakika in 0..dakika_sayisi {
             let (info, warning) = adetler(dakika);
@@ -684,7 +686,7 @@ mod testler {
                 (warning, "WARNING", "Kullanıcı 7 giriş yapamadı"),
             ] {
                 for saniye in 0..adet {
-                    let an = Zaman::saniyeden(saat_10 + dakika * 60 + saniye);
+                    let an = DateTime::from_epoch_seconds(saat_10 + dakika * 60 + saniye);
                     satirlar.push(format!("[{an}] local.{seviye}: {mesaj}"));
                 }
             }

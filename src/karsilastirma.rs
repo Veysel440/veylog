@@ -24,11 +24,11 @@
 
 use std::fmt;
 
+use crate::datetime::{DateTime, TimePoint};
 use crate::depo::Depo;
-use crate::dil::{self, Dil};
+use crate::lang::{self, Lang};
 use crate::rapor::KalipAnalizi;
 use crate::stats::binomial_upper_tail;
-use crate::zaman::{Zaman, ZamanNoktasi};
 
 /// Bir kalıbın "artan" sayılması için sonraki saatlik sıklığın öncekine en az oranı.
 pub const ARTIS_KATI: f64 = 2.0;
@@ -43,8 +43,8 @@ pub const EN_AZ_KAYIT: usize = 2;
 /// Logun iki yarısından biri.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pencere {
-    pub baslangic: Zaman,
-    pub bitis: Zaman,
+    pub baslangic: DateTime,
+    pub bitis: DateTime,
     /// Yarının süresi, saniye.
     pub saniye: usize,
     pub kayit_sayisi: usize,
@@ -75,7 +75,7 @@ pub struct Degisim {
 #[derive(Debug)]
 pub struct Karsilastirma {
     /// Logun ikiye bölündüğü an.
-    pub nokta: Zaman,
+    pub nokta: DateTime,
     pub once: Pencere,
     pub sonra: Pencere,
     pub yeni: Vec<Degisim>,
@@ -93,32 +93,32 @@ pub enum KarsilastirmaHatasi {
     /// Nokta ilk kayıttan sonra ve en geç son kayıtla aynı anda değil: yarılardan biri boş
     /// kalırdı.
     AralikDisi {
-        nokta: Zaman,
-        ilk: Zaman,
-        son: Zaman,
+        nokta: DateTime,
+        ilk: DateTime,
+        son: DateTime,
     },
 }
 
 impl fmt::Display for KarsilastirmaHatasi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (self, dil::simdiki()) {
-            (KarsilastirmaHatasi::KayitYok, Dil::Tr) => {
+        match (self, lang::current()) {
+            (KarsilastirmaHatasi::KayitYok, Lang::Tr) => {
                 write!(f, "karşılaştırma için logda kayıt yok")
             }
-            (KarsilastirmaHatasi::KayitYok, Dil::En) => {
+            (KarsilastirmaHatasi::KayitYok, Lang::En) => {
                 write!(f, "the log has no records to compare")
             }
-            (KarsilastirmaHatasi::FiltreyeUyanYok, Dil::Tr) => {
+            (KarsilastirmaHatasi::FiltreyeUyanYok, Lang::Tr) => {
                 write!(f, "karşılaştırma için filtreye uyan kayıt yok")
             }
-            (KarsilastirmaHatasi::FiltreyeUyanYok, Dil::En) => {
+            (KarsilastirmaHatasi::FiltreyeUyanYok, Lang::En) => {
                 write!(f, "no records match the filter to compare")
             }
-            (KarsilastirmaHatasi::AralikDisi { nokta, ilk, son }, Dil::Tr) => write!(
+            (KarsilastirmaHatasi::AralikDisi { nokta, ilk, son }, Lang::Tr) => write!(
                 f,
                 "karşılaştırma noktası {nokta} logun içinde değil: kayıtlar {ilk} ile {son} arasında"
             ),
-            (KarsilastirmaHatasi::AralikDisi { nokta, ilk, son }, Dil::En) => write!(
+            (KarsilastirmaHatasi::AralikDisi { nokta, ilk, son }, Lang::En) => write!(
                 f,
                 "the comparison point {nokta} is not inside the log: records are between {ilk} and {son}"
             ),
@@ -133,7 +133,7 @@ impl Karsilastirma {
     pub fn hesapla(
         depo: &Depo,
         analiz: &KalipAnalizi,
-        nokta: ZamanNoktasi,
+        nokta: TimePoint,
     ) -> Result<Karsilastirma, KarsilastirmaHatasi> {
         // let-else: desen tutmazsa `else` bloğu çalışır ve fonksiyondan çıkar
         let (Some(ilk), Some(son)) = (depo.en_eski(), depo.en_yeni()) else {
@@ -142,15 +142,15 @@ impl Karsilastirma {
                 None => KarsilastirmaHatasi::KayitYok,
             });
         };
-        let nokta = nokta.coz(son);
+        let nokta = nokta.resolve(son);
         if nokta <= ilk || nokta > son {
             return Err(KarsilastirmaHatasi::AralikDisi { nokta, ilk, son });
         }
 
         // Tam noktadaki kayıt "sonra"dadır: önce [ilk, nokta), sonra [nokta, son]. Takvimde var
         // olan anlarda zamanların sırası saniyelerinin sırasıdır.
-        let nokta_saniye = nokta.saniye();
-        let (ilk_saniye, son_saniye) = (ilk.saniye(), son.saniye());
+        let nokta_saniye = nokta.epoch_seconds();
+        let (ilk_saniye, son_saniye) = (ilk.epoch_seconds(), son.epoch_seconds());
         let mut sonra_adetleri = vec![0; analiz.satirlar.len()];
         let mut sonra_kayit = 0;
         // Yarıların sınırını belirleyen kayıtların satırları: zamanı ilk kaydınkine eşit olan
@@ -235,8 +235,9 @@ impl Karsilastirma {
 /// modülleri denetler); böyle anlarda sıralama ile saniye uyuşur. Bu yüzden `son`, `bas`'tan önce
 /// değilse fark eksi olamaz. `as usize` eksi bir sayıyı sessizce dev bir sayıya çevirirdi;
 /// `try_from` çevirmez ve beklenti bozulursa ne olduğunu söyleyerek durur.
-fn saniye_farki(bas: Zaman, son: Zaman) -> usize {
-    usize::try_from(son.saniye() - bas.saniye()).expect("bitiş başlangıçtan önce olamaz")
+fn saniye_farki(bas: DateTime, son: DateTime) -> usize {
+    usize::try_from(son.epoch_seconds() - bas.epoch_seconds())
+        .expect("bitiş başlangıçtan önce olamaz")
 }
 
 #[cfg(test)]
@@ -246,15 +247,15 @@ mod testler {
     #[test]
     fn hatalar_iki_dilde() {
         let disarida = KarsilastirmaHatasi::AralikDisi {
-            nokta: Zaman::kayittan("2027-01-01 00:00:00"),
-            ilk: Zaman::kayittan("2026-10-24 08:00:00"),
-            son: Zaman::kayittan("2026-10-24 19:00:00"),
+            nokta: DateTime::from_record("2027-01-01 00:00:00"),
+            ilk: DateTime::from_record("2026-10-24 08:00:00"),
+            son: DateTime::from_record("2026-10-24 19:00:00"),
         };
         assert_eq!(
             disarida.to_string(),
             "karşılaştırma noktası 2027-01-01 00:00:00 logun içinde değil: kayıtlar 2026-10-24 08:00:00 ile 2026-10-24 19:00:00 arasında"
         );
-        let _dil = dil::gecici(Dil::En);
+        let _dil = lang::scoped(Lang::En);
         assert_eq!(
             disarida.to_string(),
             "the comparison point 2027-01-01 00:00:00 is not inside the log: records are between 2026-10-24 08:00:00 and 2026-10-24 19:00:00"
@@ -276,12 +277,12 @@ mod testler {
     fn log_metni(kayitlar: &[(&str, &str, &str, u32, u32)]) -> String {
         let mut satirlar = Vec::new();
         for &(baslangic, seviye, mesaj, kac, aralik) in kayitlar {
-            let zaman = Zaman::kayittan(&format!("2026-10-24 {baslangic}"));
+            let zaman = DateTime::from_record(&format!("2026-10-24 {baslangic}"));
             for tekrar in 0..kac {
-                let dakika_sonra = zaman.saniye() + i64::from(tekrar * aralik * 60);
+                let dakika_sonra = zaman.epoch_seconds() + i64::from(tekrar * aralik * 60);
                 satirlar.push(format!(
                     "[{}] local.{seviye}: {mesaj}",
-                    Zaman::saniyeden(dakika_sonra)
+                    DateTime::from_epoch_seconds(dakika_sonra)
                 ));
             }
         }
@@ -309,7 +310,7 @@ mod testler {
     fn karsilastir(metin: &str, nokta: &str) -> Result<Karsilastirma, KarsilastirmaHatasi> {
         let depo = depo::metinden(metin);
         let analiz = kaliplari_cikar(&depo, &RaporAyarlari::default());
-        let nokta = ZamanNoktasi::ayristir(nokta).expect("geçerli nokta");
+        let nokta = TimePoint::parse(nokta).expect("geçerli nokta");
         Karsilastirma::hesapla(&depo, &analiz, nokta)
     }
 
@@ -566,7 +567,7 @@ mod testler {
     #[test]
     #[should_panic(expected = "bitiş başlangıçtan önce olamaz")]
     fn ters_aralik_sessizce_dev_sayiya_donmez() {
-        let zaman = Zaman::kayittan;
+        let zaman = DateTime::from_record;
         saniye_farki(zaman("2026-03-02 00:00:00"), zaman("2026-03-01 00:00:00"));
     }
 
