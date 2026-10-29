@@ -654,7 +654,7 @@ src/
 ├── columns.rs       record times and subgroups, compressed with delta and LEB128 encoding
 ├── distinct.rs      distinct message counter: exact, HyperLogLog for many distinct values
 ├── json_okuyucu.rs  dependency-free JSON reader for Monolog's JSON lines
-├── maske.rs         replaces variables with placeholders: <NUM>, <IP>, <PATH>...
+├── mask.rs          replaces variables with placeholders: <NUM>, <IP>, <PATH>...
 ├── drain.rs         Drain: extracts patterns from masked messages; flexible threshold, code-like shapes, variable positions
 ├── parmak_izi.rs    exception class, first application frame and its function
 ├── istisna_metni.rs PHP's exception text (Log::error($e)): class, location, stack trace, Next

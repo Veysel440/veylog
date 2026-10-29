@@ -601,7 +601,7 @@ src/
 ├── columns.rs       kayıtların zamanları ve alt grupları, delta ve LEB128 ile sıkıştırılmış
 ├── distinct.rs      farklı mesaj sayacı: tam, çok sayıda farklı değerde HyperLogLog
 ├── json_okuyucu.rs  Monolog'un JSON satırları için kütüphanesiz JSON okuyucu
-├── maske.rs         değişkenleri yer tutucularla değiştirir: <SAYI>, <IP>, <YOL>...
+├── mask.rs          değişkenleri yer tutucularla değiştirir: <SAYI>, <IP>, <YOL>...
 ├── drain.rs         Drain: maskelenmiş mesajlardan kalıp çıkarır; esnek eşik, kodsal biçimler, değişken konumlar
 ├── parmak_izi.rs    istisna sınıfı, uygulama kodundaki ilk satır ve fonksiyonu
 ├── istisna_metni.rs PHP'nin istisna metni (Log::error($e)): sınıf, yer, yığın izi, Next

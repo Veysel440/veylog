@@ -7,7 +7,7 @@
 //!   ve son görüldüğü zaman, en geç kaydının sırası. Kalıp tablosunun satırları alt
 //!   gruplardan kurulur; satırın konumu en geç kaydı olan alt grubunkidir.
 //! - **Maskeli mesajlar.** Her farklı maskeli mesaj bir kez, ilk görüldüğü sırayla.
-//! - **Drain.** Her kaydın maskeli mesajı, logdaki sırasıyla kümelenir (`drain::Kumeleyici`):
+//! - **Drain.** Her kaydın maskeli mesajı, logdaki sırasıyla kümelenir (`drain::Clusterer`):
 //!   Drain sıraya bağlıdır, aynı mesaj logun farklı yerlerinde farklı kümelere katılabilir. Bir
 //!   mesajın tekrarlarında ağaç değişmediyse önceki sonuç kullanılır; arama yapılmaz.
 //! - **Kayıt sütunları.** Her kaydın zamanı ve alt grubu, sıkıştırılmış olarak (`columns`
@@ -46,10 +46,10 @@ use std::rc::Rc;
 use crate::columns::{ColumnsIter, RecordColumns};
 use crate::datetime::{DateTime, RecordZone, TimeZone, ZoneConverter};
 use crate::distinct::DistinctCounter;
-use crate::drain::{self, Kume, Kumeleyici};
+use crate::drain::{self, Cluster, Clusterer};
 use crate::filtre::CozulmusFiltre;
 use crate::kayit::{Kayit, KayitAlici, KayitBilgisi, SatirSayilari, Seviye};
-use crate::maske::maskele;
+use crate::mask::mask;
 use crate::okuyucu::{self, DIZIN_ARALIGI, OkumaSonucu, OrnekIstegi, OrnekKaynagi, SeyrekDizin};
 use crate::parmak_izi::{Istisna, IstisnaTaslagi, KonumTuru, MetotHaritasi, ParmakIzi};
 use crate::satir_bicimi::SatirBicimi;
@@ -162,7 +162,7 @@ pub struct DilimSayilari {
 /// Özetin deposu. Kayıtları `KayitAlici` olarak alır.
 #[derive(Debug)]
 pub struct Depo {
-    kumeleyici: Kumeleyici,
+    kumeleyici: Clusterer,
     /// Filtre; None ise bütün kayıtlar alınır.
     filtre: Option<CozulmusFiltre>,
     /// Kayıt zamanlarını raporun saat dilimine çevirir.
@@ -242,7 +242,7 @@ impl KayitAlici for Depo {
         let (maskeli, maskelendi) = self.maskeli_no(kayit.mesaj());
         let kume = self
             .kumeleyici
-            .ekle(maskeli as usize, &self.maskeliler[maskeli as usize]);
+            .add(maskeli as usize, &self.maskeliler[maskeli as usize]);
         let (istisna, satir) = self.istisna_no(kayit);
         let anahtar = AltGrupAnahtari {
             maskeli,
@@ -296,7 +296,7 @@ impl KayitAlici for Depo {
 #[derive(Debug, Clone, Default)]
 pub struct DepoAyarlari {
     /// Kayıtların mesajlarının kümeleneceği Drain ayarları.
-    pub drain: drain::Ayarlar,
+    pub drain: drain::Settings,
     /// Filtre, logun sonuna göre çözülmüş olarak; None ise bütün kayıtlar alınır.
     pub filtre: Option<CozulmusFiltre>,
     /// Raporun saat dilimi (`--saat-dilimi`); None ise logda saat dilimi yazılı ilk kaydınki.
@@ -311,7 +311,7 @@ impl Depo {
     /// Boş bir depo.
     pub fn new(ayarlar: DepoAyarlari) -> Depo {
         Depo {
-            kumeleyici: Kumeleyici::new(ayarlar.drain),
+            kumeleyici: Clusterer::new(ayarlar.drain),
             filtre: ayarlar.filtre,
             cevirici: ZoneConverter::new(ayarlar.saat_dilimi),
             satir_bicimi: ayarlar.satir_bicimi,
@@ -376,11 +376,11 @@ impl Depo {
     /// Yeniden kümelemede alt grupların küme numaraları (bölünürlerse kendileri) değişir;
     /// okunurken kullanılan anahtar → numara sözlüğü yeni anahtarlarla kurulur. Yeni bir
     /// değişken konum sonraki çizimlerde de bulunabilir: her çizimde en fazla bir tur yapılır,
-    /// önceki turlarda öğrenilenler unutulmaz (`Kumeleyici::ikinci_tur`).
+    /// önceki turlarda öğrenilenler unutulmaz (`Clusterer::ikinci_tur`).
     pub fn ara_durum(&mut self, sonuc: OkumaSonucu) {
         self.sayilar = sonuc.sayilar;
         self.gecersiz_utf8 = sonuc.gecersiz_utf8;
-        if self.kumeleyici.ikinci_tur_gerekir() {
+        if self.kumeleyici.needs_second_pass() {
             self.ikinci_tur();
             self.alt_grup_sirasi = self
                 .alt_gruplar
@@ -452,7 +452,7 @@ impl Depo {
             columns.push(saniye, no);
         }
         let depo = Depo {
-            kumeleyici: self.kumeleyici.kumelerin_kopyasi(),
+            kumeleyici: self.kumeleyici.clusters_only(),
             filtre: Some(filtre),
             cevirici: self.cevirici,
             satir_bicimi: self.satir_bicimi.clone(),
@@ -493,12 +493,11 @@ impl Depo {
     /// kez birleşerek: Drain sıraya bağlı olduğu için aynı maskeli mesaj ilk turda iki kümeye
     /// düşmüş, ikinci turda aynı kümeye düşmüş olabilir.
     fn ikinci_tur(&mut self) {
-        let mut kumeleyici = self.kumeleyici.ikinci_tur();
+        let mut kumeleyici = self.kumeleyici.second_pass();
         let mut kumeler: Vec<Option<u32>> = vec![None; self.alt_gruplar.len()];
         for (_, no) in self.columns.iter() {
             let maskeli = self.alt_gruplar[no as usize].anahtar.maskeli;
-            let kume =
-                numara(kumeleyici.ekle(maskeli as usize, &self.maskeliler[maskeli as usize]));
+            let kume = numara(kumeleyici.add(maskeli as usize, &self.maskeliler[maskeli as usize]));
             match kumeler[no as usize] {
                 None => kumeler[no as usize] = Some(kume),
                 Some(onceki) if onceki == kume => {}
@@ -531,14 +530,14 @@ impl Depo {
     /// Bölünen bir alt grubun parçası: ilk kaydı alt grubun ilk kaydı değilse mesajı depoda
     /// yoktur; örneği şimdilik alt grubunkidir (`ornek_kesin` false).
     fn bolerek_kur(&mut self) {
-        let mut kumeleyici = self.kumeleyici.ikinci_tur();
+        let mut kumeleyici = self.kumeleyici.second_pass();
         let mut alt_gruplar: Vec<AltGrup> = Vec::new();
         let mut sirasi: HashMap<AltGrupAnahtari, u32> = HashMap::new();
         let mut columns = RecordColumns::default();
         for (sira, (saniye, eski_no)) in self.columns.iter().enumerate() {
             let eski = &self.alt_gruplar[eski_no as usize];
             let maskeli = eski.anahtar.maskeli;
-            let kume = kumeleyici.ekle(maskeli as usize, &self.maskeliler[maskeli as usize]);
+            let kume = kumeleyici.add(maskeli as usize, &self.maskeliler[maskeli as usize]);
             let anahtar = AltGrupAnahtari {
                 kume: numara(kume),
                 ..eski.anahtar
@@ -607,8 +606,8 @@ impl Depo {
     }
 
     /// Drain kümeleri, açılış sırasıyla; kalıpları son halleriyle.
-    pub fn kumeler(&self) -> &[Kume] {
-        self.kumeleyici.kumeler()
+    pub fn kumeler(&self) -> &[Cluster] {
+        self.kumeleyici.clusters()
     }
 
     /// Satır sayıları (okuma bitince).
@@ -776,7 +775,7 @@ impl Depo {
     /// Mesajı maskeler: maskeli mesajın numarası ve maskelemenin mesajı değiştirip
     /// değiştirmediği. Maskeli mesaj ilk kez görülüyorsa yeni bir numara verilir.
     fn maskeli_no(&mut self, mesaj: &str) -> (u32, bool) {
-        let maskeli = maskele(mesaj);
+        let maskeli = mask(mesaj);
         let maskelendi = matches!(maskeli, Cow::Owned(_));
         if let Some(&no) = self.maskeli_sirasi.get(&*maskeli) {
             return (no, maskelendi);
@@ -844,12 +843,12 @@ fn numara(sira: usize) -> u32 {
 /// Testler için: metni okuyup varsayılan Drain ayarlarıyla depoya doldurur.
 #[cfg(test)]
 pub fn metinden(metin: &str) -> Depo {
-    metinden_ayarlarla(metin, &drain::Ayarlar::default())
+    metinden_ayarlarla(metin, &drain::Settings::default())
 }
 
 /// Testler için: metni okuyup depoya doldurur.
 #[cfg(test)]
-pub fn metinden_ayarlarla(metin: &str, ayarlar: &drain::Ayarlar) -> Depo {
+pub fn metinden_ayarlarla(metin: &str, ayarlar: &drain::Settings) -> Depo {
     let ayarlar = DepoAyarlari {
         drain: ayarlar.clone(),
         ..DepoAyarlari::default()
@@ -1000,7 +999,7 @@ mod testler {
              [2026-10-24 10:00:09] local.WARNING: Kuyruk 6 dolu",
         );
         // Aynı maskeli mesaj: seviye alt grupları ayırır
-        assert_eq!(depo.maskeli_mesajlar(), ["Kuyruk <SAYI> dolu"]);
+        assert_eq!(depo.maskeli_mesajlar(), ["Kuyruk <NUM> dolu"]);
         let alt = depo.alt_gruplar();
         assert_eq!(alt.len(), 2);
         assert_eq!((alt[0].seviye(), alt[0].adet()), (Seviye::Warning, 5));
@@ -1241,7 +1240,7 @@ mod testler {
         );
         assert_eq!(
             depo.maskeli_mesajlar(),
-            ["Kuyruk <SAYI> dolu", "Disk doluyor"]
+            ["Kuyruk <NUM> dolu", "Disk doluyor"]
         );
         // Sıra numaraları ve dizin yalnızca depodaki kayıtlar arasında
         let ilkler: Vec<usize> = depo.alt_gruplar().iter().map(AltGrup::ilk_kayit).collect();
@@ -1463,7 +1462,7 @@ mod testler {
             ));
         }
         let sonuc = okuyucu::oku(metin.as_bytes(), &bicim, &mut depo).unwrap();
-        assert!(depo.kumeleyici.ikinci_tur_gerekir());
+        assert!(depo.kumeleyici.needs_second_pass());
         depo.ara_durum(sonuc);
         assert!(!depo.alt_grup_sirasi.is_empty(), "okuma durumu korunur");
         let kume_sayisi = depo.kumeler().len();

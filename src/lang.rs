@@ -171,36 +171,27 @@ pub fn list<S: AsRef<str>>(items: &[S]) -> String {
     }
 }
 
-/// The placeholders of masking: their Turkish names (in storage and in the Turkish interface) and
-/// their English names (in the English interface and in JSON). `<URL>`, `<UUID>` and `<IP>` are
-/// the same in both languages.
+/// The placeholders of masking: their English names (in storage, in the English interface and in
+/// JSON) and their Turkish names (in the Turkish interface). `<URL>`, `<UUID>` and `<IP>` are the
+/// same in both languages.
 const PLACEHOLDERS: [(&str, &str); 4] = [
-    ("<SAYI>", "<NUM>"),
-    ("<YOL>", "<PATH>"),
-    ("<EPOSTA>", "<EMAIL>"),
-    ("<ZAMAN>", "<TIME>"),
+    ("<NUM>", "<SAYI>"),
+    ("<PATH>", "<YOL>"),
+    ("<EMAIL>", "<EPOSTA>"),
+    ("<TIME>", "<ZAMAN>"),
 ];
 
-/// Shows the placeholders of a pattern in the selected language: in English `<SAYI>` → `<NUM>`.
-/// Patterns are stored and clustered with the Turkish names; the translation happens only in the
-/// output.
+/// Shows the placeholders of a pattern in the selected language: in Turkish `<NUM>` → `<SAYI>`.
+/// Patterns are stored and clustered with the English names, which JSON writes in every
+/// language; the translation happens only in the output of the Turkish interface.
 pub fn placeholders(pattern: &str) -> Cow<'_, str> {
-    if current() == Lang::Tr {
-        return Cow::Borrowed(pattern);
-    }
-    english_placeholders(pattern)
-}
-
-/// The English names of the placeholders in a pattern, whatever the selected language: JSON
-/// writes these in every language.
-pub fn english_placeholders(pattern: &str) -> Cow<'_, str> {
-    if !pattern.contains('<') {
+    if current() == Lang::En || !pattern.contains('<') {
         return Cow::Borrowed(pattern);
     }
     let mut result = Cow::Borrowed(pattern);
-    for (tr, en) in PLACEHOLDERS {
-        if result.contains(tr) {
-            result = Cow::Owned(result.replace(tr, en));
+    for (en, tr) in PLACEHOLDERS {
+        if result.contains(en) {
+            result = Cow::Owned(result.replace(en, tr));
         }
     }
     result
@@ -276,15 +267,15 @@ mod tests {
     }
 
     #[test]
-    fn placeholders_are_translated_in_english() {
-        let pattern = "User <SAYI> logged in: <YOL> <EPOSTA> <ZAMAN> <IP> <URL> <*>";
-        assert!(matches!(placeholders(pattern), Cow::Borrowed(_)));
-        let _lang = scoped(Lang::En);
+    fn placeholders_are_translated_in_turkish() {
+        let pattern = "User <NUM> logged in: <PATH> <EMAIL> <TIME> <IP> <URL> <*>";
         assert_eq!(
             placeholders(pattern),
-            "User <NUM> logged in: <PATH> <EMAIL> <TIME> <IP> <URL> <*>"
+            "User <SAYI> logged in: <YOL> <EPOSTA> <ZAMAN> <IP> <URL> <*>"
         );
         assert!(matches!(placeholders("<IP>:<*>"), Cow::Borrowed(_)));
         assert!(matches!(placeholders("plain text"), Cow::Borrowed(_)));
+        let _lang = scoped(Lang::En);
+        assert!(matches!(placeholders(pattern), Cow::Borrowed(_)));
     }
 }

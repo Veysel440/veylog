@@ -468,7 +468,7 @@ fn secenek_isle(
     match sadelestir(ad).as_str() {
         "-e" | "--esik" | "--threshold" => {
             let deger = deger_al(ad, bitisik, argumanlar)?;
-            durum.rapor.drain.benzerlik_esigi = esik_ayristir(ad, &deger)?;
+            durum.rapor.drain.similarity_threshold = esik_ayristir(ad, &deger)?;
         }
         "--konum" | "--location" => {
             let deger = deger_al(ad, bitisik, argumanlar)?;
@@ -613,7 +613,7 @@ pub fn yardim_metni() -> String {
     let en_kisa_aralik = aralik_yaz(EN_KISA_ARALIK);
     let en_uzun_aralik = aralik_yaz(EN_UZUN_ARALIK);
     let aralik = aralik_yaz(Izleme::default().aralik);
-    let esik = ondalik(varsayilan.drain.benzerlik_esigi);
+    let esik = ondalik(varsayilan.drain.similarity_threshold);
     let konum = varsayilan.konum_turu.gosterilen_ad();
     let siralama = varsayilan.siralama.gosterilen_ad();
     let bicim = Bicim::Metin.gosterilen_ad();
@@ -1168,7 +1168,7 @@ mod testler {
     fn varsayilanlar_kullanilir() {
         let secenekler = ozet(&["laravel.log"]);
         assert_eq!(secenekler.dosya, PathBuf::from("laravel.log"));
-        assert_eq!(secenekler.rapor.drain.benzerlik_esigi, 0.7);
+        assert_eq!(secenekler.rapor.drain.similarity_threshold, 0.7);
         assert_eq!(secenekler.rapor.ilk, Some(VARSAYILAN_ILK));
         assert_eq!(secenekler.rapor.siralama, Siralama::Onem);
         assert_eq!(secenekler.rapor.konum_turu, KonumTuru::Metot);
@@ -1480,7 +1480,7 @@ mod testler {
             let secenekler = ozet(argumanlar);
             assert_eq!(secenekler.dosya, PathBuf::from("a.log"), "{argumanlar:?}");
             assert_eq!(
-                secenekler.rapor.drain.benzerlik_esigi, 0.8,
+                secenekler.rapor.drain.similarity_threshold, 0.8,
                 "{argumanlar:?}"
             );
             assert_eq!(secenekler.rapor.ilk, Some(20), "{argumanlar:?}");
@@ -1533,7 +1533,7 @@ mod testler {
             ozet(&["-e", "0,5", "-e", "0,9", "a.log"])
                 .rapor
                 .drain
-                .benzerlik_esigi,
+                .similarity_threshold,
             0.9
         );
     }
@@ -1578,7 +1578,7 @@ mod testler {
             let esik = ozet(&["--esik", deger, "a.log"])
                 .rapor
                 .drain
-                .benzerlik_esigi;
+                .similarity_threshold;
             assert_eq!(esik, 0.0, "{deger}");
             // -0,0 == 0,0 doğrudur; işaret ayrıca denetlenir
             assert!(esik.is_sign_positive(), "{deger}");

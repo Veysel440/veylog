@@ -24,7 +24,7 @@ use std::io::{self, Write};
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_DUSUK_SEVIYE, ESIK};
 use crate::datetime::{DateTime, TimePoint, TimeZone, format_duration, format_duration_full};
 use crate::depo::{AltGrup, Depo, DilimSayilari};
-use crate::drain::{Ayarlar, cekirdek};
+use crate::drain::{Settings, token_core};
 use crate::filtre::Filtre;
 use crate::karsilastirma::{
     ANLAMLILIK, ARTIS_KATI, Degisim, Karsilastirma, KarsilastirmaHatasi, Pencere,
@@ -126,7 +126,7 @@ impl Siralama {
 /// Raporun nasıl üretileceği: kalıp çıkarma ayarları, tablonun sırası ve uzunluğu.
 #[derive(Debug, Clone)]
 pub struct RaporAyarlari {
-    pub drain: Ayarlar,
+    pub drain: Settings,
     pub siralama: Siralama,
     /// Tabloda gösterilecek en fazla satır; None ise hepsi.
     pub ilk: Option<usize>,
@@ -147,7 +147,7 @@ pub struct RaporAyarlari {
 impl Default for RaporAyarlari {
     fn default() -> Self {
         RaporAyarlari {
-            drain: Ayarlar::default(),
+            drain: Settings::default(),
             siralama: Siralama::Onem,
             ilk: Some(VARSAYILAN_ILK),
             karsilastir: None,
@@ -185,7 +185,7 @@ pub struct KalipSatiri {
 ///
 /// Değerler depodaki maskeli mesajlardan rapor zamanında sayılır: her farklı maskeli mesaj zaten
 /// bir alt gruptur, ek bellek gerekmez. Belirtecin cümleden gelen ayraç ve noktalaması
-/// (`drain::cekirdek`) değere katılmaz: `(Ayşe,` değeri `Ayşe`dir. Kategorik bir konumun (`drain` modülündeki "aynı
+/// (`drain::token_core`) değere katılmaz: `(Ayşe,` değeri `Ayşe`dir. Kategorik bir konumun (`drain` modülündeki "aynı
 /// biçimdeki kodsal değerler") değerleri hangi işlerin, olayların ya da durumların görüldüğünü
 /// söyler; rakamlı bir konumda (`Yanıt süresi <*>`) en sık değerler görünür.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,7 +330,7 @@ impl<'d> Grup<'d> {
                 && let Some((_, sayac)) = jokerler.next()
             {
                 // Değer cümleden gelen ayraç ve noktalama olmadan sayılır: "(Ayşe," → "Ayşe"
-                sayac.say(cekirdek(belirtec), alt_grup.adet());
+                sayac.say(token_core(belirtec), alt_grup.adet());
             }
         }
     }
@@ -348,7 +348,7 @@ pub fn kaliplari_cikar(depo: &Depo, ayarlar: &RaporAyarlari) -> KalipAnalizi {
     // Her kümenin kalıbındaki `<*>` konumları; kalıplar son hallerinde
     let jokerler: Vec<Vec<usize>> = kumeler
         .iter()
-        .map(|kume| kume.joker_konumlari().collect())
+        .map(|kume| kume.wildcard_positions().collect())
         .collect();
 
     let mut gruplar: Vec<Grup<'_>> = Vec::new();
@@ -376,7 +376,7 @@ pub fn kaliplari_cikar(depo: &Depo, ayarlar: &RaporAyarlari) -> KalipAnalizi {
     let satirlar: Vec<KalipSatiri> = gruplar
         .iter()
         .map(|grup| KalipSatiri {
-            kalip: kumeler[grup.kume].metin(),
+            kalip: kumeler[grup.kume].text(),
             adet: grup.adet,
             seviye: grup.seviye,
             ilk: grup.ilk,
@@ -704,7 +704,7 @@ impl Ozet {
     pub fn kalip_cumlesi(&self) -> String {
         let analiz = &self.analiz;
         let yaklasik = if analiz.ham_mesaj_yaklasik { "≈" } else { "" };
-        let esik = ondalik(self.ayarlar.drain.benzerlik_esigi);
+        let esik = ondalik(self.ayarlar.drain.similarity_threshold);
         match lang::current() {
             Lang::Tr => format!(
                 "{yaklasik}{} farklı mesaj → maskeleyince {} → Drain ile {} kalıp (eşik {esik}) → parmak iziyle {} grup",
@@ -2116,12 +2116,14 @@ Spikes (WARNING and above, 59 slices of 10 min, score > 3.5): 1
         let satir = KalipSatiri {
             degiskenler: vec![DegiskenKonum {
                 konum: 2,
-                degerler: vec![("<SAYI>ms".to_owned(), 3)],
+                degerler: vec![("<NUM>ms".to_owned(), 3)],
                 baska: 0,
             }],
             ..ilk_satir("[2026-10-24 10:00:00] production.INFO: x\n")
         };
         assert_eq!(degerler_satirlari(&satir.degiskenler, 70), ["<NUM>ms ×3"]);
+        let _tr = lang::scoped(Lang::Tr);
+        assert_eq!(degerler_satirlari(&satir.degiskenler, 70), ["<SAYI>ms ×3"]);
     }
 
     #[test]
@@ -2442,13 +2444,13 @@ Spikes (WARNING and above, 59 slices of 10 min, score > 3.5): 1
     /// göre gruplanır. Grubun ilk ve son zamanı zamanı en küçük ve en büyük olan ilk kayıttan,
     /// örneği ilk kaydından. Parmak izi satıra bağlı değildir; gösterilen satır en yeni
     /// kaydınkidir, aynı andakilerden logda sonra gelenin.
-    fn kayit_kayit_tablo(metin: &str, ayarlar: &Ayarlar) -> Vec<Satir> {
+    fn kayit_kayit_tablo(metin: &str, ayarlar: &Settings) -> Vec<Satir> {
         let (kayitlar, _) = crate::kayit::deneme::topla(metin);
         let maskeliler: Vec<String> = kayitlar
             .iter()
-            .map(|kayit| crate::maske::maskele(&kayit.mesaj).into_owned())
+            .map(|kayit| crate::mask::mask(&kayit.mesaj).into_owned())
             .collect();
-        let (kumeler, numaralar) = crate::drain::kumele(ayarlar, &maskeliler);
+        let (kumeler, numaralar) = crate::drain::cluster(ayarlar, &maskeliler);
         let mut gruplar: Vec<BasvuruGrubu> = Vec::new();
         for (kayit, kume) in kayitlar.iter().zip(numaralar) {
             let zaman = DateTime::from_record(&kayit.zaman);
@@ -2489,7 +2491,7 @@ Spikes (WARNING and above, 59 slices of 10 min, score > 3.5): 1
                     kimlik,
                     (zaman, satir_no),
                     (
-                        kumeler[kume].metin(),
+                        kumeler[kume].text(),
                         1,
                         kayit.seviye,
                         kayit.zaman.clone(),
@@ -3420,7 +3422,7 @@ Spikes (WARNING and above, 59 slices of 10 min, score > 3.5): 1
             "kayıt eklendi: Ayşe, 3) tamam",
         ]);
         let satir = ilk_satir(&log);
-        assert_eq!(satir.kalip, "kayıt eklendi: <*> <SAYI>) tamam");
+        assert_eq!(satir.kalip, "kayıt eklendi: <*> <NUM>) tamam");
         assert_eq!(
             satir.degiskenler[0].degerler,
             [("Ayşe".to_owned(), 2), ("Mehmet".to_owned(), 1)]

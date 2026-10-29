@@ -16,7 +16,7 @@ mod kayit;
 mod komut_satiri;
 mod lang;
 mod markdown;
-mod maske;
+mod mask;
 mod okuyucu;
 mod parmak_izi;
 mod rapor;

@@ -1,2055 +1,2104 @@
-//! Drain: sabit derinlikli ağaçla log kalıbı çıkarma.
+//! Drain: extracting log patterns with a fixed depth tree.
 //!
-//! Kaynak: He, Zhu, Zheng ve Lyu, "Drain: An Online Log Parsing Approach with Fixed
-//! Depth Tree", ICWS 2017.
+//! Source: He, Zhu, Zheng and Lyu, "Drain: An Online Log Parsing Approach with Fixed Depth
+//! Tree", ICWS 2017.
 //!
-//! Mesajlar teker teker işlenir. Her mesaj ya benzediği bir kümeye katılır ya da yeni bir
-//! küme açar. Kümenin kalıbında, mesajdan mesaja değişen konumlar `<*>` olur:
-//!
-//! ```text
-//! Zamanlanmış görev başladı: kurlar:guncelle  ┐
-//! Zamanlanmış görev başladı: yedek:al         ┘→  Zamanlanmış görev başladı: <*>
-//! ```
-//!
-//! Kümeler sabit derinlikli bir ağaçta tutulur; böylece her mesaj bütün kümelerle değil,
-//! sadece kendisine benzeme ihtimali olan birkaç kümeyle karşılaştırılır:
+//! Messages are processed one at a time. Each message either joins a cluster it resembles or
+//! opens a new cluster. In the cluster's pattern, the positions that change from message to
+//! message become `<*>`:
 //!
 //! ```text
-//! kök
-//! ├── 3 belirteç
-//! │   ├── "Sepet"        → [Sepet önbellekten okundu]
-//! │   └── "Sipariş"      → [Sipariş <SAYI> oluşturuldu]
-//! └── 4 belirteç
-//!     ├── "Kullanıcı"    → [Kullanıcı <SAYI> <*> yaptı]
-//!     └── "Zamanlanmış"  → [Zamanlanmış görev başladı: <*>]
+//! Scheduled task started: rates:update  ┐
+//! Scheduled task started: backup:run    ┘→  Scheduled task started: <*>
 //! ```
 //!
-//! Bir mesaj için yapılanlar:
+//! The clusters are kept in a fixed depth tree, so that each message is compared not with every
+//! cluster but only with the few clusters that might resemble it:
 //!
-//! 1. Mesaj boşluklardan belirteçlere bölünür.
-//! 2. Belirteç sayısı, ağacın ilk katmanında dalı seçer.
-//! 3. İlk `onek_derinligi` belirtece göre aşağı inilir. İçinde rakam olan belirteçler ve
-//!    dolmuş bir düğüme gelen yeni belirteçler ortak `<*>` dalına gider.
-//! 4. Varılan yapraktaki kümelerden en benzeri bulunur. Benzerlik eşiği geçiyorsa mesaj o
-//!    kümeye katılır, geçmiyorsa yeni bir küme açılır.
-//! 5. Kümeye katılan mesajla kalıp arasında farklı olan konumlar `<*>` yapılır.
+//! ```text
+//! root
+//! ├── 3 tokens
+//! │   ├── "Cart"       → [Cart cache hit]
+//! │   └── "Order"      → [Order <NUM> created]
+//! └── 4 tokens
+//!     ├── "User"       → [User <NUM> logged <*>]
+//!     └── "Scheduled"  → [Scheduled task started: <*>]
+//! ```
 //!
-//! **Esnek eşik.** 4. adımdaki eşik, büyük ihtimalle değişken olan farklılıkların oranında
-//! gevşer: eşik × (n − değişken fark) / n. İki tür farklılık değişken sayılır:
+//! What happens to a message:
 //!
-//! - *İki tarafında da rakam olan farklılıklar.* Fikir Drain'in genişletilmiş sürümünden gelir
-//!   (He ve ark., "A Directed Acyclic Graph Approach to Online Log Parsing", 2018). Böylece
-//!   `Yanıt süresi 120ms` ile `Yanıt süresi 95ms` gibi kısa mesajlar da birleşebilir. Rakam
-//!   yalnızca bir taraftaysa fark değişken sayılmaz: `Yanıt süresi uzun` başka bir olaydır.
-//! - *Aynı biçimdeki kodsal değerler.* Koddan gelen bir değer sıradan bir kelimeye benzemez:
-//!   `App\Jobs\FaturaGonder` bir sınıf adıdır, `ORDER_CREATED` bir sabit, `odeme.basarisiz`
-//!   bir olay adı, `'fiyat'` tırnaklı bir anahtar. İki belirteç farklı ama ikisi de aynı kodsal
-//!   biçimdeyse (`Bicim`) fark değişken sayılır: `İşlendi: App\Jobs\FaturaGonder` ile
-//!   `İşlendi: App\Jobs\EpostaGonder` birleşir, `Ödeme alındı` ile `Ödeme reddedildi` (iki
-//!   sıradan kelime) birleşmez. Böyle bir konum *kategorik* bir konumdur: değerleri bir kümeden
-//!   gelir ve rapor o değerleri sayar. Kodsal biçimli bir baş belirteç, rakamlı belirteçler
-//!   gibi ortak `<*>` dalına gider; yoksa `ORDER_CREATED olayı işlendi` ile
-//!   `ORDER_FAILED olayı işlendi` hiç karşılaştırılmazdı.
-//! - *Değişken konumlar.* Rakamsız bir sıradan kelime (kullanıcı adı, ürün adresi) kısa
-//!   mesajları birleştirmez: `Bilinmeyen kullanıcı: ahmet` ile `Bilinmeyen kullanıcı: mehmet` üç
-//!   belirtecin ikisinde aynıdır (0,67 < 0,7). Her değer ayrı bir küme olur ve yaprak büyüdükçe
-//!   her yeni mesaj bütün kümelerle karşılaştırılır: süre mesaj sayısının karesiyle artar.
-//!   3. adımdaki dolu düğüm kuralı yaprakta da uygulanır: kümelerin kalıplarında bir konum
-//!   `en_fazla_cocuk`'tan fazla farklı belirteç aldıysa o konum değişkendir. Böyle bir konum
-//!   bulunursa mesajlar bu bilgiyle bir kez daha, baştan kümelenir (ikinci tur); konum değişken
-//!   sayılmadan önce açılmış kümeler de böylece birleşir.
+//! 1. The message is split into tokens at whitespace.
+//! 2. The number of tokens chooses the branch in the first layer of the tree.
+//! 3. The tree is descended by the first `prefix_depth` tokens. Tokens with a digit in them, and
+//!    new tokens arriving at a node that is full, go to the shared `<*>` branch.
+//! 4. The most similar cluster in the leaf reached is found. If the similarity passes the
+//!    threshold, the message joins that cluster; otherwise a new cluster is opened.
+//! 5. The positions where the joining message and the pattern differ become `<*>`.
 //!
-//! Gevşeyen eşiğin iki sınırı vardır. Değişken konumlar tek belirteçli mesajlarda aranmaz:
-//! orada konum mesajın kendisidir ve bütün tek kelimelik mesajlar (`Unauthenticated.`,
-//! `odeme.basarisiz`) aynı yaprakta durur; yüzden fazla farklı olay adı onları değişken yapmaz.
-//! Ve hiçbir belirteci tutmayan bir birleşme ancak bütün farklılıkların iki tarafında da rakam
-//! varsa olur: tutunacak tek yeri bir değişken konum olan iki mesaj birleşmez.
+//! **Flexible threshold.** The threshold in step 4 relaxes by the share of the differences that
+//! are most likely variables: threshold × (n − variable differences) / n. These differences count
+//! as variable:
 //!
-//! Kümelerin eşikleri böylece farklı olabilir. Mesaj, eşiği geçen kümelerin en benzerine
-//! katılır: en benzer küme eşiği geçmese de bir başkası geçebilir. Klasik Drain'de eşik
-//! herkes için aynıdır; en benzer küme geçemiyorsa hiçbiri geçemez ve iki kural aynı sonucu
-//! verir.
+//! - *Differences with a digit on both sides.* The idea comes from the extended version of Drain
+//!   (He et al., "A Directed Acyclic Graph Approach to Online Log Parsing", 2018). This way short
+//!   messages such as `Response time 120ms` and `Response time 95ms` can merge too. If only one
+//!   side has a digit, the difference does not count as variable: `Response time exceeded` is a
+//!   different event.
+//! - *Code-like values of the same shape.* A value that comes from code does not look like an
+//!   ordinary word: `App\Jobs\SendInvoice` is a class name, `ORDER_CREATED` a constant,
+//!   `payment.failed` an event name, `'price'` a quoted key. If two tokens differ but both have the
+//!   same code-like shape (`Shape`), the difference counts as variable:
+//!   `Handled: App\Jobs\SendInvoice` and `Handled: App\Jobs\SendEmail` merge, `Payment received`
+//!   and `Payment rejected` (two ordinary words) do not. Such a position is a *categorical*
+//!   position: its values come from a set, and the report counts those values. A head token with
+//!   a code-like shape goes to the shared `<*>` branch, like tokens with digits; otherwise
+//!   `ORDER_CREATED event handled` and `ORDER_FAILED event handled` would never be compared.
+//! - *Variable positions.* An ordinary word without digits (a user name, a product slug) does not
+//!   merge short messages: `Unknown user: alice` and `Unknown user: bob` are the same in two of
+//!   their three tokens (0.67 < 0.7). Each value becomes a separate cluster, and as the leaf grows,
+//!   every new message is compared with all of the clusters: the time grows with the square of
+//!   the number of messages. The full node rule of step 3 is applied in the leaf too: if a
+//!   position in the patterns of the clusters took more than `max_children` different tokens,
+//!   that position is variable. If such a position is found, the messages are clustered once
+//!   more from the start with this knowledge (the second pass); this way the clusters opened
+//!   before the position counted as variable merge too.
 //!
-//! **Joker.** Kalıplardaki joker, içinde boşluk olan bir iç işarettir. Belirteçler boşluklardan
-//! bölündüğü için hiçbir belirteçle karışmaz: mesajda yazılı bir `<*>` sıradan bir kelimedir ve
-//! birebir aynı mesajlar birleşir. Kalıp gösterilirken joker `<*>` diye yazılır.
+//! The relaxed threshold has two limits. Variable positions are not looked for in single-token
+//! messages: there the position is the message itself, and all one-word messages
+//! (`Unauthenticated.`, `payment.failed`) sit in the same leaf; more than a hundred different
+//! event names do not make them variable. And a merge that keeps none of the tokens only happens
+//! if every difference has a digit on both sides: two messages whose only foothold is a variable
+//! position do not merge.
 //!
-//! **Sıra ve önbellek.** Drain sıraya bağlıdır: aynı mesaj logun başında bir kümeye, sonunda
-//! (arada daha benzer bir küme açıldıysa) başka bir kümeye katılabilir. Bu yüzden her kayıt,
-//! mesajı daha önce görülmüş olsa da, logdaki sırasıyla kümelenir (`Kumeleyici`). Bir logdaki
-//! kayıtların çoğu daha önce görülmüş bir mesajın tekrarıdır; her tekrarda ağaçta arama
-//! yapmamak için her mesajın son sonucu saklanır. Ağacın her uzunluktaki kısmının bir sürümü
-//! vardır: o uzunlukta bir küme açılınca ya da bir kalıp değişince artar. Mesaj geldiğinde
-//! kendi uzunluğunun sürümü son gelişinden bu yana değişmediyse arama aynı kümeyi bulurdu ve
-//! kalıp (mesaja zaten uyduğu için) değişmezdi: sonuç aramadan verilir. Bir mesajın aramasını
-//! etkileyen her şey (ağacın o uzunluktaki dalları, oradaki kümelerin kalıpları ve konumları,
-//! tek belirteçli kümeler) yalnızca o uzunlukta değişir.
+//! The thresholds of the clusters can thus differ. A message joins the most similar of the
+//! clusters that pass their threshold: even if the most similar cluster does not pass, another one
+//! can. In classic Drain the threshold is the same for every cluster; if the most similar cluster
+//! cannot pass, none can, and the two rules give the same result.
+//!
+//! **Wildcard.** The wildcard in patterns is an internal marker that contains spaces. Tokens are
+//! split at whitespace, so it is never mistaken for a token: a `<*>` written in a message is an
+//! ordinary word, and identical messages merge. When a pattern is shown, the wildcard is written
+//! as `<*>`.
+//!
+//! **Order and cache.** Drain depends on order: the same message can join one cluster at the start
+//! of the log and another cluster at the end (if a more similar cluster was opened in between).
+//! So every record is clustered in its order in the log, even if its message was seen before
+//! (`Clusterer`). Most records in a log repeat a message seen before; so as not to search the tree
+//! on every repeat, the last result of each message is kept. The part of the tree for each length
+//! has a version: it increases when a cluster of that length is opened or a pattern changes. When
+//! a message arrives and the version of its own length has not changed since it last came, the
+//! search would find the same cluster, and the pattern (which already matches the message) would
+//! not change: the result is given without searching. Everything that affects the search for a
+//! message (the branches of the tree for that length, the patterns and positions of the clusters
+//! there, the single-token clusters) changes only within that length.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 
-/// Kalıpta değişken bir konumun iç işareti. Boşluk içerdiği için mesajdaki hiçbir belirteçle
-/// karışmaz. Gösterilen hali `JOKER_GORUNUMU`.
-const JOKER: &str = "< * >";
+/// The internal marker of a variable position in a pattern. It contains spaces, so it is never
+/// mistaken for a token of a message. How it is shown: `WILDCARD_DISPLAY`.
+const WILDCARD: &str = "< * >";
 
-/// Jokerin kalıp gösterilirken yazılan hali: `Zamanlanmış görev başladı: <*>`
-const JOKER_GORUNUMU: &str = "<*>";
+/// How the wildcard is written when a pattern is shown: `Scheduled task started: <*>`
+const WILDCARD_DISPLAY: &str = "<*>";
 
-/// Drain'in ayarları.
+/// Drain's settings.
 #[derive(Debug, Clone)]
-pub struct Ayarlar {
-    /// Ağaçta mesajın kaç baş belirtecine göre dallanılacağı.
-    pub onek_derinligi: usize,
-    /// Bir mesajın kümeye katılması için gereken en düşük benzerlik (0 ile 1 arası).
-    pub benzerlik_esigi: f64,
-    /// Bir düğümün en fazla çocuk sayısı; dolunca yeni belirteçler `<*>` dalına gider. Bir
-    /// yaprakta bundan fazla farklı belirteç alan konum değişken sayılır.
-    pub en_fazla_cocuk: usize,
-    /// Eşik, büyük ihtimalle değişken olan farklılıkların oranında gevşesin mi? Kapalıyken
-    /// davranış klasik Drain (ve Drain3) ile aynıdır.
-    pub esnek_esik: bool,
+pub struct Settings {
+    /// By how many head tokens of a message the tree branches.
+    pub prefix_depth: usize,
+    /// The lowest similarity for a message to join a cluster (between 0 and 1).
+    pub similarity_threshold: f64,
+    /// The most children a node can have; once it is full, new tokens go to the `<*>` branch. A
+    /// position that takes more different tokens than this in a leaf counts as variable.
+    pub max_children: usize,
+    /// Should the threshold relax by the share of the differences that are most likely
+    /// variables? When it is off, the behavior is the same as classic Drain (and Drain3).
+    pub flexible_threshold: bool,
 }
 
-impl Default for Ayarlar {
+impl Default for Settings {
     fn default() -> Self {
-        Ayarlar {
-            onek_derinligi: 1,
-            benzerlik_esigi: 0.7,
-            en_fazla_cocuk: 100,
-            esnek_esik: true,
+        Settings {
+            prefix_depth: 1,
+            similarity_threshold: 0.7,
+            max_children: 100,
+            flexible_threshold: true,
         }
     }
 }
 
-/// Bir yaprakta en fazla bu kadar küme × `en_fazla_cocuk` küme açılır. Her konumu en fazla
-/// `en_fazla_cocuk` farklı değer alan ama değerlerinin birleşimleri sayısız olan mesajlar
-/// (`<ad> <eylem> <nesne>`) hiçbir konumu değişken yapmaz: her biri ayrı bir küme açar, her
-/// yeni mesaj hepsiyle karşılaştırılır ve süre mesaj sayısının karesiyle artardı. Yaprak
-/// dolunca hiçbir kümeye benzemeyen mesajlar yaprağın taşma kümesinde toplanır; böylece bir
-/// mesaj en fazla bu kadar kümeyle karşılaştırılır. Gerçek loglarda yapraklar bunun çok
-/// altındadır.
-const YAPRAK_KATSAYISI: usize = 10;
+/// At most this many × `max_children` clusters are opened in a leaf. Messages whose every position
+/// takes at most `max_children` different values, but whose combinations of values are countless
+/// (`<name> <action> <object>`), make no position variable: each of them opens a separate cluster,
+/// every new message is compared with all of them, and the time would grow with the square of
+/// the number of messages. Once the leaf is full, the messages that resemble no cluster collect
+/// in the leaf's overflow cluster; this way a message is compared with at most this many
+/// clusters. In real logs, leaves stay far below this.
+const LEAF_FACTOR: usize = 10;
 
-/// Aynı kalıba uyan mesajlar.
+/// Messages that match the same pattern.
 ///
-/// Kalıp yalnızca jokere döner (`guncelle`): joker olmayan belirteçleri hep kümeyi açan
-/// mesajınkilerdir. Bu yüzden belirteçler ayrı ayrı saklanmaz; kalıp, açan mesajın metni
-/// (depodaki maskeli mesajla paylaşılır) ve belirteçlerin o metindeki yerleridir. Belirteç
-/// başına sekiz bayt: uzun SQL mesajlarıyla dolu bir logda kalıplar, her belirteç ayrı bir
-/// metin olsaydı tutacakları belleğin yedide birini tutar.
+/// A pattern only turns into wildcards (`update`): its tokens that are not wildcards are always
+/// those of the message that opened the cluster. So the tokens are not stored separately; the
+/// pattern is the text of the opening message (shared with the masked message in the store) and
+/// the places of the tokens in that text. Eight bytes per token: in a log full of long SQL
+/// messages, the patterns take a seventh of the memory they would take if every token were a
+/// separate string.
 #[derive(Debug, Clone)]
-pub struct Kume {
-    /// Kümeyi açan mesaj.
-    acan: Rc<str>,
-    /// Kalıbın belirteçlerinin `acan`daki yerleri (başı ve sonu, bayt); jokerde
-    /// `JOKER_YERI`. Gösterilecek hali `metin`.
-    yerler: Box<[(u32, u32)]>,
-    /// Kümeye katılan mesaj sayısı.
-    pub adet: usize,
+pub struct Cluster {
+    /// The message that opened the cluster.
+    origin: Rc<str>,
+    /// The places of the pattern's tokens in `origin` (start and end, in bytes); `WILDCARD_SPAN`
+    /// for a wildcard. How it is shown: `text`.
+    spans: Box<[(u32, u32)]>,
+    /// The number of messages that joined the cluster.
+    pub count: usize,
 }
 
-/// Kalıpta jokerin yeri: hiçbir metinde olmayan bir aralık.
-const JOKER_YERI: (u32, u32) = (u32::MAX, u32::MAX);
+/// The place of a wildcard in a pattern: a range that is in no text.
+const WILDCARD_SPAN: (u32, u32) = (u32::MAX, u32::MAX);
 
-impl Kume {
-    /// `acan` mesajıyla açılan küme; `sinirlar`: belirteçlerinin yerleri (`sinirlar`).
-    fn new(acan: &Rc<str>, sinirlar: &[(usize, usize)]) -> Kume {
-        let yer = |konum: usize| u32::try_from(konum).expect("mesaj 4 GB'tan kısadır");
-        Kume {
-            acan: Rc::clone(acan),
-            yerler: sinirlar
+impl Cluster {
+    /// The cluster opened by the message `origin`; `bounds`: the places of its tokens
+    /// (`token_bounds`).
+    fn new(origin: &Rc<str>, bounds: &[(usize, usize)]) -> Cluster {
+        let offset = |pos: usize| u32::try_from(pos).expect("a message is shorter than 4 GB");
+        Cluster {
+            origin: Rc::clone(origin),
+            spans: bounds
                 .iter()
-                .map(|&(bas, son)| (yer(bas), yer(son)))
+                .map(|&(start, end)| (offset(start), offset(end)))
                 .collect(),
-            adet: 1,
+            count: 1,
         }
     }
 
-    /// Kalıbın belirteçleri sırayla; jokerlerde iç joker işareti (`JOKER`).
-    fn belirtecler(&self) -> impl Iterator<Item = &str> + '_ {
-        self.yerler.iter().map(|&(bas, son)| {
-            if (bas, son) == JOKER_YERI {
-                JOKER
+    /// The tokens of the pattern in order; the internal wildcard marker (`WILDCARD`) for the
+    /// wildcards.
+    fn tokens(&self) -> impl Iterator<Item = &str> + '_ {
+        self.spans.iter().map(|&(start, end)| {
+            if (start, end) == WILDCARD_SPAN {
+                WILDCARD
             } else {
-                &self.acan[bas as usize..son as usize]
+                &self.origin[start as usize..end as usize]
             }
         })
     }
 
-    /// Kalıpta mesajdan farklı olan konumları jokere çevirir. Kalıp değiştiyse true.
-    fn guncelle(&mut self, belirtecler: &[&str]) -> bool {
-        let mut degisti = false;
-        for (yer, b) in self.yerler.iter_mut().zip(belirtecler) {
-            if *yer != JOKER_YERI && &self.acan[yer.0 as usize..yer.1 as usize] != *b {
-                *yer = JOKER_YERI;
-                degisti = true;
+    /// Turns the positions where the pattern differs from the message into wildcards. True if the
+    /// pattern changed.
+    fn update(&mut self, tokens: &[&str]) -> bool {
+        let mut changed = false;
+        for (span, t) in self.spans.iter_mut().zip(tokens) {
+            if *span != WILDCARD_SPAN && &self.origin[span.0 as usize..span.1 as usize] != *t {
+                *span = WILDCARD_SPAN;
+                changed = true;
             }
         }
-        degisti
+        changed
     }
 
-    /// Kalıptaki joker konumların sıraları (0'dan). Mesajda yazılı bir `<*>` joker değildir.
-    pub fn joker_konumlari(&self) -> impl Iterator<Item = usize> + '_ {
-        self.yerler
+    /// The indexes (from 0) of the wildcard positions in the pattern. A `<*>` written in the
+    /// message is not a wildcard.
+    pub fn wildcard_positions(&self) -> impl Iterator<Item = usize> + '_ {
+        self.spans
             .iter()
             .enumerate()
-            .filter(|&(_, &yer)| yer == JOKER_YERI)
-            .map(|(sira, _)| sira)
+            .filter(|&(_, &span)| span == WILDCARD_SPAN)
+            .map(|(i, _)| i)
     }
 
-    /// Kalıbın okunabilir hali: "Zamanlanmış görev başladı: <*>"
-    pub fn metin(&self) -> String {
-        let belirtecler: Vec<&str> = self
-            .belirtecler()
-            .map(|belirtec| {
-                if belirtec == JOKER {
-                    JOKER_GORUNUMU
+    /// The readable form of the pattern: "Scheduled task started: <*>"
+    pub fn text(&self) -> String {
+        let tokens: Vec<&str> = self
+            .tokens()
+            .map(|token| {
+                if token == WILDCARD {
+                    WILDCARD_DISPLAY
                 } else {
-                    belirtec
+                    token
                 }
             })
             .collect();
-        belirtecler.join(" ")
+        tokens.join(" ")
     }
 }
 
-/// Mesajın belirteçlerinin yerleri (başı ve sonu, bayt): `split_whitespace` gibi Unicode
-/// boşluklarından bölünür.
-fn sinirlar(mesaj: &str) -> Vec<(usize, usize)> {
-    let mut sinirlar = Vec::new();
-    let mut bas = None;
-    for (konum, harf) in mesaj.char_indices() {
-        if harf.is_whitespace() {
-            if let Some(bas) = bas.take() {
-                sinirlar.push((bas, konum));
+/// The places of a message's tokens (start and end, in bytes): split at Unicode whitespace, like
+/// `split_whitespace`.
+fn token_bounds(message: &str) -> Vec<(usize, usize)> {
+    let mut bounds = Vec::new();
+    let mut start = None;
+    for (pos, c) in message.char_indices() {
+        if c.is_whitespace() {
+            if let Some(start) = start.take() {
+                bounds.push((start, pos));
             }
-        } else if bas.is_none() {
-            bas = Some(konum);
+        } else if start.is_none() {
+            start = Some(pos);
         }
     }
-    if let Some(bas) = bas {
-        sinirlar.push((bas, mesaj.len()));
+    if let Some(start) = start {
+        bounds.push((start, message.len()));
     }
-    sinirlar
+    bounds
 }
 
-/// Ağacın bir düğümü.
+/// A node of the tree.
 #[derive(Debug, Default)]
-struct Dugum {
-    /// Belirteç → alt düğüm.
-    cocuklar: HashMap<String, Dugum>,
-    /// Sadece yapraklarda dolu: bu yaprağa düşen kümelerin numaraları.
-    kume_numaralari: Vec<usize>,
-    /// Sadece dolmuş yapraklarda: hiçbir kümeye benzemeyen mesajların kümesi
-    /// (`YAPRAK_KATSAYISI`). `kume_numaralari`nda değildir.
-    tasma: Option<usize>,
-    /// Sadece yapraklarda ve esnek eşikte dolu: kümelerin kalıplarındaki her konum. Yaprakta
-    /// `en_fazla_cocuk`'tan fazla küme olunca (ya da önceki turda değişken konumu
-    /// öğrenildiyse) dolar; o zamana kadar boştur.
-    konumlar: Vec<Konum>,
+struct Node {
+    /// Token → child node.
+    children: HashMap<String, Node>,
+    /// Filled only in leaves: the indexes of the clusters that fall into this leaf.
+    cluster_ids: Vec<usize>,
+    /// Only in full leaves: the cluster of the messages that resemble no cluster (`LEAF_FACTOR`).
+    /// It is not in `cluster_ids`.
+    overflow: Option<usize>,
+    /// Filled only in leaves, with the flexible threshold: every position in the patterns of the
+    /// clusters. It is filled once the leaf has more than `max_children` clusters (or if a
+    /// variable position was learned in the previous pass); until then it is empty.
+    positions: Vec<Position>,
 }
 
-/// Bir yapraktaki kümelerin kalıplarında bir konum.
+/// A position in the patterns of the clusters in a leaf.
 #[derive(Debug)]
-enum Konum {
-    /// Şimdiye kadar görülen farklı belirteçlerin özetleri. Belirteçlerin kendisi saklanmaz:
-    /// yalnızca kaç farklı değer görüldüğü sayılır.
-    Degerler(HashSet<u64>),
-    /// `en_fazla_cocuk`'tan fazla farklı belirteç görüldü: bu konum değişkendir.
-    Degisken,
+enum Position {
+    /// The hashes of the different tokens seen so far. The tokens themselves are not stored: only
+    /// how many different values were seen is counted.
+    Values(HashSet<u64>),
+    /// More than `max_children` different tokens were seen: this position is variable.
+    Variable,
 }
 
-impl Konum {
-    fn degisken_mi(&self) -> bool {
-        matches!(self, Konum::Degisken)
+impl Position {
+    fn is_variable(&self) -> bool {
+        matches!(self, Position::Variable)
     }
 }
 
-/// Bir yaprağın ağaçtaki yeri: belirteç sayısı ve köke inerken seçilen dallar.
-type YaprakYolu = (usize, Vec<String>);
+/// The place of a leaf in the tree: the number of tokens and the branches chosen on the way down
+/// from the root.
+type LeafPath = (usize, Vec<String>);
 
-/// Ağaçta bir mesaja benzeyen kümenin aranması.
+/// Searching the tree for a cluster that resembles a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Arama {
-    /// Eşiği geçen en benzer küme.
-    Bulundu(usize),
-    /// Benzeyen küme yok: yeni bir küme açılır.
-    Yok,
-    /// Benzeyen küme yok ve yaprak dolu: mesaj yaprağın taşma kümesine gider.
-    Dolu,
+enum Search {
+    /// The most similar cluster that passes the threshold.
+    Found(usize),
+    /// No cluster resembles it: a new cluster is opened.
+    NotFound,
+    /// No cluster resembles it and the leaf is full: the message goes to the leaf's overflow
+    /// cluster.
+    Full,
 }
 
-/// Drain kalıp çıkarıcısı. Dışarıdan `kumele` ile kullanılır.
+/// The Drain pattern extractor. Used from outside through `Clusterer` (and `cluster` in tests).
 #[derive(Debug)]
 struct Drain {
-    ayarlar: Ayarlar,
-    /// Ağacın ilk katmanı: belirteç sayısı → o uzunluktaki mesajların alt ağacı.
-    uzunluklar: HashMap<usize, Dugum>,
-    /// Bütün kümeler. Ağaç kümelere bu listedeki sıra numarasıyla (indeks) işaret eder.
-    kumeler: Vec<Kume>,
-    /// Değişken konumu bulunan yapraklar: her konumun değişken olup olmadığı.
-    degiskenler: HashMap<YaprakYolu, Vec<bool>>,
-    /// Önceki turda öğrenilen değişken konumlar: yeni açılan bir yaprak bunlarla başlar.
-    ogrenilen: HashMap<YaprakYolu, Vec<bool>>,
-    /// Tek belirteçli kümeler: kümeyi açan belirteç → küme numarası (`tek_belirtecli_adaylar`).
-    tek_belirtecliler: HashMap<String, usize>,
-    /// Esnek eşikte rakamlı tek belirteçli mesajların kümesi. Rakamlı iki tek belirteç
-    /// birbirine katıldığı için en fazla bir tane olur.
-    rakamli_tek: Option<usize>,
-    /// Belirteç sayısı → ağacın o uzunluktaki kısmının sürümü: bir küme açılınca ya da bir
-    /// kalıp değişince artar (`Kumeleyici`'nin önbelleği için).
-    surumler: HashMap<usize, u64>,
+    settings: Settings,
+    /// The first layer of the tree: number of tokens → the subtree of the messages of that length.
+    by_length: HashMap<usize, Node>,
+    /// All the clusters. The tree points to the clusters by their index in this list.
+    clusters: Vec<Cluster>,
+    /// The leaves where a variable position was found: whether each position is variable.
+    variables: HashMap<LeafPath, Vec<bool>>,
+    /// The variable positions learned in the previous pass: a new leaf starts with these.
+    learned: HashMap<LeafPath, Vec<bool>>,
+    /// The single-token clusters: the token that opened the cluster → the cluster's index
+    /// (`single_token_candidates`).
+    single_tokens: HashMap<String, usize>,
+    /// With the flexible threshold, the cluster of the single-token messages with digits. Two
+    /// single tokens with digits join each other, so there is at most one.
+    digit_single: Option<usize>,
+    /// Number of tokens → the version of the part of the tree for that length: it increases when
+    /// a cluster is opened or a pattern changes (for the cache of `Clusterer`).
+    versions: HashMap<usize, u64>,
 }
 
-/// Mesajları teker teker, geldikleri sırayla kümeler; her mesajın o anki küme numarasını verir.
+/// Clusters messages one at a time, in the order they come; gives the current cluster index of
+/// each message.
 ///
-/// Her mesajın bir numarası vardır: aynı metin hep aynı numarayla gelir (depo maskeli mesajları
-/// böyle numaralandırır). Mesajın son gelişinin sonucu numarasıyla saklanır; ağacın mesajın
-/// uzunluğundaki kısmı o zamandan beri değişmediyse sonuç aramadan verilir (modül belgesindeki
-/// "Sıra ve önbellek"). Sonuç, her mesajı aramayla eklemekle birebir aynıdır.
+/// Every message has an ID: the same text always comes with the same ID (this is how the store
+/// numbers the masked messages). The result of a message's last arrival is kept by its ID; if
+/// the part of the tree for the message's length has not changed since then, the result is given
+/// without searching ("Order and cache" in the module documentation). The result is exactly the
+/// same as adding every message with a search.
 ///
-/// Kümeleme sırasında değişken bir konum bulunursa (`ikinci_tur_gerekir`) mesajlar bu bilgiyle
-/// baştan, aynı sırayla bir kez daha kümelenmelidir (`ikinci_tur`).
+/// If a variable position is found during clustering (`needs_second_pass`), the messages must be
+/// clustered once more from the start, in the same order, with this knowledge (`second_pass`).
 #[derive(Debug)]
-pub struct Kumeleyici {
+pub struct Clusterer {
     drain: Drain,
-    /// Mesaj numarası → son gelişinin sonucu.
-    onbellek: Vec<Option<OncekiSonuc>>,
+    /// Message ID → the result of its last arrival.
+    cache: Vec<Option<CachedResult>>,
 }
 
-/// Bir mesajın son kümelenişi.
+/// The last clustering of a message.
 #[derive(Debug, Clone, Copy)]
-struct OncekiSonuc {
-    /// Mesajın belirteç sayısı: ağacın hangi kısmının sürümüne bakılacağı.
-    uzunluk: usize,
-    /// Kümelendikten hemen sonra ağacın o kısmının sürümü.
-    surum: u64,
-    kume: usize,
+struct CachedResult {
+    /// The number of tokens of the message: the version of which part of the tree to look at.
+    len: usize,
+    /// The version of that part of the tree right after clustering.
+    version: u64,
+    cluster: usize,
 }
 
-impl Kumeleyici {
-    pub fn new(ayarlar: Ayarlar) -> Self {
-        Kumeleyici {
-            drain: Drain::new(ayarlar),
-            onbellek: Vec::new(),
+impl Clusterer {
+    pub fn new(settings: Settings) -> Self {
+        Clusterer {
+            drain: Drain::new(settings),
+            cache: Vec::new(),
         }
     }
 
-    /// Mesajı kümeler; küme numarasını döndürür. `no`: mesajın numarası. Mesaj bir küme
-    /// açarsa kalıbı onun metnini paylaşır.
-    pub fn ekle(&mut self, no: usize, mesaj: &Rc<str>) -> usize {
-        if let Some(Some(onceki)) = self.onbellek.get(no)
-            && self.drain.surum(onceki.uzunluk) == onceki.surum
+    /// Clusters the message; returns the cluster's index. `id`: the message's ID. If the message
+    /// opens a cluster, the pattern shares the message's text.
+    pub fn add(&mut self, id: usize, message: &Rc<str>) -> usize {
+        if let Some(Some(previous)) = self.cache.get(id)
+            && self.drain.version(previous.len) == previous.version
         {
-            self.drain.kumeler[onceki.kume].adet += 1;
-            return onceki.kume;
+            self.drain.clusters[previous.cluster].count += 1;
+            return previous.cluster;
         }
-        let sinirlar = sinirlar(mesaj);
-        let belirtecler: Vec<&str> = sinirlar
+        let bounds = token_bounds(message);
+        let tokens: Vec<&str> = bounds
             .iter()
-            .map(|&(bas, son)| &mesaj[bas..son])
+            .map(|&(start, end)| &message[start..end])
             .collect();
-        let kume = self.drain.belirtecleri_ekle(mesaj, &sinirlar, &belirtecler);
-        if self.onbellek.len() <= no {
-            self.onbellek.resize(no + 1, None);
+        let cluster = self.drain.add_tokens(message, &bounds, &tokens);
+        if self.cache.len() <= id {
+            self.cache.resize(id + 1, None);
         }
-        self.onbellek[no] = Some(OncekiSonuc {
-            uzunluk: belirtecler.len(),
-            surum: self.drain.surum(belirtecler.len()),
-            kume,
+        self.cache[id] = Some(CachedResult {
+            len: tokens.len(),
+            version: self.drain.version(tokens.len()),
+            cluster,
         });
-        kume
+        cluster
     }
 
-    /// Testlerde: mesaj bir metinden.
+    /// In tests: the message from a string.
     #[cfg(test)]
-    fn ekle_metin(&mut self, no: usize, mesaj: &str) -> usize {
-        self.ekle(no, &Rc::from(mesaj))
+    fn add_text(&mut self, id: usize, message: &str) -> usize {
+        self.add(id, &Rc::from(message))
     }
 
-    /// Kümelemede değişken bir konum bulundu mu? Bulunduysa mesajlar `ikinci_tur` ile baştan
-    /// kümelenmelidir.
-    pub fn ikinci_tur_gerekir(&self) -> bool {
-        !self.drain.degiskenler.is_empty()
+    /// Was a variable position found during clustering? If so, the messages must be clustered
+    /// again from the start with `second_pass`.
+    pub fn needs_second_pass(&self) -> bool {
+        !self.drain.variables.is_empty()
     }
 
-    /// Boş bir kümeleyici; bu turda öğrenilen değişken konumları (ve bu kümeleyicinin
-    /// önceki turlardan bildiklerini) bilir. Log bir kerede okunurken ikinci turun kendi
-    /// bulduğu değişken konumlar kullanılmaz: üçüncü bir tur yoktur. Canlı izlemede ise
-    /// kümeleyici her çizimde gerekiyorsa yeniden kurulur; bir yaprakta sonradan bulunan bir
-    /// değişken konum o yaprağın bütün konumlarıyla birlikte kaydedildiği için
-    /// (`degiskenler`), bilinenlerin üstüne yazılması hiçbirini unutturmaz.
-    pub fn ikinci_tur(&self) -> Kumeleyici {
-        let mut ogrenilen = self.drain.ogrenilen.clone();
-        for (yol, degiskenler) in &self.drain.degiskenler {
-            ogrenilen.insert(yol.clone(), degiskenler.clone());
+    /// An empty clusterer that knows the variable positions learned in this pass (and what this
+    /// clusterer knew from earlier passes). When a log is read in one go, the variable positions
+    /// the second pass finds itself are not used: there is no third pass. In live watching,
+    /// however, the clusterer is rebuilt at each redraw if needed; a variable position found later
+    /// in a leaf is recorded together with all the positions of that leaf (`variables`), so writing
+    /// over what is known makes nothing forgotten.
+    pub fn second_pass(&self) -> Clusterer {
+        let mut learned = self.drain.learned.clone();
+        for (path, variables) in &self.drain.variables {
+            learned.insert(path.clone(), variables.clone());
         }
-        Kumeleyici {
+        Clusterer {
             drain: Drain {
-                ogrenilen,
-                ..Drain::new(self.drain.ayarlar.clone())
+                learned,
+                ..Drain::new(self.drain.settings.clone())
             },
-            onbellek: Vec::new(),
+            cache: Vec::new(),
         }
     }
 
-    /// Yalnızca kümeleri (kalıplarını ve adetlerini) taşıyan bir kopya: ağacı yoktur, mesaj
-    /// eklenemez. Deponun bir zaman penceresindeki görünümü (`Depo::pencere`) kalıpları
-    /// buradan okur; ağacı kopyalamak gerekmez.
-    pub fn kumelerin_kopyasi(&self) -> Kumeleyici {
-        Kumeleyici {
+    /// A copy that carries only the clusters (their patterns and counts): it has no tree, and no
+    /// message can be added. The view of the store over a time window (`Depo::pencere`) reads the
+    /// patterns from here; there is no need to copy the tree.
+    pub fn clusters_only(&self) -> Clusterer {
+        Clusterer {
             drain: Drain {
-                kumeler: self.drain.kumeler.clone(),
-                ..Drain::new(self.drain.ayarlar.clone())
+                clusters: self.drain.clusters.clone(),
+                ..Drain::new(self.drain.settings.clone())
             },
-            onbellek: Vec::new(),
+            cache: Vec::new(),
         }
     }
 
-    /// Kümeler, açılış sırasıyla. Kalıpları yeni mesajlar geldikçe değişir; son halleri bütün
-    /// mesajlar kümelenince alınmalıdır.
-    pub fn kumeler(&self) -> &[Kume] {
-        &self.drain.kumeler
+    /// The clusters, in the order they were opened. Their patterns change as new messages arrive;
+    /// the final ones must be taken once all the messages have been clustered.
+    pub fn clusters(&self) -> &[Cluster] {
+        &self.drain.clusters
     }
 }
 
-/// Mesajları sırayla, önbelleksiz kümeler. Kümeleri (ilk görüldükleri sırayla) ve her mesajın
-/// küme numarasını (mesajlarla aynı sırada) döndürür. Değişken bir konum bulunursa mesajlar
-/// ikinci kez kümelenir. `Kumeleyici`'nin sonuçlarının denetlendiği başvuru uygulamasıdır.
+/// Clusters messages in order, without the cache. Returns the clusters (in the order they were
+/// first seen) and the cluster index of each message (in the same order as the messages). If a
+/// variable position is found, the messages are clustered a second time. The reference
+/// implementation that the results of `Clusterer` are checked against.
 #[cfg(test)]
-pub fn kumele(ayarlar: &Ayarlar, mesajlar: &[impl AsRef<str>]) -> (Vec<Kume>, Vec<usize>) {
-    let mesajlar: Vec<Rc<str>> = mesajlar
+pub fn cluster(settings: &Settings, messages: &[impl AsRef<str>]) -> (Vec<Cluster>, Vec<usize>) {
+    let messages: Vec<Rc<str>> = messages
         .iter()
-        .map(|mesaj| Rc::from(mesaj.as_ref()))
+        .map(|message| Rc::from(message.as_ref()))
         .collect();
-    let mut ilk_tur = Drain::new(ayarlar.clone());
-    let numaralar = mesajlar
+    let mut first_pass = Drain::new(settings.clone());
+    let ids = messages
         .iter()
-        .map(|mesaj| ilk_tur.ekle_rc(mesaj))
+        .map(|message| first_pass.add_rc(message))
         .collect();
-    if ilk_tur.degiskenler.is_empty() {
-        return (ilk_tur.kumeler, numaralar);
+    if first_pass.variables.is_empty() {
+        return (first_pass.clusters, ids);
     }
-    // Yapı güncelleme sözdizimi: `ogrenilen` dışındaki alanlar yeni bir Drain'den gelir
-    let mut ikinci_tur = Drain {
-        ogrenilen: ilk_tur.degiskenler,
-        ..Drain::new(ayarlar.clone())
+    // Struct update syntax: the fields other than `learned` come from a new Drain
+    let mut second_pass = Drain {
+        learned: first_pass.variables,
+        ..Drain::new(settings.clone())
     };
-    let numaralar = mesajlar
+    let ids = messages
         .iter()
-        .map(|mesaj| ikinci_tur.ekle_rc(mesaj))
+        .map(|message| second_pass.add_rc(message))
         .collect();
-    (ikinci_tur.kumeler, numaralar)
+    (second_pass.clusters, ids)
 }
 
 impl Drain {
-    fn new(ayarlar: Ayarlar) -> Self {
+    fn new(settings: Settings) -> Self {
         Drain {
-            ayarlar,
-            uzunluklar: HashMap::new(),
-            kumeler: Vec::new(),
-            degiskenler: HashMap::new(),
-            ogrenilen: HashMap::new(),
-            tek_belirtecliler: HashMap::new(),
-            rakamli_tek: None,
-            surumler: HashMap::new(),
+            settings,
+            by_length: HashMap::new(),
+            clusters: Vec::new(),
+            variables: HashMap::new(),
+            learned: HashMap::new(),
+            single_tokens: HashMap::new(),
+            digit_single: None,
+            versions: HashMap::new(),
         }
     }
 
-    /// Mesajı benzediği kümeye ekler, yoksa yeni küme açar. Kümenin numarasını döndürür.
+    /// Adds the message to the cluster it resembles, or opens a new cluster. Returns the cluster's
+    /// index.
     #[cfg(test)]
-    fn ekle(&mut self, mesaj: &str) -> usize {
-        self.ekle_rc(&Rc::from(mesaj))
+    fn add(&mut self, message: &str) -> usize {
+        self.add_rc(&Rc::from(message))
     }
 
-    /// `ekle`; mesaj bir küme açarsa kalıbı onun metnini paylaşır.
+    /// `add`; if the message opens a cluster, the pattern shares the message's text.
     #[cfg(test)]
-    fn ekle_rc(&mut self, mesaj: &Rc<str>) -> usize {
-        // 1. Belirteçlere böl
-        let sinirlar = sinirlar(mesaj);
-        let belirtecler: Vec<&str> = sinirlar
+    fn add_rc(&mut self, message: &Rc<str>) -> usize {
+        // 1. Split into tokens
+        let bounds = token_bounds(message);
+        let tokens: Vec<&str> = bounds
             .iter()
-            .map(|&(bas, son)| &mesaj[bas..son])
+            .map(|&(start, end)| &message[start..end])
             .collect();
-        self.belirtecleri_ekle(mesaj, &sinirlar, &belirtecler)
+        self.add_tokens(message, &bounds, &tokens)
     }
 
-    /// Belirteçlerine bölünmüş mesajı ekler (`ekle`). `sinirlar`: belirteçlerin mesajdaki
-    /// yerleri.
-    fn belirtecleri_ekle(
+    /// Adds a message already split into tokens (`add`). `bounds`: the places of the tokens in the
+    /// message.
+    fn add_tokens(
         &mut self,
-        mesaj: &Rc<str>,
-        sinirlar: &[(usize, usize)],
-        belirtecler: &[&str],
+        message: &Rc<str>,
+        bounds: &[(usize, usize)],
+        tokens: &[&str],
     ) -> usize {
-        // 2–4. Ağaçta en benzer kümeyi ara
-        match self.ara(belirtecler) {
-            // 5. Bulunan kümeye kat ve kalıbını güncelle
-            Arama::Bulundu(numara) => self.kat(numara, belirtecler),
-            // Yeterince benzer küme yok: yeni küme aç ve ağaca yerleştir
-            Arama::Yok => {
-                let numara = self.kumeler.len();
-                self.kumeler.push(Kume::new(mesaj, sinirlar));
-                self.agaca_ekle(belirtecler, numara);
-                self.degisti(belirtecler.len());
-                numara
+        // 2–4. Search the tree for the most similar cluster
+        match self.search(tokens) {
+            // 5. Join the cluster found and update its pattern
+            Search::Found(id) => self.join(id, tokens),
+            // No cluster is similar enough: open a new cluster and place it in the tree
+            Search::NotFound => {
+                let id = self.clusters.len();
+                self.clusters.push(Cluster::new(message, bounds));
+                self.add_to_tree(tokens, id);
+                self.changed(tokens.len());
+                id
             }
-            // Yaprak dolu: taşma kümesine
-            Arama::Dolu => {
-                let yeni = self.kumeler.len();
-                let yaprak = self.yaprak_mut(belirtecler).expect("dolu yaprak ağaçtadır");
-                let tasma = *yaprak.tasma.get_or_insert(yeni);
-                if tasma == yeni {
-                    self.kumeler.push(Kume::new(mesaj, sinirlar));
-                    self.degisti(belirtecler.len());
-                    tasma
+            // The leaf is full: to the overflow cluster
+            Search::Full => {
+                let next_id = self.clusters.len();
+                let leaf = self.leaf_mut(tokens).expect("a full leaf is in the tree");
+                let overflow = *leaf.overflow.get_or_insert(next_id);
+                if overflow == next_id {
+                    self.clusters.push(Cluster::new(message, bounds));
+                    self.changed(tokens.len());
+                    overflow
                 } else {
-                    self.kat(tasma, belirtecler)
+                    self.join(overflow, tokens)
                 }
             }
         }
     }
 
-    /// Mesajı kümeye katar, kalıbını günceller.
-    fn kat(&mut self, numara: usize, belirtecler: &[&str]) -> usize {
-        let kume = &mut self.kumeler[numara];
-        kume.adet += 1;
-        if kume.guncelle(belirtecler) {
-            self.degisti(belirtecler.len());
+    /// Adds the message to the cluster and updates its pattern.
+    fn join(&mut self, id: usize, tokens: &[&str]) -> usize {
+        let cluster = &mut self.clusters[id];
+        cluster.count += 1;
+        if cluster.update(tokens) {
+            self.changed(tokens.len());
         }
-        numara
+        id
     }
 
-    /// Mesajın yaprağı: `ara`nın indiği yer, değiştirilebilir.
-    fn yaprak_mut(&mut self, belirtecler: &[&str]) -> Option<&mut Dugum> {
-        let yonlendiren = self.yonlendiren_sayisi(belirtecler.len());
-        let mut dugum = self.uzunluklar.get_mut(&belirtecler.len())?;
-        for belirtec in &belirtecler[..yonlendiren] {
-            dugum = if dugum.cocuklar.contains_key(*belirtec) {
-                dugum.cocuklar.get_mut(*belirtec)?
+    /// The message's leaf: where `search` lands, mutable.
+    fn leaf_mut(&mut self, tokens: &[&str]) -> Option<&mut Node> {
+        let routing = self.routing_token_count(tokens.len());
+        let mut node = self.by_length.get_mut(&tokens.len())?;
+        for token in &tokens[..routing] {
+            node = if node.children.contains_key(*token) {
+                node.children.get_mut(*token)?
             } else {
-                dugum.cocuklar.get_mut(JOKER)?
+                node.children.get_mut(WILDCARD)?
             };
         }
-        Some(dugum)
+        Some(node)
     }
 
-    /// Ağacın bu uzunluktaki kısmının sürümü.
-    fn surum(&self, uzunluk: usize) -> u64 {
-        self.surumler.get(&uzunluk).copied().unwrap_or(0)
+    /// The version of the part of the tree for this length.
+    fn version(&self, len: usize) -> u64 {
+        self.versions.get(&len).copied().unwrap_or(0)
     }
 
-    /// Ağacın bu uzunluktaki kısmı değişti: bir küme açıldı ya da bir kalıp değişti.
-    fn degisti(&mut self, uzunluk: usize) {
-        *self.surumler.entry(uzunluk).or_default() += 1;
+    /// The part of the tree for this length changed: a cluster was opened or a pattern changed.
+    fn changed(&mut self, len: usize) {
+        *self.versions.entry(len).or_default() += 1;
     }
 
-    /// Mesaja yeterince benzeyen en iyi kümeyi bulur. Ağacı değiştirmez.
-    fn ara(&self, belirtecler: &[&str]) -> Arama {
-        // 2. İlk katman: belirteç sayısı
-        let Some(mut dugum) = self.uzunluklar.get(&belirtecler.len()) else {
-            return Arama::Yok;
+    /// Finds the best cluster that resembles the message enough. Does not change the tree.
+    fn search(&self, tokens: &[&str]) -> Search {
+        // 2. The first layer: the number of tokens
+        let Some(mut node) = self.by_length.get(&tokens.len()) else {
+            return Search::NotFound;
         };
 
-        // 3. Baş belirteçlere göre aşağı in: önce birebir aynı dal, yoksa joker dalı
-        for belirtec in &belirtecler[..self.yonlendiren_sayisi(belirtecler.len())] {
-            dugum = match dugum.cocuklar.get(*belirtec).or(dugum.cocuklar.get(JOKER)) {
-                Some(cocuk) => cocuk,
-                None => return Arama::Yok,
+        // 3. Go down by the head tokens: the identical branch first, the wildcard branch if there
+        // is none
+        for token in &tokens[..self.routing_token_count(tokens.len())] {
+            node = match node.children.get(*token).or(node.children.get(WILDCARD)) {
+                Some(child) => child,
+                None => return Search::NotFound,
             };
         }
 
-        // Boş mesajlar (ör. Log::info('')) hep aynı kümede toplanır
-        if belirtecler.is_empty() {
-            return dugum
-                .kume_numaralari
+        // Empty messages (e.g. Log::info('')) always collect in the same cluster
+        if tokens.is_empty() {
+            return node
+                .cluster_ids
                 .first()
-                .map_or(Arama::Yok, |&numara| Arama::Bulundu(numara));
+                .map_or(Search::NotFound, |&id| Search::Found(id));
         }
 
-        // 4. Yapraktaki en benzer küme. Tek belirteçlilerde yaprak dolmaz: her mesaj en fazla
-        // iki kümeyle karşılaştırılır (`tek_belirtecli_adaylar`)
-        let bulunan = if let [belirtec] = belirtecler
-            && self.ayarlar.benzerlik_esigi > 0.0
+        // 4. The most similar cluster in the leaf. With single tokens the leaf does not fill up:
+        // each message is compared with at most two clusters (`single_token_candidates`)
+        let found = if let [token] = tokens
+            && self.settings.similarity_threshold > 0.0
         {
-            let adaylar = self.tek_belirtecli_adaylar(belirtec);
-            self.en_benzer(&adaylar, belirtecler, &dugum.konumlar)
+            let candidates = self.single_token_candidates(token);
+            self.most_similar(&candidates, tokens, &node.positions)
         } else {
-            self.en_benzer(&dugum.kume_numaralari, belirtecler, &dugum.konumlar)
+            self.most_similar(&node.cluster_ids, tokens, &node.positions)
         };
-        match bulunan {
-            Some(numara) => Arama::Bulundu(numara),
-            None if belirtecler.len() >= 2
-                && dugum.kume_numaralari.len()
-                    >= YAPRAK_KATSAYISI * self.ayarlar.en_fazla_cocuk =>
+        match found {
+            Some(id) => Search::Found(id),
+            None if tokens.len() >= 2
+                && node.cluster_ids.len() >= LEAF_FACTOR * self.settings.max_children =>
             {
-                Arama::Dolu
+                Search::Full
             }
-            None => Arama::Yok,
+            None => Search::NotFound,
         }
     }
 
-    /// Tek belirteçli bir mesajın katılabileceği kümeler: kalıbı birebir aynı olan ve rakamlı
-    /// tek belirteçlilerin kümesi (yalnızca esnek eşikte vardır).
+    /// The clusters a single-token message can join: the one whose pattern is identical, and the
+    /// cluster of the single tokens with digits (it exists only with the flexible threshold).
     ///
-    /// Bütün tek belirteçli mesajlar aynı yapraktadır. Eşik 0'dan büyükken yapraktaki öteki
-    /// kümelerin hiçbiri eşiği geçemez: kalıpları mesajdan farklı tek bir belirteçtir, ortak
-    /// belirteç yoktur. Esnek eşikte fark yalnızca iki tarafta da rakam varsa değişken sayılır
-    /// ve rakamlı tek belirteçliler tek bir kümede toplanır. Böylece binlerce farklı tek
-    /// kelimelik mesaj olsa da her mesaj en fazla iki kümeyle karşılaştırılır.
-    fn tek_belirtecli_adaylar(&self, belirtec: &str) -> Vec<usize> {
-        self.tek_belirtecliler
-            .get(belirtec)
+    /// All single-token messages are in the same leaf. While the threshold is above 0, none of the
+    /// other clusters in the leaf can pass it: their patterns are a single token different from
+    /// the message, with no token in common. With the flexible threshold, a difference counts as
+    /// variable only if both sides have a digit, and the single tokens with digits collect in a
+    /// single cluster. This way, even with thousands of different one-word messages, each message
+    /// is compared with at most two clusters.
+    fn single_token_candidates(&self, token: &str) -> Vec<usize> {
+        self.single_tokens
+            .get(token)
             .copied()
             .into_iter()
-            .chain(self.rakamli_tek)
+            .chain(self.digit_single)
             .collect()
     }
 
-    /// Adaylardan, eşiği geçenlerin en benzeri. Eşitlikte daha çok jokeri olan, yani daha genel
-    /// kalıp seçilir; o da eşitse önce açılan.
+    /// Among the candidates, the most similar of the ones that pass the threshold. On a tie, the
+    /// one with more wildcards, that is, the more general pattern, is chosen; if that is a tie
+    /// too, the one opened first.
     ///
-    /// Bir yapraktaki bütün kalıplar aynı uzunlukta olduğu için eşit belirteç sayısını
-    /// karşılaştırmak, oranları karşılaştırmakla aynı şey.
-    fn en_benzer(
+    /// All the patterns in a leaf have the same length, so comparing the numbers of equal tokens
+    /// is the same as comparing ratios.
+    fn most_similar(
         &self,
-        adaylar: &[usize],
-        belirtecler: &[&str],
-        konumlar: &[Konum],
+        candidates: &[usize],
+        tokens: &[&str],
+        positions: &[Position],
     ) -> Option<usize> {
-        let mut en_iyi: Option<(usize, (usize, usize))> = None;
-        let mut bicimler = Bicimler::new(belirtecler);
-        for &numara in adaylar {
-            let sonuc = karsilastir(&self.kumeler[numara], belirtecler, konumlar, &mut bicimler);
-            if !self.esigi_gecer(&sonuc, belirtecler.len()) {
+        let mut best: Option<(usize, (usize, usize))> = None;
+        let mut shapes = Shapes::new(tokens);
+        for &id in candidates {
+            let result = compare(&self.clusters[id], tokens, positions, &mut shapes);
+            if !self.passes_threshold(&result, tokens.len()) {
                 continue;
             }
-            let anahtar = (sonuc.esit, sonuc.joker);
-            if en_iyi.is_none_or(|(_, en_iyi_anahtar)| anahtar > en_iyi_anahtar) {
-                en_iyi = Some((numara, anahtar));
+            let key = (result.equal, result.wildcards);
+            if best.is_none_or(|(_, best_key)| key > best_key) {
+                best = Some((id, key));
             }
         }
-        en_iyi.map(|(numara, _)| numara)
+        best.map(|(id, _)| id)
     }
 
-    /// Karşılaştırılan küme eşiği geçiyor mu? `uzunluk`: mesajın belirteç sayısı (n).
-    fn esigi_gecer(&self, sonuc: &Karsilastirma, uzunluk: usize) -> bool {
-        let esik = self.ayarlar.benzerlik_esigi;
-        let n = uzunluk as f64;
-        let benzerlik = sonuc.esit as f64 / n;
-        if !self.ayarlar.esnek_esik {
-            return benzerlik >= esik;
+    /// Does the compared cluster pass the threshold? `len`: the number of tokens of the message
+    /// (n).
+    fn passes_threshold(&self, result: &Comparison, len: usize) -> bool {
+        let threshold = self.settings.similarity_threshold;
+        let n = len as f64;
+        let similarity = result.equal as f64 / n;
+        if !self.settings.flexible_threshold {
+            return similarity >= threshold;
         }
-        // Değişken farklılıklar büyük ihtimalle değişkendir; eşik onların oranında gevşer:
-        // eşik × (n − değişken fark) / n
-        let gevsek_esik = esik * (n - sonuc.degisken_fark as f64) / n;
-        // Hiçbir belirteci tutmayan bir birleşme ancak bütün farklılıkların iki tarafında da
-        // rakam varsa olur. Eşik 0'sa klasik Drain'deki gibi her şey birleşir.
-        let tutunacak_yer = sonuc.esit > 0 || sonuc.rakamli_fark == uzunluk || esik <= 0.0;
-        benzerlik >= gevsek_esik && tutunacak_yer
+        // Variable differences are most likely variables; the threshold relaxes by their share:
+        // threshold × (n − variable differences) / n
+        let relaxed = threshold * (n - result.variable_diffs as f64) / n;
+        // A merge that keeps none of the tokens only happens if every difference has a digit on
+        // both sides. With a threshold of 0 everything merges, as in classic Drain.
+        let foothold = result.equal > 0 || result.digit_diffs == len || threshold <= 0.0;
+        similarity >= relaxed && foothold
     }
 
-    /// Yeni kümeyi ağaca yerleştirir; yol üzerindeki eksik düğümleri oluşturur. Esnek eşikte
-    /// yaprağın konumlarını da günceller.
-    fn agaca_ekle(&mut self, belirtecler: &[&str], numara: usize) {
-        let yonlendiren = self.yonlendiren_sayisi(belirtecler.len());
-        let en_fazla_cocuk = self.ayarlar.en_fazla_cocuk;
+    /// Places the new cluster in the tree; creates the missing nodes on the way. With the flexible
+    /// threshold, it also updates the positions of the leaf.
+    fn add_to_tree(&mut self, tokens: &[&str], id: usize) {
+        let routing = self.routing_token_count(tokens.len());
+        let max_children = self.settings.max_children;
 
-        if let [belirtec] = belirtecler {
-            self.tek_belirtecliler
-                .entry(belirtec.to_string())
-                .or_insert(numara);
-            if self.ayarlar.esnek_esik && rakam_iceriyor(belirtec) && self.rakamli_tek.is_none() {
-                self.rakamli_tek = Some(numara);
+        if let [token] = tokens {
+            self.single_tokens.entry(token.to_string()).or_insert(id);
+            if self.settings.flexible_threshold && has_digit(token) && self.digit_single.is_none() {
+                self.digit_single = Some(id);
             }
         }
 
-        let mut dallar = Vec::with_capacity(yonlendiren);
-        let mut dugum = self.uzunluklar.entry(belirtecler.len()).or_default();
-        for belirtec in &belirtecler[..yonlendiren] {
-            let anahtar = dal_anahtari(&dugum.cocuklar, belirtec, en_fazla_cocuk);
-            dallar.push(anahtar.clone());
-            dugum = dugum.cocuklar.entry(anahtar).or_default();
+        let mut branches = Vec::with_capacity(routing);
+        let mut node = self.by_length.entry(tokens.len()).or_default();
+        for token in &tokens[..routing] {
+            let key = branch_key(&node.children, token, max_children);
+            branches.push(key.clone());
+            node = node.children.entry(key).or_default();
         }
-        dugum.kume_numaralari.push(numara);
-        // Değişken konumlar tek belirteçli mesajlarda aranmaz: orada konum mesajın kendisidir
-        // ve bütün tek kelimelik mesajlar aynı yapraktadır
-        if !self.ayarlar.esnek_esik || belirtecler.len() < 2 {
+        node.cluster_ids.push(id);
+        // Variable positions are not looked for in single-token messages: there the position is
+        // the message itself, and all one-word messages are in the same leaf
+        if !self.settings.flexible_threshold || tokens.len() < 2 {
             return;
         }
 
-        let yol = (belirtecler.len(), dallar);
-        let kume_sayisi = dugum.kume_numaralari.len();
-        // Yeni açılan yaprak: önceki turda değişken konumu öğrenildiyse onlarla başlar
-        if kume_sayisi == 1
-            && let Some(degiskenler) = self.ogrenilen.get(&yol)
+        let path = (tokens.len(), branches);
+        let cluster_count = node.cluster_ids.len();
+        // A new leaf: if a variable position was learned in the previous pass, it starts with it
+        if cluster_count == 1
+            && let Some(variables) = self.learned.get(&path)
         {
-            dugum.konumlar = degiskenler
+            node.positions = variables
                 .iter()
-                .map(|&degisken| {
-                    if degisken {
-                        Konum::Degisken
+                .map(|&variable| {
+                    if variable {
+                        Position::Variable
                     } else {
-                        Konum::Degerler(HashSet::new())
+                        Position::Values(HashSet::new())
                     }
                 })
                 .collect();
         }
-        // Bir konum, yaprakta `en_fazla_cocuk`'tan fazla küme olmadan o kadar farklı belirteç
-        // alamaz. Sayım ancak o zaman başlar; yaprakların çoğunda hiç yapılmaz.
-        if kume_sayisi <= en_fazla_cocuk {
+        // A position cannot take that many different tokens before the leaf has more than
+        // `max_children` clusters. Counting starts only then; in most leaves it never happens.
+        if cluster_count <= max_children {
             return;
         }
-        let sayilacaklar = if kume_sayisi == en_fazla_cocuk + 1 {
-            // Sayım şimdi başlıyor: yapraktaki bütün kalıplar sayılır
-            if dugum.konumlar.is_empty() {
-                dugum.konumlar = (0..belirtecler.len())
-                    .map(|_| Konum::Degerler(HashSet::new()))
+        let to_count = if cluster_count == max_children + 1 {
+            // Counting starts now: all the patterns in the leaf are counted
+            if node.positions.is_empty() {
+                node.positions = (0..tokens.len())
+                    .map(|_| Position::Values(HashSet::new()))
                     .collect();
             }
-            &dugum.kume_numaralari[..]
+            &node.cluster_ids[..]
         } else {
-            // Sayım sürüyor: yalnızca yeni küme
-            &dugum.kume_numaralari[kume_sayisi - 1..]
+            // Counting goes on: only the new cluster
+            &node.cluster_ids[cluster_count - 1..]
         };
-        let mut yeni_degisken = false;
-        for &kume in sayilacaklar {
-            for (konum, belirtec) in dugum
-                .konumlar
+        let mut new_variable = false;
+        for &cluster in to_count {
+            for (position, token) in node
+                .positions
                 .iter_mut()
-                .zip(self.kumeler[kume].belirtecler())
+                .zip(self.clusters[cluster].tokens())
             {
-                if let Konum::Degerler(degerler) = konum
-                    && belirtec != JOKER
+                if let Position::Values(values) = position
+                    && token != WILDCARD
                 {
-                    degerler.insert(ozet(belirtec));
-                    // Değerler artık tutulmaz: konumun değişken olduğunu bilmek yeter
-                    if degerler.len() > en_fazla_cocuk {
-                        *konum = Konum::Degisken;
-                        yeni_degisken = true;
+                    values.insert(hash_token(token));
+                    // The values are no longer kept: knowing that the position is variable is
+                    // enough
+                    if values.len() > max_children {
+                        *position = Position::Variable;
+                        new_variable = true;
                     }
                 }
             }
         }
-        if yeni_degisken {
-            let degiskenler = dugum.konumlar.iter().map(Konum::degisken_mi).collect();
-            self.degiskenler.insert(yol, degiskenler);
+        if new_variable {
+            let variables = node.positions.iter().map(Position::is_variable).collect();
+            self.variables.insert(path, variables);
         }
     }
 
-    /// Kaç baş belirtece göre dallanılacağı. Son belirteç dallanmaya hiç katılmaz;
-    /// böylece benzerlik karşılaştırmasına her zaman en az bir belirteç kalır.
-    fn yonlendiren_sayisi(&self, uzunluk: usize) -> usize {
-        self.ayarlar.onek_derinligi.min(uzunluk.saturating_sub(1))
+    /// By how many head tokens to branch. The last token never takes part in branching; this way
+    /// at least one token is always left for the similarity comparison.
+    fn routing_token_count(&self, len: usize) -> usize {
+        self.settings.prefix_depth.min(len.saturating_sub(1))
     }
 }
 
-/// Belirtecin 64 bitlik özeti (hash). Farklı değerleri saymak için belirtecin kendisini
-/// kopyalamak gerekmez; çakışma ihtimali (yüz değer için ~10⁻¹⁵) sayımı etkilemez.
-fn ozet(belirtec: &str) -> u64 {
-    let mut ozetleyici = DefaultHasher::new();
-    belirtec.hash(&mut ozetleyici);
-    ozetleyici.finish()
+/// The 64-bit hash of a token. To count different values there is no need to copy the token
+/// itself; the chance of a collision (~10⁻¹⁵ for a hundred values) does not affect the count.
+fn hash_token(token: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    token.hash(&mut hasher);
+    hasher.finish()
 }
 
-/// Yeni bir küme yerleştirilirken belirtecin hangi dala gideceği.
-fn dal_anahtari(
-    cocuklar: &HashMap<String, Dugum>,
-    belirtec: &str,
-    en_fazla_cocuk: usize,
-) -> String {
-    if cocuklar.contains_key(belirtec) {
-        return belirtec.to_string();
+/// Which branch a token goes to when a new cluster is placed.
+fn branch_key(children: &HashMap<String, Node>, token: &str, max_children: usize) -> String {
+    if children.contains_key(token) {
+        return token.to_string();
     }
-    // İçinde rakam olan (ör. "a1b2c3") ya da kodsal biçimli (ör. "ORDER_CREATED") belirteç
-    // büyük ihtimalle değişkendir: ayrı dal açma
-    if rakam_iceriyor(belirtec) || bicim(belirtec).kodsal() {
-        return JOKER.to_string();
+    // A token with a digit in it (e.g. "a1b2c3") or with a code-like shape (e.g. "ORDER_CREATED")
+    // is most likely a variable: no separate branch for it
+    if has_digit(token) || token_shape(token).is_code() {
+        return WILDCARD.to_string();
     }
-    // Düğüm doluysa yeni belirteç joker dalına gider. Joker dalına her zaman yer ayrılır.
-    let joker_haric = cocuklar.len() - usize::from(cocuklar.contains_key(JOKER));
-    if joker_haric + 1 >= en_fazla_cocuk {
-        return JOKER.to_string();
+    // If the node is full, the new token goes to the wildcard branch. Room is always kept for the
+    // wildcard branch.
+    let not_wildcard = children.len() - usize::from(children.contains_key(WILDCARD));
+    if not_wildcard + 1 >= max_children {
+        return WILDCARD.to_string();
     }
-    belirtec.to_string()
+    token.to_string()
 }
 
-/// İçinde en az bir rakam var mı? "120ms", "a1b2", "S3" → evet; "<SAYI>", "giriş" → hayır.
-fn rakam_iceriyor(belirtec: &str) -> bool {
-    belirtec.chars().any(|c| c.is_ascii_digit())
+/// Is there at least one digit in it? "120ms", "a1b2", "S3" → yes; "<NUM>", "login" → no.
+fn has_digit(token: &str) -> bool {
+    token.chars().any(|c| c.is_ascii_digit())
 }
 
-/// Bir kalıpla bir mesajın konum konum karşılaştırılmasının sonucu.
+/// The result of comparing a pattern and a message position by position.
 #[derive(Debug, Clone, Copy)]
-struct Karsilastirma {
-    /// Kalıpta ve mesajda aynı olan konumlar. Joker konumlar eşit sayılmaz; makaledeki
-    /// benzerlik (simSeq) böyle tanımlanır.
-    esit: usize,
-    /// Kalıptaki joker konumlar.
-    joker: usize,
-    /// Farklı olan (ya da kalıpta joker olan) ve büyük ihtimalle değişken olan konumlar: iki
-    /// tarafında da rakam var (jokerde mesajın tarafında), iki taraf da aynı kodsal biçimde
-    /// (jokerde mesajın tarafı kodsal) ya da konum yaprakta değişken.
-    degisken_fark: usize,
-    /// Değişken farkların, rakamdan dolayı değişken olanları.
-    rakamli_fark: usize,
+struct Comparison {
+    /// The positions that are the same in the pattern and in the message. Wildcard positions do
+    /// not count as equal; this is how the similarity in the paper (simSeq) is defined.
+    equal: usize,
+    /// The wildcard positions in the pattern.
+    wildcards: usize,
+    /// The positions that differ (or are a wildcard in the pattern) and are most likely variable:
+    /// both sides have a digit (for a wildcard, the message's side), both sides have the same
+    /// code-like shape (for a wildcard, the message's side is code-like), or the position is
+    /// variable in the leaf.
+    variable_diffs: usize,
+    /// The variable differences that are variable because of digits.
+    digit_diffs: usize,
 }
 
-/// Kümenin kalıbı ile mesajı konum konum karşılaştırır. `konumlar`: yaprağın konumları; esnek
-/// eşik kapalıyken boştur.
+/// Compares the cluster's pattern with the message position by position. `positions`: the
+/// positions of the leaf; empty when the flexible threshold is off.
 ///
-/// Joker, kalıbın o konumda farklı değerler gördüğünü söyler; o değerlerin rakamlı ya da kodsal
-/// olup olmadığı bilinmez. Jokerin karşısındaki belirteçte rakam varsa fark rakamlı, belirteç
-/// kodsal biçimdeyse fark kodsal sayılır. `bicimler`: mesajın belirteçlerinin biçimleri,
-/// gerektikçe bulunur.
-fn karsilastir(
-    kume: &Kume,
-    belirtecler: &[&str],
-    konumlar: &[Konum],
-    bicimler: &mut Bicimler<'_>,
-) -> Karsilastirma {
-    let mut sonuc = Karsilastirma {
-        esit: 0,
-        joker: 0,
-        degisken_fark: 0,
-        rakamli_fark: 0,
+/// A wildcard says that the pattern has seen different values at that position; whether those
+/// values had digits or were code-like is not known. If the token facing the wildcard has a
+/// digit, the difference counts as a digit difference; if the token has a code-like shape, as a
+/// code-like one. `shapes`: the shapes of the message's tokens, found as needed.
+fn compare(
+    cluster: &Cluster,
+    tokens: &[&str],
+    positions: &[Position],
+    shapes: &mut Shapes<'_>,
+) -> Comparison {
+    let mut result = Comparison {
+        equal: 0,
+        wildcards: 0,
+        variable_diffs: 0,
+        digit_diffs: 0,
     };
-    for (sira, (k, b)) in kume.belirtecler().zip(belirtecler).enumerate() {
-        let (rakamli, kodsal) = if k == JOKER {
-            sonuc.joker += 1;
-            (rakam_iceriyor(b), bicimler.bicim(sira).kodsal())
-        } else if k == *b {
-            sonuc.esit += 1;
+    for (i, (p, t)) in cluster.tokens().zip(tokens).enumerate() {
+        let (digits, code) = if p == WILDCARD {
+            result.wildcards += 1;
+            (has_digit(t), shapes.shape(i).is_code())
+        } else if p == *t {
+            result.equal += 1;
             continue;
         } else {
-            // İki farklı belirteç aynı kodsal biçimde mi? `ORDER_CREATED` ile `ORDER_FAILED`
-            // evet; `alındı` ile `reddedildi` (sıradan kelimeler) ve `ORDER_FAILED` ile `hazır`
-            // hayır. Mesajın belirteci kodsal değilse (çoğu zaman) kalıbınkine bakılmaz.
-            let bicim_b = bicimler.bicim(sira);
+            // Do the two different tokens have the same code-like shape? `ORDER_CREATED` and
+            // `ORDER_FAILED` yes; `received` and `rejected` (ordinary words) and `ORDER_FAILED`
+            // and `ready` no. If the message's token is not code-like (most of the time), the
+            // pattern's is not looked at.
+            let shape_t = shapes.shape(i);
             (
-                rakam_iceriyor(k) && rakam_iceriyor(b),
-                bicim_b.kodsal() && bicim(k) == bicim_b,
+                has_digit(p) && has_digit(t),
+                shape_t.is_code() && token_shape(p) == shape_t,
             )
         };
-        if rakamli {
-            sonuc.rakamli_fark += 1;
+        if digits {
+            result.digit_diffs += 1;
         }
-        if rakamli || kodsal || konumlar.get(sira).is_some_and(Konum::degisken_mi) {
-            sonuc.degisken_fark += 1;
-        }
-    }
-    sonuc
-}
-
-/// Bir mesajın belirteçlerinin biçimleri, gerektikçe bulunur. Mesaj yapraktaki her kümeyle
-/// karşılaştırılırken bir belirtecin biçimi bir kez hesaplanır; hiç farklı olmayan bir
-/// belirtecinki hiç hesaplanmaz.
-struct Bicimler<'a> {
-    belirtecler: &'a [&'a str],
-    bicimler: Vec<Option<Bicim>>,
-}
-
-impl<'a> Bicimler<'a> {
-    fn new(belirtecler: &'a [&'a str]) -> Self {
-        Bicimler {
-            belirtecler,
-            bicimler: vec![None; belirtecler.len()],
+        if digits || code || positions.get(i).is_some_and(Position::is_variable) {
+            result.variable_diffs += 1;
         }
     }
+    result
+}
 
-    /// `sira`. belirtecin biçimi.
-    fn bicim(&mut self, sira: usize) -> Bicim {
-        *self.bicimler[sira].get_or_insert_with(|| bicim(self.belirtecler[sira]))
+/// The shapes of a message's tokens, found as needed. While the message is compared with every
+/// cluster in the leaf, the shape of a token is computed once; that of a token that never differs
+/// is never computed.
+struct Shapes<'a> {
+    tokens: &'a [&'a str],
+    shapes: Vec<Option<Shape>>,
+}
+
+impl<'a> Shapes<'a> {
+    fn new(tokens: &'a [&'a str]) -> Self {
+        Shapes {
+            tokens,
+            shapes: vec![None; tokens.len()],
+        }
+    }
+
+    /// The shape of token `i`.
+    fn shape(&mut self, i: usize) -> Shape {
+        *self.shapes[i].get_or_insert_with(|| token_shape(self.tokens[i]))
     }
 }
 
-/// Bir belirtecin biçimi: koddan gelen bir değer mi, sıradan bir kelime mi?
+/// The shape of a token: is it a value that comes from code, or an ordinary word?
 ///
-/// Sıradan kelimeler (`Ödeme`, `alındı`) yalnızca harflerden oluşur. Koddan gelen değerlerin
-/// (sınıf adı, sabit, tanımlayıcı, olay adı, tırnaklı anahtar) biçimi bellidir ve bir mesajın
-/// sabit kısmında böyle bir belirteç olmaz: iki mesaj yalnızca aynı biçimdeki iki kodsal değerde
-/// ayrılıyorsa o konum kategoriktir. Kısa büyük harfli kelimeler (`GET`, `OK`, `WARNING`)
-/// temkinle sıradan kelime sayılır: `GET /api` ile `POST /api` farklı olaylardır.
+/// Ordinary words (`Payment`, `received`) consist only of letters. The values that come from code
+/// (a class name, a constant, an identifier, an event name, a quoted key) have a recognizable
+/// shape, and the fixed part of a message has no such token: if two messages differ only in two
+/// code-like values of the same shape, that position is categorical. Short uppercase words (`GET`,
+/// `OK`, `WARNING`) are cautiously counted as ordinary words: `GET /api` and `POST /api` are
+/// different events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Bicim {
-    /// Ad alanlı PHP sınıf adı: `App\Jobs\FaturaGonder`, `\App\Models\Urun`, JSON kaçışlı
+enum Shape {
+    /// A namespaced PHP class name: `App\Jobs\SendInvoice`, `\App\Models\Product`, JSON-escaped
     /// `App\\Jobs\\X`
-    Sinif,
-    /// Büyük harfli sabit, en az bir alt çizgiyle: `ORDER_CREATED`
-    Sabit,
-    /// deveAdı ya da PascalAdı (`FaturaGonder`), yilan_adi (`fatura_gonder`), PHP değişkeni
-    /// (`$urun`)
-    Tanimlayici,
-    /// Noktayla ya da iki noktayla parçalanmış ad: `odeme.basarisiz`, `kurlar:guncelle`,
-    /// `ornek.test`
-    Noktali,
-    /// Tek ya da çift tırnakla sarılı tek kelime: `'fiyat'`, `"dsn"`. SQL'in ters tırnaklı
-    /// tablo ve sütun adları (`` `urunler` ``) sayılmaz: iki sorgu tablosuyla ayrılıyorsa ayrı
-    /// sorgulardır.
-    Tirnakli,
-    /// Yalnızca harflerden oluşan sıradan kelime: `Ödeme`, `alındı`, `GET`
-    Sozcuk,
-    /// Geri kalan her şey: yer tutucular (`<SAYI>`), noktalama, harfle rakamın karıştığı
-    /// belirteçler (`oauth2`), üye çağrıları (`X::handle()`)
-    Diger,
+    Class,
+    /// An uppercase constant with at least one underscore: `ORDER_CREATED`
+    Constant,
+    /// camelCase or PascalCase (`SendInvoice`), snake_case (`send_invoice`), a PHP variable
+    /// (`$product`)
+    Identifier,
+    /// A name split by dots or colons: `payment.failed`, `rates:update`, `example.test`
+    Dotted,
+    /// A single word wrapped in single or double quotes: `'price'`, `"dsn"`. SQL's backtick-quoted
+    /// table and column names (`` `products` ``) do not count: if two queries differ by their
+    /// table, they are different queries.
+    Quoted,
+    /// An ordinary word made only of letters: `Payment`, `received`, `GET`
+    Word,
+    /// Everything else: placeholders (`<NUM>`), punctuation, tokens that mix letters and digits
+    /// (`oauth2`), member calls (`X::handle()`)
+    Other,
 }
 
-impl Bicim {
-    /// Koddan gelen bir değer mi? Sıradan kelimeler ve belirsiz belirteçler değildir.
-    fn kodsal(self) -> bool {
-        !matches!(self, Bicim::Sozcuk | Bicim::Diger)
+impl Shape {
+    /// Is it a value that comes from code? Ordinary words and unclear tokens are not.
+    fn is_code(self) -> bool {
+        !matches!(self, Shape::Word | Shape::Other)
     }
 }
 
-/// Belirtecin cümleden gelen kısmı soyulmuş hali: baştaki açan ayraçlar (`([{`) ve sondaki
-/// kapatan ayraçlarla noktalama (`)]},;:.`) belirtecin kendisinden değildir. `[App\Jobs\X]`
-/// → `App\Jobs\X`, `(Ayşe,` → `Ayşe`. Soyulunca bir şey kalmıyorsa (`,`) belirtecin kendisi.
-pub fn cekirdek(belirtec: &str) -> &str {
-    let cekirdek = belirtec
+/// The token with the parts that come from the sentence stripped: the opening brackets at the
+/// start (`([{`) and the closing brackets and punctuation at the end (`)]},;:.`) are not part of
+/// the token. `[App\Jobs\X]` → `App\Jobs\X`, `(Ayşe,` → `Ayşe`. If nothing is left after
+/// stripping (`,`), the token itself.
+pub fn token_core(token: &str) -> &str {
+    let stripped = token
         .trim_start_matches(['(', '[', '{'])
         .trim_end_matches([')', ']', '}', ',', ';', ':', '.']);
-    if cekirdek.is_empty() {
-        belirtec
-    } else {
-        cekirdek
-    }
+    if stripped.is_empty() { token } else { stripped }
 }
 
-/// Belirtecin biçimi; cümleden gelen ayraç ve noktalama soyularak bakılır (`cekirdek`):
-/// `[App\Jobs\X]` bir sınıf adı, `ORDER_CREATED:` bir sabittir.
-fn bicim(belirtec: &str) -> Bicim {
-    let cekirdek = cekirdek(belirtec);
-    if let Some(ic) = tirnakli_ic(cekirdek) {
-        // Tırnağın içinde tırnak yoksa tek bir tırnaklı kelimedir
-        return if !ic.is_empty() && !ic.contains(['\'', '"']) {
-            Bicim::Tirnakli
+/// The shape of the token, looked at with the brackets and punctuation that come from the
+/// sentence stripped (`token_core`): `[App\Jobs\X]` is a class name, `ORDER_CREATED:` a constant.
+fn token_shape(token: &str) -> Shape {
+    let stripped = token_core(token);
+    if let Some(inner) = quoted_inner(stripped) {
+        // If there is no quote inside the quotes, it is a single quoted word
+        return if !inner.is_empty() && !inner.contains(['\'', '"']) {
+            Shape::Quoted
         } else {
-            Bicim::Diger
+            Shape::Other
         };
     }
-    // Bitişik tırnak cümleden gelebilir: `'Ali` ile `Veli'` iki kelimelik tırnaklı bir değer
-    let cekirdek = cekirdek
+    // A quote stuck to the token can come from the sentence: `'Ali` and `Veli'` are a quoted value
+    // of two words
+    let stripped = stripped
         .trim_start_matches(['\'', '"'])
         .trim_end_matches(['\'', '"']);
-    if cekirdek.is_empty() {
-        return Bicim::Diger;
+    if stripped.is_empty() {
+        return Shape::Other;
     }
-    if cekirdek.contains('\\') {
-        return if sinif_adi_mi(cekirdek) {
-            Bicim::Sinif
+    if stripped.contains('\\') {
+        return if is_class_name(stripped) {
+            Shape::Class
         } else {
-            Bicim::Diger
+            Shape::Other
         };
     }
-    if let Some(ad) = cekirdek.strip_prefix('$') {
-        return if tanimlayici_mi(ad) {
-            Bicim::Tanimlayici
+    if let Some(name) = stripped.strip_prefix('$') {
+        return if is_identifier(name) {
+            Shape::Identifier
         } else {
-            Bicim::Diger
+            Shape::Other
         };
     }
-    if cekirdek.chars().all(char::is_alphabetic) {
-        return if deve_adi_mi(cekirdek) {
-            Bicim::Tanimlayici
+    if stripped.chars().all(char::is_alphabetic) {
+        return if is_camel_case(stripped) {
+            Shape::Identifier
         } else {
-            Bicim::Sozcuk
+            Shape::Word
         };
     }
-    if tanimlayici_mi(cekirdek) {
-        // Harfler ve rakamlar, en az bir alt çizgiyle (alt çizgisiz olsaydı yukarıda sıradan
-        // kelime sayılır ya da rakamlı olurdu)
-        return if cekirdek.contains('_') {
-            if cekirdek
+    if is_identifier(stripped) {
+        // Letters and digits with at least one underscore (without an underscore it would have
+        // counted as an ordinary word above, or would have a digit)
+        return if stripped.contains('_') {
+            if stripped
                 .chars()
                 .filter(|c| c.is_alphabetic())
                 .all(char::is_uppercase)
             {
-                Bicim::Sabit
+                Shape::Constant
             } else {
-                Bicim::Tanimlayici
+                Shape::Identifier
             }
-        } else if deve_adi_mi(cekirdek) {
-            Bicim::Tanimlayici
+        } else if is_camel_case(stripped) {
+            Shape::Identifier
         } else {
-            Bicim::Diger
+            Shape::Other
         };
     }
-    if cekirdek.contains(['.', ':']) {
-        let mut parcalar = cekirdek.split(['.', ':']);
-        if parcalar.all(tanimlayici_mi) {
-            return Bicim::Noktali;
+    if stripped.contains(['.', ':']) {
+        let mut parts = stripped.split(['.', ':']);
+        if parts.all(is_identifier) {
+            return Shape::Dotted;
         }
     }
-    Bicim::Diger
+    Shape::Other
 }
 
-/// Belirteç aynı tırnakla (`'` ya da `"`) başlayıp bitiyorsa tırnağın içi.
-fn tirnakli_ic(belirtec: &str) -> Option<&str> {
-    let ilk = belirtec.chars().next()?;
-    if !matches!(ilk, '\'' | '"') || belirtec.len() < 2 || !belirtec.ends_with(ilk) {
+/// If the token starts and ends with the same quote (`'` or `"`), what is inside the quotes.
+fn quoted_inner(token: &str) -> Option<&str> {
+    let first = token.chars().next()?;
+    if !matches!(first, '\'' | '"') || token.len() < 2 || !token.ends_with(first) {
         return None;
     }
-    Some(&belirtec[1..belirtec.len() - 1])
+    Some(&token[1..token.len() - 1])
 }
 
-/// Harf, rakam ve alt çizgiden oluşan, en az bir harfi olan bir ad mı?
-fn tanimlayici_mi(ad: &str) -> bool {
-    !ad.is_empty()
-        && ad.chars().all(|c| c.is_alphanumeric() || c == '_')
-        && ad.chars().any(char::is_alphabetic)
+/// Is it a name made of letters, digits and underscores, with at least one letter?
+fn is_identifier(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && name.chars().any(char::is_alphabetic)
 }
 
-/// Küçük bir harften hemen sonra büyük bir harf geliyor mu? `FaturaGonder`, `hizSiniri` evet;
-/// `Ödeme`, `SQLSTATE` hayır.
-fn deve_adi_mi(ad: &str) -> bool {
-    ad.chars()
-        .zip(ad.chars().skip(1))
-        .any(|(onceki, sonraki)| onceki.is_lowercase() && sonraki.is_uppercase())
+/// Does an uppercase letter come right after a lowercase letter? `SendInvoice`, `rateLimit` yes;
+/// `Payment`, `SQLSTATE` no.
+fn is_camel_case(name: &str) -> bool {
+    name.chars()
+        .zip(name.chars().skip(1))
+        .any(|(previous, next)| previous.is_lowercase() && next.is_uppercase())
 }
 
-/// Ters bölüyle (JSON'da iki ters bölüyle) ayrılmış en az iki ASCII tanımlayıcı mı? Başta bir
-/// ters bölü olabilir. `App\Jobs\X` evet; `resources\views\x.blade.php` (uzantılı, bir yol)
-/// ve `App\Jobs\X::handle()` hayır.
-fn sinif_adi_mi(ad: &str) -> bool {
-    let parcalar: Vec<&str> = ad
+/// At least two ASCII identifiers separated by backslashes (by two backslashes in JSON)? There can
+/// be a backslash at the start. `App\Jobs\X` yes; `resources\views\x.blade.php` (with an
+/// extension, a path) and `App\Jobs\X::handle()` no.
+fn is_class_name(name: &str) -> bool {
+    let parts: Vec<&str> = name
         .strip_prefix('\\')
-        .unwrap_or(ad)
+        .unwrap_or(name)
         .split('\\')
-        .filter(|parca| !parca.is_empty())
+        .filter(|part| !part.is_empty())
         .collect();
-    parcalar.len() >= 2
-        && parcalar.iter().all(|parca| {
-            parca.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-                && parca.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    parts.len() >= 2
+        && parts.iter().all(|part| {
+            part.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
 }
 
 #[cfg(test)]
-mod testler {
+mod tests {
     use super::*;
     use crate::kayit::deneme::topla;
-    use crate::maske::maskele;
+    use crate::mask::mask;
 
-    /// Mesajları sırayla ekler; her kümeyi "adet × kalıp" olarak, açılış sırasıyla döndürür.
-    fn kumele_tek_tur(ayarlar: Ayarlar, mesajlar: &[&str]) -> Vec<String> {
-        let mut drain = Drain::new(ayarlar);
-        for mesaj in mesajlar {
-            drain.ekle(mesaj);
+    /// Adds the messages in order; returns each cluster as "count × pattern", in the order the
+    /// clusters were opened.
+    fn cluster_one_pass(settings: Settings, messages: &[&str]) -> Vec<String> {
+        let mut drain = Drain::new(settings);
+        for message in messages {
+            drain.add(message);
         }
-        ozetle(&drain.kumeler)
+        summarize(&drain.clusters)
     }
 
-    /// Kümeler "adet × kalıp" olarak, açılış sırasıyla.
-    fn ozetle(kumeler: &[Kume]) -> Vec<String> {
-        kumeler
+    /// The clusters as "count × pattern", in the order they were opened.
+    fn summarize(clusters: &[Cluster]) -> Vec<String> {
+        clusters
             .iter()
-            .map(|kume| format!("{} × {}", kume.adet, kume.metin()))
+            .map(|cluster| format!("{} × {}", cluster.count, cluster.text()))
             .collect()
     }
 
-    /// Sıra numarasından rakamsız, üç harfli bir ad: 0 → "aaa", 1 → "aab", 27 → "abb"
-    fn ad(sira: usize) -> String {
-        [sira / 676, sira / 26, sira]
+    /// A digit-free, three-letter name from an index: 0 → "aaa", 1 → "aab", 27 → "abb"
+    fn name(i: usize) -> String {
+        [i / 676, i / 26, i]
             .iter()
-            .map(|basamak| char::from(b'a' + (basamak % 26) as u8))
+            .map(|digit| char::from(b'a' + (digit % 26) as u8))
             .collect()
     }
 
-    /// `adet` farklı kullanıcı için "Bilinmeyen kullanıcı: <ad>" mesajları.
-    fn bilinmeyen_kullanicilar(adet: usize) -> Vec<String> {
-        (0..adet)
-            .map(|sira| format!("Bilinmeyen kullanıcı: {}", ad(sira)))
+    /// "Unknown user: <name>" messages for `n` different users.
+    fn unknown_users(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| format!("Unknown user: {}", name(i)))
             .collect()
     }
 
     #[test]
-    fn ayni_mesajlar_tek_kumede_toplanir() {
-        let sonuc = kumele_tek_tur(Ayarlar::default(), &["Sepet önbellekten okundu"; 3]);
-        assert_eq!(sonuc, ["3 × Sepet önbellekten okundu"]);
+    fn identical_messages_collect_in_one_cluster() {
+        let result = cluster_one_pass(Settings::default(), &["Cart cache hit"; 3]);
+        assert_eq!(result, ["3 × Cart cache hit"]);
     }
 
     #[test]
-    fn farkli_konum_jokere_donusur() {
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
+    fn differing_position_becomes_a_wildcard() {
+        let result = cluster_one_pass(
+            Settings::default(),
             &[
-                "Zamanlanmış görev başladı: kurlar:guncelle",
-                "Zamanlanmış görev başladı: yedek:al",
+                "Scheduled task started: rates:update",
+                "Scheduled task started: backup:run",
             ],
         );
-        assert_eq!(sonuc, ["2 × Zamanlanmış görev başladı: <*>"]);
+        assert_eq!(result, ["2 × Scheduled task started: <*>"]);
     }
 
     #[test]
-    fn farkli_uzunluktaki_mesajlar_karismaz() {
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
-            &[
-                "Sipariş <SAYI> oluşturuldu",
-                "Sipariş <SAYI> için ödeme alındı",
-            ],
+    fn messages_of_different_lengths_do_not_mix() {
+        let result = cluster_one_pass(
+            Settings::default(),
+            &["Order <NUM> created", "Order <NUM> payment received"],
         );
         assert_eq!(
-            sonuc,
+            result,
             [
-                "1 × Sipariş <SAYI> oluşturuldu",
-                "1 × Sipariş <SAYI> için ödeme alındı"
+                "1 × Order <NUM> created",
+                "1 × Order <NUM> payment received"
             ]
         );
     }
 
     #[test]
-    fn benzerlik_esigi_birlesmeyi_belirler() {
-        // 16 belirtecin 10'u aynı: benzerlik 10/16 = 0,625
-        let sorgular = [
-            "Yavaş sorgu (<SAYI> ms): select * from `urunler` where `kategori_id` = <SAYI> and `stok` > <SAYI>",
-            "Yavaş sorgu (<SAYI> ms): select * from `siparisler` where `kullanici_id` = <SAYI> order by `created_at` desc",
+    fn similarity_threshold_decides_merging() {
+        // 10 of the 16 tokens are the same: similarity 10/16 = 0.625
+        let queries = [
+            "Slow query (<NUM> ms): select * from `products` where `category_id` = <NUM> and `stock` > <NUM>",
+            "Slow query (<NUM> ms): select * from `orders` where `user_id` = <NUM> order by `created_at` desc",
         ];
-        // Varsayılan eşik 0,7: iki farklı sorgu ayrı kalır
-        assert_eq!(kumele_tek_tur(Ayarlar::default(), &sorgular).len(), 2);
+        // The default threshold is 0.7: two different queries stay apart
+        assert_eq!(cluster_one_pass(Settings::default(), &queries).len(), 2);
 
-        // Eşik 0,6: birleşirler ama kalıp neredeyse anlamsızlaşır
-        let gevsek = Ayarlar {
-            benzerlik_esigi: 0.6,
-            ..Ayarlar::default()
+        // Threshold 0.6: they merge, but the pattern becomes almost meaningless
+        let loose = Settings {
+            similarity_threshold: 0.6,
+            ..Settings::default()
         };
         assert_eq!(
-            kumele_tek_tur(gevsek, &sorgular),
-            ["2 × Yavaş sorgu (<SAYI> ms): select * from <*> where <*> = <SAYI> <*> <*> <*> <*>"]
+            cluster_one_pass(loose, &queries),
+            ["2 × Slow query (<NUM> ms): select * from <*> where <*> = <NUM> <*> <*> <*> <*>"]
         );
     }
 
     #[test]
-    fn ilk_belirteci_farkli_mesajlar_karsilastirilmaz() {
-        // 3 belirtecin 2'si aynı (0,67) ve eşik düşük; ama farklı dallarda oldukları için
-        // hiç karşılaştırılmazlar
-        let dusuk_esik = Ayarlar {
-            benzerlik_esigi: 0.3,
-            ..Ayarlar::default()
+    fn messages_with_different_first_tokens_are_not_compared() {
+        // 2 of the 3 tokens are the same (0.67) and the threshold is low; but they are in
+        // different branches, so they are never compared
+        let low_threshold = Settings {
+            similarity_threshold: 0.3,
+            ..Settings::default()
         };
-        let sonuc = kumele_tek_tur(
-            dusuk_esik,
-            &["Redis bağlantısı koptu", "MySQL bağlantısı koptu"],
+        let result = cluster_one_pass(
+            low_threshold,
+            &["Redis connection lost", "MySQL connection lost"],
         );
-        assert_eq!(sonuc.len(), 2);
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn onek_derinligi_ikinci_belirteci_de_kullanir() {
-        // Laravel mesajlarında değişken çoğu zaman ikinci sırada olur
-        let mesajlar = [
-            "View [emails.siparis] not found.",
-            "View [emails.iade] not found.",
+    fn prefix_depth_uses_the_second_token_too() {
+        // In Laravel messages the variable is often the second token
+        let messages = [
+            "View [emails.order] not found.",
+            "View [emails.refund] not found.",
         ];
-        // Derinlik 1: aynı yaprakta karşılaştırılırlar, 3/4 = 0,75 → birleşirler
+        // Depth 1: they are compared in the same leaf, 3/4 = 0.75 → they merge
         assert_eq!(
-            kumele_tek_tur(Ayarlar::default(), &mesajlar),
+            cluster_one_pass(Settings::default(), &messages),
             ["2 × View <*> not found."]
         );
 
-        // Derinlik 2: ikinci belirteç de dal seçer. Sıradan kelimelerle ayrılan mesajlar farklı
-        // yapraklara düşüp hiç karşılaşmaz
-        let derin = Ayarlar {
-            onek_derinligi: 2,
-            ..Ayarlar::default()
+        // Depth 2: the second token chooses a branch too. Messages that differ by an ordinary
+        // word fall into different leaves and never meet
+        let deep = Settings {
+            prefix_depth: 2,
+            ..Settings::default()
         };
-        let sayfalar = ["Sayfa sepet için bulunamadı", "Sayfa iade için bulunamadı"];
+        let pages = ["Page cart not found", "Page refund not found"];
         assert_eq!(
-            kumele_tek_tur(Ayarlar::default(), &sayfalar),
-            ["2 × Sayfa <*> için bulunamadı"]
+            cluster_one_pass(Settings::default(), &pages),
+            ["2 × Page <*> not found"]
         );
-        assert_eq!(kumele_tek_tur(derin.clone(), &sayfalar).len(), 2);
-        // Kodsal biçimli ikinci belirteç (`[emails.siparis]`) rakamlılar gibi joker dalına
-        // gider: şablon adları derinlik 2'de de buluşur
+        assert_eq!(cluster_one_pass(deep.clone(), &pages).len(), 2);
+        // A code-like second token (`[emails.order]`) goes to the wildcard branch, like tokens
+        // with digits: template names meet at depth 2 too
         assert_eq!(
-            kumele_tek_tur(derin, &mesajlar),
+            cluster_one_pass(deep, &messages),
             ["2 × View <*> not found."]
         );
     }
 
     #[test]
-    fn rakamli_belirtec_joker_dalina_gider() {
-        // "a1b2" ve "c3d4" kendi dallarını açmaz; ikisi de joker dalında buluşup birleşir
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
+    fn token_with_a_digit_goes_to_the_wildcard_branch() {
+        // "a1b2" and "c3d4" do not open their own branches; both meet in the wildcard branch and
+        // merge
+        let result = cluster_one_pass(
+            Settings::default(),
             &[
-                "a1b2 dosyası başarıyla silindi",
-                "c3d4 dosyası başarıyla silindi",
+                "a1b2 file deleted successfully",
+                "c3d4 file deleted successfully",
             ],
         );
-        assert_eq!(sonuc, ["2 × <*> dosyası başarıyla silindi"]);
+        assert_eq!(result, ["2 × <*> file deleted successfully"]);
     }
 
     #[test]
-    fn dolu_dugumde_yeni_belirtec_joker_dalina_gider() {
-        // En fazla 2 çocuk: biri "a" için, son yer joker dalına ayrılır
-        let ayarlar = Ayarlar {
-            en_fazla_cocuk: 2,
-            ..Ayarlar::default()
+    fn new_token_goes_to_the_wildcard_branch_in_a_full_node() {
+        // At most 2 children: one for "a", the last place is kept for the wildcard branch
+        let settings = Settings {
+            max_children: 2,
+            ..Settings::default()
         };
-        let sonuc = kumele_tek_tur(ayarlar, &["a x y z", "b x y z", "c x y z"]);
-        assert_eq!(sonuc, ["1 × a x y z", "2 × <*> x y z"]);
+        let result = cluster_one_pass(settings, &["a x y z", "b x y z", "c x y z"]);
+        assert_eq!(result, ["1 × a x y z", "2 × <*> x y z"]);
     }
 
     #[test]
-    fn bos_mesajlar_tek_kumede_toplanir() {
-        let mut drain = Drain::new(Ayarlar::default());
-        drain.ekle("");
-        drain.ekle("   ");
-        assert_eq!(drain.kumeler.len(), 1);
-        assert_eq!(drain.kumeler[0].adet, 2);
+    fn empty_messages_collect_in_one_cluster() {
+        let mut drain = Drain::new(Settings::default());
+        drain.add("");
+        drain.add("   ");
+        assert_eq!(drain.clusters.len(), 1);
+        assert_eq!(drain.clusters[0].count, 2);
     }
 
     #[test]
-    fn ornek_logdaki_kaliplar() {
-        let (kayitlar, _) = topla(include_str!("../ornekler/laravel.log"));
-        let maskeli: Vec<_> = kayitlar.iter().map(|kayit| maskele(&kayit.mesaj)).collect();
-        let mesajlar: Vec<&str> = maskeli.iter().map(|mesaj| mesaj.as_ref()).collect();
-        let kaliplar = kumele_tek_tur(Ayarlar::default(), &mesajlar);
+    fn patterns_in_the_sample_log() {
+        let (records, _) = topla(include_str!("../ornekler/laravel.log"));
+        let masked: Vec<_> = records.iter().map(|record| mask(&record.mesaj)).collect();
+        let messages: Vec<&str> = masked.iter().map(|message| message.as_ref()).collect();
+        let patterns = cluster_one_pass(Settings::default(), &messages);
 
-        // Maskelemenin birleştiremediklerini Drain birleştirir
+        // Drain merges what masking could not
         assert!(
-            kaliplar
+            patterns
                 .iter()
-                .any(|k| k == "2 × Zamanlanmış görev başladı: <*>")
+                .any(|p| p == "2 × Zamanlanmış görev başladı: <*>")
         );
-        // İsimler farklı (Ayşe, Zeynep, Mehmet): "(Ayşe," belirtecinin tamamı joker olur
+        // The names differ (Ayşe, Zeynep, Mehmet): the whole token "(Ayşe," becomes a wildcard
         assert!(
-            kaliplar.iter().any(
-                |k| k.starts_with("3 × SQLSTATE[<SAYI>]") && k.contains("values <*> <EPOSTA>,")
-            )
-        );
-        // Sözdizimi aynı olduğu için giriş ve çıkış da birleşir (3/4 = 0,75)
-        assert!(
-            kaliplar
+            patterns
                 .iter()
-                .any(|k| k == "9 × Kullanıcı <SAYI> <*> yaptı")
+                .any(|p| p.starts_with("3 × SQLSTATE[<NUM>]") && p.contains("values <*> <EMAIL>,"))
         );
-        // Farklı yavaş sorgular ayrı kalır
+        // The syntax is the same, so logging in and out merge too (3/4 = 0.75)
+        assert!(
+            patterns
+                .iter()
+                .any(|p| p == "9 × Kullanıcı <NUM> <*> yaptı")
+        );
+        // Different slow queries stay apart
         assert_eq!(
-            kaliplar
+            patterns
                 .iter()
-                .filter(|k| k.contains("Yavaş sorgu"))
+                .filter(|p| p.contains("Yavaş sorgu"))
                 .count(),
             3
         );
 
-        // Hiçbir konum değişken sayılmaz: iki turlu kümeleme tek turla aynı sonucu verir
-        let (kumeler, numaralar) = kumele(&Ayarlar::default(), &mesajlar);
-        assert_eq!(ozetle(&kumeler), kaliplar);
-        assert_eq!(numaralar.len(), mesajlar.len());
+        // No position counts as variable: clustering with two passes gives the same result as
+        // one pass
+        let (clusters, ids) = cluster(&Settings::default(), &messages);
+        assert_eq!(summarize(&clusters), patterns);
+        assert_eq!(ids.len(), messages.len());
     }
 
     #[test]
-    fn rakamli_degisken_kisa_mesajda_birlesir() {
-        // "120ms" maskelenmez (birime yapışık); her değer ayrı kalıp olmamalı
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
+    fn variable_with_digits_merges_in_a_short_message() {
+        // "120ms" is not masked (it is stuck to its unit); each value must not be a separate
+        // pattern
+        let result = cluster_one_pass(
+            Settings::default(),
             &[
-                "Yanıt süresi 120ms",
-                "Yanıt süresi 95ms",
-                "Yanıt süresi 300ms",
+                "Response time 120ms",
+                "Response time 95ms",
+                "Response time 300ms",
             ],
         );
-        assert_eq!(sonuc, ["3 × Yanıt süresi <*>"]);
+        assert_eq!(result, ["3 × Response time <*>"]);
     }
 
     #[test]
-    fn rakamsiz_fark_kisa_mesajda_birlesmez() {
-        // "alındı" ile "reddedildi" farklı olaylar; rakam yok, eşik gevşememeli
-        let sonuc = kumele_tek_tur(Ayarlar::default(), &["Ödeme alındı", "Ödeme reddedildi"]);
-        assert_eq!(sonuc.len(), 2);
+    fn difference_without_digits_does_not_merge_in_a_short_message() {
+        // "received" and "rejected" are different events; there is no digit, the threshold must not
+        // relax
+        let result = cluster_one_pass(
+            Settings::default(),
+            &["Payment received", "Payment rejected"],
+        );
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn belirtec_bicimleri() {
-        use Bicim::*;
-        let ornekler = [
-            (r"App\Jobs\FaturaGonder", Sinif),
-            (r"\App\Models\Urun", Sinif),
-            (r"App\\Jobs\\FaturaGonder", Sinif),
-            (r"[App\Jobs\FaturaGonder]", Sinif),
-            (r"App\Jobs\FaturaGonder:", Sinif),
-            (r"resources\views\urun.blade.php", Diger),
-            (r"App\Jobs\X::handle()", Diger),
-            (r"\", Diger),
-            ("ORDER_CREATED", Sabit),
-            ("ORDER_CREATED,", Sabit),
-            ("HTTP_2", Sabit),
-            ("FaturaGonder", Tanimlayici),
-            ("hizSiniri", Tanimlayici),
-            ("fatura_gonder", Tanimlayici),
-            ("Order_Created", Tanimlayici),
-            ("$urun", Tanimlayici),
-            ("$urun2", Tanimlayici),
-            ("odeme.basarisiz", Noktali),
-            ("kurlar:guncelle", Noktali),
-            ("ornek.test", Noktali),
-            ("mail.from.address", Noktali),
-            ("(siparis.olustur)", Noktali),
-            ("'fiyat'", Tirnakli),
-            ("\"dsn\"", Tirnakli),
-            ("'App\\Jobs\\X'", Tirnakli),
-            ("`urunler`", Diger),
-            ("''", Diger),
-            ("\"a'b\"", Diger),
-            ("\"'\"", Diger),
-            ("siparisV2Olustur", Tanimlayici),
-            ("ApiV2Client", Tanimlayici),
-            ("Fatura2Gonder", Diger),
-            (r"\App", Diger),
-            (r"App\", Diger),
-            (r"App\\", Diger),
-            ("'Ali", Sozcuk),
-            ("Veli'", Sozcuk),
-            ("Ödeme", Sozcuk),
-            ("alındı", Sozcuk),
-            ("GET", Sozcuk),
-            ("SQLSTATE", Sozcuk),
-            ("İşlendi:", Sozcuk),
-            ("<SAYI>", Diger),
-            ("<*>", Diger),
-            (",", Diger),
-            ("(,)", Diger),
-            ("oauth2", Diger),
-            ("a1b2", Diger),
-            ("=", Diger),
-            ("", Diger),
-            ("$", Diger),
-            ("e-posta", Diger),
-            ("..", Diger),
-            (".a", Diger),
+    fn token_shapes() {
+        use Shape::*;
+        let examples = [
+            (r"App\Jobs\SendInvoice", Class),
+            (r"\App\Models\Product", Class),
+            (r"App\\Jobs\\SendInvoice", Class),
+            (r"[App\Jobs\SendInvoice]", Class),
+            (r"App\Jobs\SendInvoice:", Class),
+            (r"resources\views\product.blade.php", Other),
+            (r"App\Jobs\X::handle()", Other),
+            (r"\", Other),
+            ("ORDER_CREATED", Constant),
+            ("ORDER_CREATED,", Constant),
+            ("HTTP_2", Constant),
+            ("SendInvoice", Identifier),
+            ("rateLimit", Identifier),
+            ("send_invoice", Identifier),
+            ("Order_Created", Identifier),
+            ("$product", Identifier),
+            ("$product2", Identifier),
+            ("payment.failed", Dotted),
+            ("rates:update", Dotted),
+            ("example.test", Dotted),
+            ("mail.from.address", Dotted),
+            ("(order.create)", Dotted),
+            ("'price'", Quoted),
+            ("\"dsn\"", Quoted),
+            ("'App\\Jobs\\X'", Quoted),
+            ("`products`", Other),
+            ("''", Other),
+            ("\"a'b\"", Other),
+            ("\"'\"", Other),
+            ("orderV2Create", Identifier),
+            ("ApiV2Client", Identifier),
+            ("Invoice2Send", Other),
+            (r"\App", Other),
+            (r"App\", Other),
+            (r"App\\", Other),
+            ("'Ali", Word),
+            ("Veli'", Word),
+            ("Café", Word),
+            ("received", Word),
+            ("GET", Word),
+            ("SQLSTATE", Word),
+            ("Handled:", Word),
+            ("<NUM>", Other),
+            ("<*>", Other),
+            (",", Other),
+            ("(,)", Other),
+            ("oauth2", Other),
+            ("a1b2", Other),
+            ("=", Other),
+            ("", Other),
+            ("$", Other),
+            ("e-mail", Other),
+            ("..", Other),
+            (".a", Other),
         ];
-        for (belirtec, beklenen) in ornekler {
-            assert_eq!(bicim(belirtec), beklenen, "{belirtec:?}");
+        for (token, expected) in examples {
+            assert_eq!(token_shape(token), expected, "{token:?}");
         }
-        assert!(Sinif.kodsal() && Sabit.kodsal() && Tanimlayici.kodsal());
-        assert!(Noktali.kodsal() && Tirnakli.kodsal());
-        assert!(!Sozcuk.kodsal() && !Diger.kodsal());
+        assert!(Class.is_code() && Constant.is_code() && Identifier.is_code());
+        assert!(Dotted.is_code() && Quoted.is_code());
+        assert!(!Word.is_code() && !Other.is_code());
     }
 
     #[test]
-    fn ayni_bicimdeki_kodsal_degerler_birlesir() {
-        // Kategorik konum: iki mesaj yalnızca aynı biçimdeki iki kodsal değerde ayrılıyor.
-        // Hepsi 2–3 belirteçli: rakamsız bir fark olsa ayrı kalırlardı (0,5 ya da 0,67 < 0,7)
-        let ciftler: [(&str, &str, &str); 7] = [
+    fn code_like_values_of_the_same_shape_merge() {
+        // A categorical position: the two messages differ only in two code-like values of the
+        // same shape. All have 2–3 tokens: with a difference without digits they would stay apart
+        // (0.5 or 0.67 < 0.7)
+        let pairs: [(&str, &str, &str); 7] = [
             (
-                r"İşlendi: App\Jobs\FaturaGonder",
-                r"İşlendi: App\Jobs\EpostaGonder",
-                "İşlendi: <*>",
+                r"Handled: App\Jobs\SendInvoice",
+                r"Handled: App\Jobs\SendEmail",
+                "Handled: <*>",
             ),
-            ("Durum: ORDER_CREATED", "Durum: ORDER_FAILED", "Durum: <*>"),
-            ("Olay: odeme.basarisiz", "Olay: odeme.basarili", "Olay: <*>"),
             (
-                "Undefined variable $urun",
-                "Undefined variable $siparis",
+                "Status: ORDER_CREATED",
+                "Status: ORDER_FAILED",
+                "Status: <*>",
+            ),
+            (
+                "Event: payment.failed",
+                "Event: payment.succeeded",
+                "Event: <*>",
+            ),
+            (
+                "Undefined variable $product",
+                "Undefined variable $order",
                 "Undefined variable <*>",
             ),
             (
-                "Undefined array key \"fiyat\"",
-                "Undefined array key \"stok\"",
+                "Undefined array key \"price\"",
+                "Undefined array key \"stock\"",
                 "Undefined array key <*>",
             ),
+            ("Queue: send_invoice", "Queue: send_email", "Queue: <*>"),
             (
-                "Kuyruk: fatura_gonder",
-                "Kuyruk: eposta_gonder",
-                "Kuyruk: <*>",
-            ),
-            (
-                "Dinleyici: SiparisOlusturuldu",
-                "Dinleyici: OdemeAlindi",
-                "Dinleyici: <*>",
+                "Listener: OrderCreated",
+                "Listener: PaymentReceived",
+                "Listener: <*>",
             ),
         ];
-        for (birinci, ikinci, kalip) in ciftler {
+        for (first, second, pattern) in pairs {
             assert_eq!(
-                kumele_tek_tur(Ayarlar::default(), &[birinci, ikinci]),
-                [format!("2 × {kalip}")],
-                "{birinci:?} / {ikinci:?}"
+                cluster_one_pass(Settings::default(), &[first, second]),
+                [format!("2 × {pattern}")],
+                "{first:?} / {second:?}"
             );
         }
-        // Klasik Drain'de birleşmezler
-        let klasik = Ayarlar {
-            esnek_esik: false,
-            ..Ayarlar::default()
+        // In classic Drain they do not merge
+        let classic = Settings {
+            flexible_threshold: false,
+            ..Settings::default()
         };
         assert_eq!(
-            kumele_tek_tur(klasik, &["Durum: ORDER_CREATED", "Durum: ORDER_FAILED"]).len(),
+            cluster_one_pass(classic, &["Status: ORDER_CREATED", "Status: ORDER_FAILED"]).len(),
             2
         );
     }
 
     #[test]
-    fn siradan_kelimeler_ve_farkli_bicimler_birlesmez() {
-        let ciftler = [
-            // Sıradan kelimeler farklı olaylardır
-            ("Kuyruk emails dolu", "Kuyruk default dolu"),
-            ("GET /api/urunler yavaş", "POST /api/urunler yavaş"),
-            // Kodsal değerle sıradan kelime
-            ("Durum: ORDER_FAILED", "Durum: hazır"),
-            // Farklı kodsal biçimler
-            ("Durum: ORDER_FAILED", "Durum: odeme.bekliyor"),
-            // Ters tırnaklı SQL adları: farklı tablolar farklı sorgulardır
-            ("Tablo `urunler` kilitli", "Tablo `siparisler` kilitli"),
-            // Harfle rakamın karıştığı belirteçlerin yalnızca birinde rakam var
-            ("oauth2 jetonu yenilendi", "oauth jetonu yenilendi"),
+    fn ordinary_words_and_different_shapes_do_not_merge() {
+        let pairs = [
+            // Ordinary words are different events
+            ("Queue emails full", "Queue default full"),
+            ("GET /api/products slow", "POST /api/products slow"),
+            // A code-like value and an ordinary word
+            ("Status: ORDER_FAILED", "Status: ready"),
+            // Different code-like shapes
+            ("Status: ORDER_FAILED", "Status: payment.pending"),
+            // Backtick-quoted SQL names: different tables are different queries
+            ("Table `products` locked", "Table `orders` locked"),
+            // Of the tokens that mix letters and digits, only one has a digit
+            ("oauth2 token refreshed", "oauth token refreshed"),
         ];
-        for (birinci, ikinci) in ciftler {
+        for (first, second) in pairs {
             assert_eq!(
-                kumele_tek_tur(Ayarlar::default(), &[birinci, ikinci]).len(),
+                cluster_one_pass(Settings::default(), &[first, second]).len(),
                 2,
-                "{birinci:?} / {ikinci:?}"
+                "{first:?} / {second:?}"
             );
         }
     }
 
     #[test]
-    fn kodsal_bas_belirtec_joker_dalina_gider() {
-        // Baş belirteç dal seçer; kodsal bir baş belirteç ayrı dal açsaydı iki olay hiç
-        // karşılaştırılmazdı
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
+    fn code_like_head_token_goes_to_the_wildcard_branch() {
+        // The head token chooses the branch; if a code-like head token opened a separate branch,
+        // the two events would never be compared
+        let result = cluster_one_pass(
+            Settings::default(),
             &[
-                "ORDER_CREATED olayı işlendi",
-                "ORDER_FAILED olayı işlendi",
-                r"App\Jobs\FaturaGonder işlendi",
-                r"App\Jobs\EpostaGonder işlendi",
+                "ORDER_CREATED event handled",
+                "ORDER_FAILED event handled",
+                r"App\Jobs\SendInvoice handled",
+                r"App\Jobs\SendEmail handled",
             ],
         );
-        assert_eq!(sonuc, ["2 × <*> olayı işlendi", "2 × <*> işlendi"]);
-        // Sıradan kelimeler kendi dallarını açar; aynı yaprakta değiller
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
-            &["Ödeme olayı işlendi", "Kargo olayı işlendi"],
+        assert_eq!(result, ["2 × <*> event handled", "2 × <*> handled"]);
+        // Ordinary words open their own branches; they are not in the same leaf
+        let result = cluster_one_pass(
+            Settings::default(),
+            &["Payment event handled", "Shipping event handled"],
         );
-        assert_eq!(sonuc.len(), 2);
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn jokerin_karsisindaki_kodsal_deger_degisken_sayilir() {
-        // Kalıp "Durum: <*>" olduktan sonra kodsal bir değer katılır, sıradan bir kelime ayrı
-        // küme açar
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
+    fn code_like_value_facing_a_wildcard_counts_as_variable() {
+        // Once the pattern is "Status: <*>", a code-like value joins it and an ordinary word
+        // opens a separate cluster
+        let result = cluster_one_pass(
+            Settings::default(),
             &[
-                "Durum: ORDER_CREATED",
-                "Durum: ORDER_FAILED",
-                "Durum: odeme.bekliyor",
-                "Durum: hazır",
+                "Status: ORDER_CREATED",
+                "Status: ORDER_FAILED",
+                "Status: payment.pending",
+                "Status: ready",
             ],
         );
-        assert_eq!(sonuc, ["3 × Durum: <*>", "1 × Durum: hazır"]);
+        assert_eq!(result, ["3 × Status: <*>", "1 × Status: ready"]);
     }
 
     #[test]
-    fn kodsal_fark_tek_basina_tutunacak_yer_olmaz() {
-        // Hiçbir belirteci tutmayan bir birleşme yalnızca rakamlı farklarla olur
-        let sonuc = kumele_tek_tur(Ayarlar::default(), &["A_B C_D", "E_F G_H"]);
-        assert_eq!(sonuc.len(), 2);
-        // Tek kelimelik kodsal mesajlar da birleşmez: her olay adı ayrı bir olaydır
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
-            &["odeme.basarisiz", "odeme.basarili", "ORDER_FAILED"],
+    fn code_like_difference_alone_is_no_foothold() {
+        // A merge that keeps none of the tokens only happens with differences with digits
+        let result = cluster_one_pass(Settings::default(), &["A_B C_D", "E_F G_H"]);
+        assert_eq!(result.len(), 2);
+        // One-word code-like messages do not merge either: every event name is a separate event
+        let result = cluster_one_pass(
+            Settings::default(),
+            &["payment.failed", "payment.succeeded", "ORDER_FAILED"],
         );
-        assert_eq!(sonuc.len(), 3);
+        assert_eq!(result.len(), 3);
     }
 
     #[test]
-    fn belirtecin_cekirdegi() {
-        assert_eq!(cekirdek("(Ayşe,"), "Ayşe");
-        assert_eq!(cekirdek(r"[App\Jobs\X]"), r"App\Jobs\X");
-        assert_eq!(cekirdek("\"fiyat\":"), "\"fiyat\"");
-        assert_eq!(cekirdek("giriş"), "giriş");
-        assert_eq!(cekirdek(","), ",");
-        assert_eq!(cekirdek("([{}])"), "([{}])");
-        assert_eq!(cekirdek(""), "");
+    fn token_core_strips_the_sentence() {
+        assert_eq!(token_core("(Ayşe,"), "Ayşe");
+        assert_eq!(token_core(r"[App\Jobs\X]"), r"App\Jobs\X");
+        assert_eq!(token_core("\"price\":"), "\"price\"");
+        assert_eq!(token_core("login"), "login");
+        assert_eq!(token_core(","), ",");
+        assert_eq!(token_core("([{}])"), "([{}])");
+        assert_eq!(token_core(""), "");
     }
 
     #[test]
-    fn joker_konumlari_kaliptan_okunur() {
-        let mut drain = Drain::new(Ayarlar::default());
-        drain.ekle("Şablon <*> eksik: a1 x");
-        drain.ekle("Şablon <*> eksik: b2 y");
-        let kume = &drain.kumeler[0];
-        assert_eq!(kume.metin(), "Şablon <*> eksik: <*> <*>");
-        // Mesajda yazılı "<*>" (1. konum) joker değildir
-        assert_eq!(kume.joker_konumlari().collect::<Vec<_>>(), [3, 4]);
+    fn wildcard_positions_are_read_from_the_pattern() {
+        let mut drain = Drain::new(Settings::default());
+        drain.add("Template <*> missing: a1 x");
+        drain.add("Template <*> missing: b2 y");
+        let cluster = &drain.clusters[0];
+        assert_eq!(cluster.text(), "Template <*> missing: <*> <*>");
+        // The "<*>" written in the message (position 1) is not a wildcard
+        assert_eq!(cluster.wildcard_positions().collect::<Vec<_>>(), [3, 4]);
     }
 
     #[test]
-    fn rakamli_sabit_kelime_esigi_gevsetmez() {
-        // "S3" iki mesajda da aynı; farklı olan kelimede rakam yok, eşik gevşememeli
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
-            &["S3 yüklemesi tamamlandı", "S3 yüklemesi başarısız"],
+    fn fixed_word_with_a_digit_does_not_relax_the_threshold() {
+        // "S3" is the same in both messages; the word that differs has no digit, the threshold
+        // must not relax
+        let result = cluster_one_pass(
+            Settings::default(),
+            &["S3 upload completed", "S3 upload failed"],
         );
-        assert_eq!(sonuc.len(), 2);
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn yuzden_fazla_degeri_olan_konum_degiskendir() {
-        // 100 farklı ad: sınır aşılmadı, her ad ayrı kalıp
-        let mesajlar = bilinmeyen_kullanicilar(101);
-        let (kumeler, _) = kumele(&Ayarlar::default(), &mesajlar[..100]);
-        assert_eq!(kumeler.len(), 100);
+    fn position_with_more_than_a_hundred_values_is_variable() {
+        // 100 different names: the limit is not exceeded, every name is a separate pattern
+        let messages = unknown_users(101);
+        let (clusters, _) = cluster(&Settings::default(), &messages[..100]);
+        assert_eq!(clusters.len(), 100);
 
-        // 101. ad konumu değişken yapar. İkinci turda bu bilinir: ilk 100 ad da birleşir.
-        // Başka bir yaprak (Ödeme) etkilenmez.
-        let mut hepsi = mesajlar.clone();
-        hepsi.extend(["Ödeme alındı".to_string(), "Ödeme reddedildi".to_string()]);
-        let (kumeler, numaralar) = kumele(&Ayarlar::default(), &hepsi);
+        // The 101st name makes the position variable. The second pass knows this: the first 100
+        // names merge too. Another leaf (Payment) is not affected.
+        let mut all = messages.clone();
+        all.extend([
+            "Payment received".to_string(),
+            "Payment rejected".to_string(),
+        ]);
+        let (clusters, ids) = cluster(&Settings::default(), &all);
         assert_eq!(
-            ozetle(&kumeler),
+            summarize(&clusters),
             [
-                "101 × Bilinmeyen kullanıcı: <*>",
-                "1 × Ödeme alındı",
-                "1 × Ödeme reddedildi"
+                "101 × Unknown user: <*>",
+                "1 × Payment received",
+                "1 × Payment rejected"
             ]
         );
-        assert!(numaralar[..101].iter().all(|&numara| numara == 0));
-        assert_eq!(numaralar[101..], [1, 2]);
+        assert!(ids[..101].iter().all(|&id| id == 0));
+        assert_eq!(ids[101..], [1, 2]);
     }
 
     #[test]
-    fn sonraki_turlar_oncekilerde_ogrenilenleri_unutmaz() {
-        // Canlı izleme: ilk turda bir yaprakta değişken konum bulunur, ikinci tur kurulur;
-        // sonra gelen mesajlar başka bir yaprakta değişken konum bulur, üçüncü tur kurulur.
-        // Üçüncü tur ikisini de bilmeli.
-        let mut birinci = Kumeleyici::new(Ayarlar::default());
-        for (no, mesaj) in bilinmeyen_kullanicilar(101).iter().enumerate() {
-            birinci.ekle_metin(no, mesaj);
+    fn later_passes_do_not_forget_what_earlier_ones_learned() {
+        // Live watching: in the first pass a variable position is found in a leaf and a second
+        // pass is set up; then the messages that come later find a variable position in another
+        // leaf and a third pass is set up. The third pass must know both.
+        let mut first = Clusterer::new(Settings::default());
+        for (id, message) in unknown_users(101).iter().enumerate() {
+            first.add_text(id, message);
         }
-        assert!(birinci.ikinci_tur_gerekir());
-        let mut ikinci = birinci.ikinci_tur();
-        assert_eq!(ikinci.drain.ogrenilen.len(), 1);
-        assert!(!ikinci.ikinci_tur_gerekir());
-        let gorevler: Vec<String> = (0..101)
-            .map(|sira| format!("Görev bitti: {}", ad(sira)))
+        assert!(first.needs_second_pass());
+        let mut second = first.second_pass();
+        assert_eq!(second.drain.learned.len(), 1);
+        assert!(!second.needs_second_pass());
+        let jobs: Vec<String> = (0..101)
+            .map(|i| format!("Job finished: {}", name(i)))
             .collect();
-        for (no, mesaj) in gorevler.iter().enumerate() {
-            ikinci.ekle_metin(200 + no, mesaj);
+        for (id, message) in jobs.iter().enumerate() {
+            second.add_text(200 + id, message);
         }
-        assert!(ikinci.ikinci_tur_gerekir());
-        let ucuncu = ikinci.ikinci_tur();
-        assert_eq!(ucuncu.drain.ogrenilen.len(), 2);
-        // Sonuç: iki aile de baştan tek kalıpta
-        let mut sonuc = ucuncu;
-        for (no, mesaj) in bilinmeyen_kullanicilar(101).iter().enumerate() {
-            sonuc.ekle_metin(no, mesaj);
+        assert!(second.needs_second_pass());
+        let third = second.second_pass();
+        assert_eq!(third.drain.learned.len(), 2);
+        // The result: both families in a single pattern from the start
+        let mut result = third;
+        for (id, message) in unknown_users(101).iter().enumerate() {
+            result.add_text(id, message);
         }
-        for (no, mesaj) in gorevler.iter().enumerate() {
-            sonuc.ekle_metin(200 + no, mesaj);
+        for (id, message) in jobs.iter().enumerate() {
+            result.add_text(200 + id, message);
         }
         assert_eq!(
-            ozetle(sonuc.kumeler()),
-            ["101 × Bilinmeyen kullanıcı: <*>", "101 × Görev bitti: <*>"]
+            summarize(result.clusters()),
+            ["101 × Unknown user: <*>", "101 × Job finished: <*>"]
         );
-        // Yalnızca kümeleri taşıyan kopya: kalıplar aynı, ağaç boş
-        let kopya = sonuc.kumelerin_kopyasi();
-        assert_eq!(ozetle(kopya.kumeler()), ozetle(sonuc.kumeler()));
-        assert!(kopya.drain.uzunluklar.is_empty());
+        // The copy that carries only the clusters: the same patterns, an empty tree
+        let copy = result.clusters_only();
+        assert_eq!(summarize(copy.clusters()), summarize(result.clusters()));
+        assert!(copy.drain.by_length.is_empty());
     }
 
     #[test]
-    fn sinir_yuzden_fazla_farkli_degerdir() {
-        // 101 küme ama son konumda tam 100 farklı değer: "aaa" iki kümede geçiyor (ikincisi
-        // ortadaki kelimeyle ayrılıyor). 100'ü aşmadığı için konum değişken sayılmaz.
-        let mut mesajlar = bilinmeyen_kullanicilar(100);
-        mesajlar.push("Bilinmeyen kişi: aaa".to_string());
-        let (kumeler, _) = kumele(&Ayarlar::default(), &mesajlar);
-        assert_eq!(kumeler.len(), 101);
-        // Bir ad daha: 101 farklı değer, konum değişken
-        mesajlar.push(format!("Bilinmeyen kullanıcı: {}", ad(100)));
-        let (kumeler, _) = kumele(&Ayarlar::default(), &mesajlar);
+    fn the_limit_is_more_than_a_hundred_different_values() {
+        // 101 clusters, but exactly 100 different values in the last position: "aaa" appears in two
+        // clusters (the second differs by the middle word). It does not exceed 100, so the
+        // position does not count as variable.
+        let mut messages = unknown_users(100);
+        messages.push("Unknown person: aaa".to_string());
+        let (clusters, _) = cluster(&Settings::default(), &messages);
+        assert_eq!(clusters.len(), 101);
+        // One more name: 101 different values, the position is variable
+        messages.push(format!("Unknown user: {}", name(100)));
+        let (clusters, _) = cluster(&Settings::default(), &messages);
         assert_eq!(
-            ozetle(&kumeler),
-            [
-                "101 × Bilinmeyen kullanıcı: <*>",
-                "1 × Bilinmeyen kişi: aaa"
-            ]
+            summarize(&clusters),
+            ["101 × Unknown user: <*>", "1 × Unknown person: aaa"]
         );
     }
 
     #[test]
-    fn degisken_konum_yapragin_buyumesini_durdurur() {
-        // Tek turda: ilk 101 ad ayrı kümeler açar, sonrakiler değişken konum sayesinde ilk
-        // kümede birleşir. Yaprak büyümez; her yeni mesaj en fazla 101 kümeyle karşılaştırılır.
-        // Kural olmasa 5 000 küme açılır, son mesaj 4 999 kümeyle karşılaştırılırdı.
-        let mut drain = Drain::new(Ayarlar::default());
-        for mesaj in bilinmeyen_kullanicilar(5_000) {
-            drain.ekle(&mesaj);
+    fn variable_position_stops_the_leaf_from_growing() {
+        // In one pass: the first 101 names open separate clusters, the following ones merge into
+        // the first cluster thanks to the variable position. The leaf does not grow; every new
+        // message is compared with at most 101 clusters. Without the rule 5 000 clusters would be
+        // opened, and the last message would be compared with 4 999 clusters.
+        let mut drain = Drain::new(Settings::default());
+        for message in unknown_users(5_000) {
+            drain.add(&message);
         }
-        let kumeler = &drain.kumeler;
-        assert_eq!(kumeler.len(), 101);
-        assert_eq!(kumeler[0].metin(), "Bilinmeyen kullanıcı: <*>");
-        assert_eq!(kumeler[0].adet, 4_900);
-        assert!(kumeler[1..].iter().all(|kume| kume.adet == 1));
+        let clusters = &drain.clusters;
+        assert_eq!(clusters.len(), 101);
+        assert_eq!(clusters[0].text(), "Unknown user: <*>");
+        assert_eq!(clusters[0].count, 4_900);
+        assert!(clusters[1..].iter().all(|cluster| cluster.count == 1));
     }
 
     #[test]
-    fn degisken_konum_esige_rakamli_fark_gibi_katilir() {
-        // Sınır 2 farklı değer: üçüncü ad konumu değişken yapar. İkinci turda "ahmet"in
-        // kümesine katılan "veli"nin farkı değişken sayılır: eşik 0,7 × 2/3 = 0,47 ≤ 0,67
-        let ayarlar = Ayarlar {
-            en_fazla_cocuk: 2,
-            ..Ayarlar::default()
+    fn variable_position_counts_toward_the_threshold_like_a_digit_difference() {
+        // The limit is 2 different values: the third name makes the position variable. In the
+        // second pass, the difference of "carol", who joins the cluster of "alice", counts as
+        // variable: threshold 0.7 × 2/3 = 0.47 ≤ 0.67
+        let settings = Settings {
+            max_children: 2,
+            ..Settings::default()
         };
-        let mesajlar = [
-            "Bilinmeyen kullanıcı: ahmet",
-            "Bilinmeyen kullanıcı: ayse",
-            "Bilinmeyen kullanıcı: veli",
+        let messages = [
+            "Unknown user: alice",
+            "Unknown user: bob",
+            "Unknown user: carol",
         ];
-        let (kumeler, numaralar) = kumele(&ayarlar, &mesajlar);
-        assert_eq!(ozetle(&kumeler), ["3 × Bilinmeyen kullanıcı: <*>"]);
-        assert_eq!(numaralar, [0, 0, 0]);
-        // Tek turda ilk iki ad konum değişken sayılmadan önce ayrı kümeler açar
-        assert_eq!(kumele_tek_tur(ayarlar, &mesajlar).len(), 3);
+        let (clusters, ids) = cluster(&settings, &messages);
+        assert_eq!(summarize(&clusters), ["3 × Unknown user: <*>"]);
+        assert_eq!(ids, [0, 0, 0]);
+        // In one pass, the first two names open separate clusters before the position counts as
+        // variable
+        assert_eq!(cluster_one_pass(settings, &messages).len(), 3);
     }
 
     #[test]
-    fn esnek_esik_kapatilabilir() {
-        // Kapalıyken klasik Drain: 2/3 = 0,67 < 0,7 olduğu için her değer ayrı kalır
-        let klasik = Ayarlar {
-            esnek_esik: false,
-            ..Ayarlar::default()
+    fn flexible_threshold_can_be_turned_off() {
+        // When it is off, classic Drain: 2/3 = 0.67 < 0.7, so every value stays apart
+        let classic = Settings {
+            flexible_threshold: false,
+            ..Settings::default()
         };
-        let sonuc = kumele_tek_tur(klasik.clone(), &["Yanıt süresi 120ms", "Yanıt süresi 95ms"]);
-        assert_eq!(sonuc.len(), 2);
-        // Değişken konum da yok: 101 ad 101 kalıp
-        let (kumeler, _) = kumele(&klasik, &bilinmeyen_kullanicilar(101));
-        assert_eq!(kumeler.len(), 101);
+        let result = cluster_one_pass(
+            classic.clone(),
+            &["Response time 120ms", "Response time 95ms"],
+        );
+        assert_eq!(result.len(), 2);
+        // No variable position either: 101 names, 101 patterns
+        let (clusters, _) = cluster(&classic, &unknown_users(101));
+        assert_eq!(clusters.len(), 101);
     }
 
     #[test]
-    fn adlar_rakamsiz_ve_farkli() {
-        let adlar: HashSet<String> = (0..17_576).map(ad).collect();
-        assert_eq!(adlar.len(), 17_576);
-        assert!(adlar.iter().all(|ad| !rakam_iceriyor(ad)));
+    fn names_are_digit_free_and_distinct() {
+        let names: HashSet<String> = (0..17_576).map(name).collect();
+        assert_eq!(names.len(), 17_576);
+        assert!(names.iter().all(|name| !has_digit(name)));
         assert_eq!(
-            (ad(0), ad(1), ad(27)),
+            (name(0), name(1), name(27)),
             ("aaa".into(), "aab".into(), "abb".into())
         );
     }
 
-    /// `adet` farklı, rakamsız, tek kelimelik olay adı: "olay.aaa", "olay.aab"...
-    fn olaylar(adet: usize) -> Vec<String> {
-        (0..adet).map(|sira| format!("olay.{}", ad(sira))).collect()
+    /// `n` different, digit-free, one-word event names: "event.aaa", "event.aab"...
+    fn events(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("event.{}", name(i))).collect()
     }
 
     #[test]
-    fn tek_kelimelik_mesajlarda_konum_degisken_sayilmaz() {
-        // Bütün tek kelimelik mesajlar aynı yapraktadır. Yüzden fazla farklı olay adı onları
-        // birleştirmemeli; birleştirseydi aralarındaki iki ayrı olay da kaybolurdu.
-        let mut mesajlar = olaylar(101);
-        mesajlar.extend(["VeritabaniCoktu".to_string(), "DiskDolu".to_string()]);
-        let (kumeler, numaralar) = kumele(&Ayarlar::default(), &mesajlar);
-        assert_eq!(kumeler.len(), 103);
-        assert_eq!(numaralar, (0..103).collect::<Vec<_>>());
-        // Konumlar hiç sayılmaz: ikinci tura da gerek kalmaz
-        let mut drain = Drain::new(Ayarlar::default());
-        for mesaj in &mesajlar {
-            drain.ekle(mesaj);
+    fn positions_are_not_variable_in_one_word_messages() {
+        // All one-word messages are in the same leaf. More than a hundred different event names
+        // must not merge them; if they did, two separate events among them would be lost too.
+        let mut messages = events(101);
+        messages.extend(["DatabaseDown".to_string(), "DiskFull".to_string()]);
+        let (clusters, ids) = cluster(&Settings::default(), &messages);
+        assert_eq!(clusters.len(), 103);
+        assert_eq!(ids, (0..103).collect::<Vec<_>>());
+        // The positions are never counted: no second pass is needed either
+        let mut drain = Drain::new(Settings::default());
+        for message in &messages {
+            drain.add(message);
         }
-        assert!(drain.degiskenler.is_empty());
+        assert!(drain.variables.is_empty());
     }
 
     #[test]
-    fn esitlikte_daha_cok_jokeri_olan_secilir() {
-        // Son mesaj iki kümeyle de iki belirteç paylaşır (eşik 0,5). Drain3 gibi daha genel
-        // kalıbı, yani daha çok jokeri olanı seçer; önce açılan küme bu yüzden değişmez.
-        // Sonuç Drain3 0.9.11 ile aynıdır (depth=4, sim_th=0,5).
-        let ayarlar = Ayarlar {
-            benzerlik_esigi: 0.5,
-            esnek_esik: false,
-            ..Ayarlar::default()
+    fn on_a_tie_the_one_with_more_wildcards_wins() {
+        // The last message shares two tokens with both clusters (threshold 0.5). Like Drain3, it
+        // chooses the more general pattern, that is, the one with more wildcards; so the cluster
+        // opened first does not change. The result is the same as Drain3 0.9.11 (depth=4,
+        // sim_th=0.5).
+        let settings = Settings {
+            similarity_threshold: 0.5,
+            flexible_threshold: false,
+            ..Settings::default()
         };
-        let mesajlar = ["a b c e", "a x y d", "a z w d", "a b q d"];
+        let messages = ["a b c e", "a x y d", "a z w d", "a b q d"];
         assert_eq!(
-            kumele_tek_tur(ayarlar.clone(), &mesajlar),
+            cluster_one_pass(settings.clone(), &messages),
             ["1 × a b c e", "3 × a <*> <*> d"]
         );
-        // Esnek eşikte de (farklarda rakam yok)
-        let esnek = Ayarlar {
-            esnek_esik: true,
-            ..ayarlar
+        // With the flexible threshold too (no digits in the differences)
+        let flexible = Settings {
+            flexible_threshold: true,
+            ..settings
         };
         assert_eq!(
-            kumele_tek_tur(esnek, &mesajlar),
+            cluster_one_pass(flexible, &messages),
             ["1 × a b c e", "3 × a <*> <*> d"]
         );
     }
 
     #[test]
-    fn esigi_gecenlerin_en_benzeri_secilir() {
-        // Üçüncü mesaj ilk kümeyle iki belirteci paylaşır ama farkları değişken değil: eşik
-        // 0,7, benzerlik 0,5. İkinci kümeyle tek belirteci paylaşır ama öteki üç farkın iki
-        // tarafında da rakam var: eşik 0,7 × 1/4 = 0,175, benzerlik 0,25. En benzer küme eşiği
-        // geçmese de ikinci küme geçer.
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
-            &["Ödeme x y c3", "Ödeme a9 b9 c9", "Ödeme a1 b2 c3"],
+    fn the_most_similar_of_the_ones_passing_the_threshold_wins() {
+        // The third message shares two tokens with the first cluster, but its differences are not
+        // variable: threshold 0.7, similarity 0.5. It shares a single token with the second
+        // cluster, but the other three differences have a digit on both sides: threshold
+        // 0.7 × 1/4 = 0.175, similarity 0.25. Even if the most similar cluster does not pass the
+        // threshold, the second one does.
+        let result = cluster_one_pass(
+            Settings::default(),
+            &["Payment x y c3", "Payment a9 b9 c9", "Payment a1 b2 c3"],
         );
-        assert_eq!(sonuc, ["1 × Ödeme x y c3", "2 × Ödeme <*> <*> <*>"]);
+        assert_eq!(result, ["1 × Payment x y c3", "2 × Payment <*> <*> <*>"]);
     }
 
     #[test]
-    fn rakam_yalnizca_bir_taraftaysa_fark_degisken_degildir() {
-        let sonuc = kumele_tek_tur(Ayarlar::default(), &["Unauthenticated.", "kullanici42"]);
-        assert_eq!(sonuc, ["1 × Unauthenticated.", "1 × kullanici42"]);
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
-            &["Yanıt süresi 120ms", "Yanıt süresi uzun"],
+    fn a_digit_on_one_side_only_is_not_a_variable_difference() {
+        let result = cluster_one_pass(Settings::default(), &["Unauthenticated.", "user42"]);
+        assert_eq!(result, ["1 × Unauthenticated.", "1 × user42"]);
+        let result = cluster_one_pass(
+            Settings::default(),
+            &["Response time 120ms", "Response time exceeded"],
         );
-        assert_eq!(sonuc.len(), 2);
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn rakamli_tek_kelimeler_birlesir() {
-        // İki tarafında da rakam olan fark değişkendir: tek kelimelik rakamlı mesajlar
-        // (kimlikler, özetler) bir kümede toplanır; rakamsızlar yalnızca birebir aynıysa
-        // birleşir
-        let sonuc = kumele_tek_tur(
-            Ayarlar::default(),
+    fn one_word_messages_with_digits_merge() {
+        // A difference with a digit on both sides is variable: one-word messages with digits (IDs,
+        // hashes) collect in one cluster; the ones without digits merge only if identical
+        let result = cluster_one_pass(
+            Settings::default(),
             &[
                 "Unauthenticated.",
-                "kullanici42",
-                "kullanici43",
+                "user42",
+                "user43",
                 "Forbidden",
                 "a1b2c3",
                 "Unauthenticated.",
             ],
         );
-        assert_eq!(sonuc, ["2 × Unauthenticated.", "3 × <*>", "1 × Forbidden"]);
-        // Hiçbir belirteci tutmayan birleşme, bütün farklar rakamlıysa olur
-        let sonuc = kumele_tek_tur(Ayarlar::default(), &["a1b2 c3d4", "e5f6 g7h8"]);
-        assert_eq!(sonuc, ["2 × <*> <*>"]);
-        // Eşik 0: klasik Drain'deki gibi aynı yapraktaki her şey birleşir
-        let sifir = Ayarlar {
-            benzerlik_esigi: 0.0,
-            ..Ayarlar::default()
+        assert_eq!(result, ["2 × Unauthenticated.", "3 × <*>", "1 × Forbidden"]);
+        // A merge that keeps none of the tokens happens if every difference has digits
+        let result = cluster_one_pass(Settings::default(), &["a1b2 c3d4", "e5f6 g7h8"]);
+        assert_eq!(result, ["2 × <*> <*>"]);
+        // Threshold 0: as in classic Drain, everything in the same leaf merges
+        let zero = Settings {
+            similarity_threshold: 0.0,
+            ..Settings::default()
         };
-        let sonuc = kumele_tek_tur(sifir, &["Unauthenticated.", "Forbidden", "kullanici42"]);
-        assert_eq!(sonuc, ["3 × <*>"]);
+        let result = cluster_one_pass(zero, &["Unauthenticated.", "Forbidden", "user42"]);
+        assert_eq!(result, ["3 × <*>"]);
     }
 
     #[test]
-    fn joker_yapraginda_tek_ortak_kelime_yetmez() {
-        // "Kod7" rakamlı olduğu için bu mesajlar joker dalındadır; 101 ad son konumu değişken
-        // yapar. Aynı yaprağa düşen "Rapor dosyası hazır" yalnızca "dosyası"nı paylaşır:
-        // "Rapor" ile "Kod7" arasındaki farkın yalnızca bir tarafında rakam var.
-        let mut mesajlar: Vec<String> = (0..101)
-            .map(|sira| format!("Kod7 dosyası {}", ad(sira)))
+    fn one_shared_word_is_not_enough_in_the_wildcard_leaf() {
+        // "Code7" has a digit, so these messages are in the wildcard branch; 101 names make the
+        // last position variable. "Report file ready", which falls into the same leaf, shares only
+        // "file": the difference between "Report" and "Code7" has a digit on one side only.
+        let mut messages: Vec<String> = (0..101)
+            .map(|i| format!("Code7 file {}", name(i)))
             .collect();
-        mesajlar.push("Rapor dosyası hazır".to_string());
-        let (kumeler, _) = kumele(&Ayarlar::default(), &mesajlar);
+        messages.push("Report file ready".to_string());
+        let (clusters, _) = cluster(&Settings::default(), &messages);
         assert_eq!(
-            ozetle(&kumeler),
-            ["101 × Kod7 dosyası <*>", "1 × Rapor dosyası hazır"]
+            summarize(&clusters),
+            ["101 × Code7 file <*>", "1 × Report file ready"]
         );
     }
 
     #[test]
-    fn degisken_konum_tek_basina_tutunacak_yer_olmaz() {
-        // İki belirteçli mesajlar, joker dalında: 101 ad ikinci konumu değişken yapar. "S3 hata"
-        // ile "Kod7 <*>" arasında aynı belirteç yok: birinci konumun iki tarafında rakam var,
-        // ikincisi yalnızca değişken bir konum. Birleşselerdi hata kaydı yüz bir başka mesajın
-        // arasında kaybolurdu.
-        let mut mesajlar: Vec<String> = (0..101).map(|sira| format!("Kod7 {}", ad(sira))).collect();
-        mesajlar.push("S3 hata".to_string());
-        let (kumeler, _) = kumele(&Ayarlar::default(), &mesajlar);
-        assert_eq!(ozetle(&kumeler), ["101 × Kod7 <*>", "1 × S3 hata"]);
+    fn variable_position_alone_is_no_foothold() {
+        // Two-token messages in the wildcard branch: 101 names make the second position variable.
+        // "S3 error" and "Code7 <*>" have no token in common: the first position has a digit on
+        // both sides, the second is only a variable position. If they merged, the error record
+        // would be lost among a hundred and one other messages.
+        let mut messages: Vec<String> = (0..101).map(|i| format!("Code7 {}", name(i))).collect();
+        messages.push("S3 error".to_string());
+        let (clusters, _) = cluster(&Settings::default(), &messages);
+        assert_eq!(summarize(&clusters), ["101 × Code7 <*>", "1 × S3 error"]);
     }
 
     #[test]
-    fn mesajda_yazili_joker_siradan_kelimedir() {
-        // Kalıplardaki joker mesajdaki bir kelimeyle karışmaz: yazılı "<*>" içeren aynı
-        // mesajlar birleşir. Karışsaydı her biri ayrı küme açar, süre mesaj sayısının karesiyle
-        // artardı.
-        let mesajlar = vec!["Şablon <*> eksik"; 5_000];
-        let (kumeler, _) = kumele(&Ayarlar::default(), &mesajlar);
-        assert_eq!(ozetle(&kumeler), ["5000 × Şablon <*> eksik"]);
-        // Baştaki "<*>" joker dalına gitmez, kendi dalını açar
-        let sonuc = kumele_tek_tur(Ayarlar::default(), &["<*> hazır", "<*> hazır", "x hazır"]);
-        assert_eq!(sonuc, ["2 × <*> hazır", "1 × x hazır"]);
-        // Klasik Drain'de de
-        let klasik = Ayarlar {
-            esnek_esik: false,
-            ..Ayarlar::default()
+    fn wildcard_written_in_a_message_is_an_ordinary_word() {
+        // The wildcard in patterns is not mistaken for a word in a message: identical messages that
+        // contain a written "<*>" merge. If it were mistaken, each would open a separate cluster,
+        // and the time would grow with the square of the number of messages.
+        let messages = vec!["Template <*> missing"; 5_000];
+        let (clusters, _) = cluster(&Settings::default(), &messages);
+        assert_eq!(summarize(&clusters), ["5000 × Template <*> missing"]);
+        // A "<*>" at the start does not go to the wildcard branch, it opens its own branch
+        let result = cluster_one_pass(Settings::default(), &["<*> ready", "<*> ready", "x ready"]);
+        assert_eq!(result, ["2 × <*> ready", "1 × x ready"]);
+        // In classic Drain too
+        let classic = Settings {
+            flexible_threshold: false,
+            ..Settings::default()
         };
-        assert_eq!(kumele(&klasik, &["Şablon <*> eksik"; 3]).0.len(), 1);
+        assert_eq!(cluster(&classic, &["Template <*> missing"; 3]).0.len(), 1);
     }
 
-    /// Tekrarlanabilir sözde rastgele sayılar (xorshift64*).
-    struct Rastgele(u64);
+    /// Repeatable pseudo-random numbers (xorshift64*).
+    struct Rng(u64);
 
-    impl Rastgele {
-        /// 0 ile `ust` arasında (`ust` hariç) bir sayı.
-        fn sayi(&mut self, ust: usize) -> usize {
+    impl Rng {
+        /// A number between 0 and `bound` (`bound` excluded).
+        fn below(&mut self, bound: usize) -> usize {
             let mut x = self.0;
             x ^= x >> 12;
             x ^= x << 25;
             x ^= x >> 27;
             self.0 = x;
-            (x.wrapping_mul(0x2545_F491_4F6C_DD1D) % ust as u64) as usize
+            (x.wrapping_mul(0x2545_F491_4F6C_DD1D) % bound as u64) as usize
         }
     }
 
-    /// Mesajları `Kumeleyici` ile kümeler; `kumele` gibi gerekirse iki tur. Aynı metinler aynı
-    /// numarayı alır.
-    fn onbellekli_kumele(ayarlar: &Ayarlar, mesajlar: &[String]) -> (Vec<String>, Vec<usize>) {
-        let mut numaralar: HashMap<&str, usize> = HashMap::new();
-        let nolar: Vec<usize> = mesajlar
+    /// Clusters the messages with `Clusterer`; two passes if needed, like `cluster`. Identical
+    /// texts get the same ID.
+    fn cluster_cached(settings: &Settings, messages: &[String]) -> (Vec<String>, Vec<usize>) {
+        let mut ids_by_text: HashMap<&str, usize> = HashMap::new();
+        let ids: Vec<usize> = messages
             .iter()
-            .map(|mesaj| {
-                let yeni = numaralar.len();
-                *numaralar.entry(mesaj.as_str()).or_insert(yeni)
+            .map(|message| {
+                let next_id = ids_by_text.len();
+                *ids_by_text.entry(message.as_str()).or_insert(next_id)
             })
             .collect();
-        let tur = |kumeleyici: &mut Kumeleyici| -> Vec<usize> {
-            mesajlar
+        let pass = |clusterer: &mut Clusterer| -> Vec<usize> {
+            messages
                 .iter()
-                .zip(&nolar)
-                .map(|(mesaj, &no)| kumeleyici.ekle_metin(no, mesaj))
+                .zip(&ids)
+                .map(|(message, &id)| clusterer.add_text(id, message))
                 .collect()
         };
-        let mut kumeleyici = Kumeleyici::new(ayarlar.clone());
-        let mut sonuc = tur(&mut kumeleyici);
-        if kumeleyici.ikinci_tur_gerekir() {
-            kumeleyici = kumeleyici.ikinci_tur();
-            sonuc = tur(&mut kumeleyici);
+        let mut clusterer = Clusterer::new(settings.clone());
+        let mut result = pass(&mut clusterer);
+        if clusterer.needs_second_pass() {
+            clusterer = clusterer.second_pass();
+            result = pass(&mut clusterer);
         }
-        (ozetle(kumeleyici.kumeler()), sonuc)
+        (summarize(clusterer.clusters()), result)
     }
 
     #[test]
-    fn ayni_mesaj_sonradan_daha_benzer_kumeye_katilir() {
-        // Drain sıraya bağlıdır: dördüncü mesaj ikincinin aynısıdır ama arada açılan küme ona
-        // daha çok benzer (7 belirtecin 6'sı, ilk kümede 5'i). Her kayıt kendi sırasında
-        // kümelenmeli; aynı mesaj bir kez kümelenseydi dördüncü de ilk kümeye düşerdi.
-        let mesajlar: Vec<String> = [
-            "Sepet güncellenemedi kullanıcı oturumu kapalı mobil uygulama",
-            "Sepet güncellenemedi kullanıcı oturumu kapalı web tarayıcı",
-            "Sepet boşaltılamadı kullanıcı oturumu kapalı web tarayıcı",
-            "Sepet güncellenemedi kullanıcı oturumu kapalı web tarayıcı",
+    fn same_message_later_joins_a_more_similar_cluster() {
+        // Drain depends on order: the fourth message is the same as the second, but the cluster
+        // opened in between resembles it more (6 of its 7 tokens, 5 in the first cluster). Every
+        // record must be clustered in its own turn; if the same message were clustered only once,
+        // the fourth would fall into the first cluster too.
+        let messages: Vec<String> = [
+            "Cart sync failed session closed mobile app",
+            "Cart sync failed session closed web browser",
+            "Cart clear failed session closed web browser",
+            "Cart sync failed session closed web browser",
         ]
         .map(String::from)
         .into();
-        let (kumeler, numaralar) = onbellekli_kumele(&Ayarlar::default(), &mesajlar);
-        assert_eq!(numaralar, [0, 0, 1, 1]);
+        let (clusters, ids) = cluster_cached(&Settings::default(), &messages);
+        assert_eq!(ids, [0, 0, 1, 1]);
         assert_eq!(
-            kumeler,
+            clusters,
             [
-                "2 × Sepet güncellenemedi kullanıcı oturumu kapalı <*> <*>",
-                "2 × Sepet <*> kullanıcı oturumu kapalı web tarayıcı",
+                "2 × Cart sync failed session closed <*> <*>",
+                "2 × Cart <*> failed session closed web browser",
             ]
         );
-        let (referans, referans_numaralari) = kumele(&Ayarlar::default(), &mesajlar);
-        assert_eq!(
-            (ozetle(&referans), referans_numaralari),
-            (kumeler, numaralar)
-        );
+        let (reference, reference_ids) = cluster(&Settings::default(), &messages);
+        assert_eq!((summarize(&reference), reference_ids), (clusters, ids));
     }
 
     #[test]
-    fn onbellekli_kumeleme_onbelleksizle_ayni() {
-        // Önbellek yalnızca hızlandırır: her ayarda ve her mesaj dizisinde sonuç, her mesajı
-        // aramayla eklemekle (iki turuyla birlikte) birebir aynı olmalı
-        let ayarlar_listesi = [
-            Ayarlar::default(),
-            Ayarlar {
-                onek_derinligi: 2,
-                en_fazla_cocuk: 3,
-                ..Ayarlar::default()
+    fn cached_clustering_matches_uncached() {
+        // The cache only makes it faster: with every setting and every sequence of messages, the
+        // result must be exactly the same as adding every message with a search (including the
+        // two passes)
+        let settings_list = [
+            Settings::default(),
+            Settings {
+                prefix_depth: 2,
+                max_children: 3,
+                ..Settings::default()
             },
-            Ayarlar {
-                onek_derinligi: 3,
-                en_fazla_cocuk: 4,
-                benzerlik_esigi: 0.4,
-                ..Ayarlar::default()
+            Settings {
+                prefix_depth: 3,
+                max_children: 4,
+                similarity_threshold: 0.4,
+                ..Settings::default()
             },
-            Ayarlar {
-                esnek_esik: false,
-                benzerlik_esigi: 0.5,
-                en_fazla_cocuk: 5,
-                ..Ayarlar::default()
+            Settings {
+                flexible_threshold: false,
+                similarity_threshold: 0.5,
+                max_children: 5,
+                ..Settings::default()
             },
-            Ayarlar {
-                benzerlik_esigi: 1.0,
-                ..Ayarlar::default()
+            Settings {
+                similarity_threshold: 1.0,
+                ..Settings::default()
             },
-            Ayarlar {
-                benzerlik_esigi: 0.0,
-                ..Ayarlar::default()
+            Settings {
+                similarity_threshold: 0.0,
+                ..Settings::default()
             },
         ];
-        let kelimeler = [
-            "sepet", "ödeme", "kargo", "web", "mobil", "api", "açık", "kapalı",
+        let words = [
+            "cart", "payment", "shipping", "web", "mobile", "api", "open", "closed",
         ];
-        let mut rastgele = Rastgele(0x2545_F491_4F6C_DD1D);
-        let mut iki_turlu = 0;
-        for deneme in 0..60 {
-            let ayarlar = &ayarlar_listesi[deneme % ayarlar_listesi.len()];
-            // Her denemede küçük bir mesaj havuzu: tekrarlar önbelleği, rastgele sıra Drain'in
-            // sıraya bağlılığını, çok sayıda farklı ad ikinci turu sınar
-            let havuz_boyu = 2 + rastgele.sayi(40);
-            let havuz: Vec<String> = (0..havuz_boyu)
-                .map(|_| match rastgele.sayi(6) {
-                    0 => format!("Bilinmeyen kullanıcı: {}", ad(rastgele.sayi(400))),
-                    1 => ad(rastgele.sayi(20)),
-                    2 => format!("Yanıt süresi {}ms", rastgele.sayi(500)),
+        let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+        let mut two_pass = 0;
+        for trial in 0..60 {
+            let settings = &settings_list[trial % settings_list.len()];
+            // A small pool of messages in every trial: repeats test the cache, the random order
+            // tests that Drain depends on order, many different names test the second pass
+            let pool_size = 2 + rng.below(40);
+            let pool: Vec<String> = (0..pool_size)
+                .map(|_| match rng.below(6) {
+                    0 => format!("Unknown user: {}", name(rng.below(400))),
+                    1 => name(rng.below(20)),
+                    2 => format!("Response time {}ms", rng.below(500)),
                     3 => String::new(),
                     _ => {
-                        let uzunluk = 2 + rastgele.sayi(5);
-                        let belirtecler: Vec<&str> = (0..uzunluk)
-                            .map(|_| kelimeler[rastgele.sayi(kelimeler.len())])
-                            .collect();
-                        belirtecler.join(" ")
+                        let len = 2 + rng.below(5);
+                        let tokens: Vec<&str> =
+                            (0..len).map(|_| words[rng.below(words.len())]).collect();
+                        tokens.join(" ")
                     }
                 })
                 .collect();
-            let adet = 50 + rastgele.sayi(400);
-            let mut mesajlar: Vec<String> = (0..adet)
-                .map(|_| havuz[rastgele.sayi(havuz.len())].clone())
+            let count = 50 + rng.below(400);
+            let mut messages: Vec<String> = (0..count)
+                .map(|_| pool[rng.below(pool.len())].clone())
                 .collect();
-            // Bazı denemelerde yüzlerce farklı ad: yaprakta değişken konum, ikinci tur
-            if deneme % 4 == 0 {
-                for sira in 0..250 {
-                    let yer = rastgele.sayi(mesajlar.len());
-                    mesajlar.insert(yer, format!("Bilinmeyen kullanıcı: {}", ad(sira)));
+            // In some trials hundreds of different names: a variable position in a leaf, a
+            // second pass
+            if trial % 4 == 0 {
+                for i in 0..250 {
+                    let at = rng.below(messages.len());
+                    messages.insert(at, format!("Unknown user: {}", name(i)));
                 }
             }
-            let (referans, referans_numaralari) = kumele(ayarlar, &mesajlar);
-            let (kumeler, numaralar) = onbellekli_kumele(ayarlar, &mesajlar);
-            assert_eq!(numaralar, referans_numaralari, "deneme {deneme}");
-            assert_eq!(kumeler, ozetle(&referans), "deneme {deneme}");
-            let mut drain = Kumeleyici::new(ayarlar.clone());
-            for (no, mesaj) in mesajlar.iter().enumerate() {
-                drain.ekle_metin(no, mesaj);
+            let (reference, reference_ids) = cluster(settings, &messages);
+            let (clusters, ids) = cluster_cached(settings, &messages);
+            assert_eq!(ids, reference_ids, "trial {trial}");
+            assert_eq!(clusters, summarize(&reference), "trial {trial}");
+            let mut drain = Clusterer::new(settings.clone());
+            for (id, message) in messages.iter().enumerate() {
+                drain.add_text(id, message);
             }
-            iki_turlu += usize::from(drain.ikinci_tur_gerekir());
+            two_pass += usize::from(drain.needs_second_pass());
         }
-        // İkinci tur gerçekten sınandı
-        assert!(iki_turlu >= 5, "{iki_turlu}");
+        // The second pass was really tested
+        assert!(two_pass >= 5, "{two_pass}");
     }
 
     #[test]
-    fn belirtec_sinirlari_split_whitespace_ile_ayni() {
-        for mesaj in [
+    fn token_bounds_match_split_whitespace() {
+        for message in [
             "",
             "   ",
-            "tek",
-            "  iki  kelime ",
-            "sekme\tve\nsatır sonu\r\n",
-            "Unicode\u{00a0}boşluk\u{2003}ve\u{3000}ideografik",
-            "çok baytlı ğüşıöç İ 🚀",
-            "\u{feff}BOM boşluk değildir",
+            "one",
+            "  two  words ",
+            "tab\tand\nline end\r\n",
+            "Unicode\u{00a0}space\u{2003}and\u{3000}ideographic",
+            "multi-byte ğüşıöç İ 🚀",
+            "\u{feff}BOM is not whitespace",
         ] {
-            let beklenen: Vec<&str> = mesaj.split_whitespace().collect();
-            let gelen: Vec<&str> = sinirlar(mesaj)
+            let expected: Vec<&str> = message.split_whitespace().collect();
+            let actual: Vec<&str> = token_bounds(message)
                 .iter()
-                .map(|&(bas, son)| &mesaj[bas..son])
+                .map(|&(start, end)| &message[start..end])
                 .collect();
-            assert_eq!(gelen, beklenen, "{mesaj:?}");
+            assert_eq!(actual, expected, "{message:?}");
         }
     }
 
     #[test]
-    fn kalip_acan_mesajin_metnini_paylasir() {
-        let mesaj: Rc<str> = Rc::from("Kullanıcı <SAYI> giriş yaptı");
-        let mut kumeleyici = Kumeleyici::new(Ayarlar::default());
-        kumeleyici.ekle(0, &mesaj);
-        kumeleyici.ekle_metin(1, "Kullanıcı <SAYI> çıkış yaptı");
-        let kume = &kumeleyici.kumeler()[0];
-        assert!(Rc::ptr_eq(&kume.acan, &mesaj));
-        assert_eq!(kume.metin(), "Kullanıcı <SAYI> <*> yaptı");
-        assert_eq!(kume.joker_konumlari().collect::<Vec<_>>(), [2]);
-        // Mesajda yazılı `<*>` joker değildir
-        kumeleyici.ekle_metin(2, "Değer: <*>");
-        assert_eq!(kumeleyici.kumeler()[1].joker_konumlari().count(), 0);
+    fn pattern_shares_the_text_of_the_opening_message() {
+        let message: Rc<str> = Rc::from("User <NUM> logged in");
+        let mut clusterer = Clusterer::new(Settings::default());
+        clusterer.add(0, &message);
+        clusterer.add_text(1, "User <NUM> logged out");
+        let cluster = &clusterer.clusters()[0];
+        assert!(Rc::ptr_eq(&cluster.origin, &message));
+        assert_eq!(cluster.text(), "User <NUM> logged <*>");
+        assert_eq!(cluster.wildcard_positions().collect::<Vec<_>>(), [3]);
+        // A `<*>` written in the message is not a wildcard
+        clusterer.add_text(2, "Value: <*>");
+        assert_eq!(clusterer.clusters()[1].wildcard_positions().count(), 0);
     }
 
     #[test]
-    fn dolu_yaprakta_benzemeyenler_tasma_kumesine_gider() {
-        // Her konumu az değer alan ama birleşimleri sayısız mesajlar: hiçbiri bir başkasına
-        // benzemez (3 belirtecin en fazla 1'i aynı). Yaprak dolunca yenileri taşma kümesinde
-        // toplanır; bir mesaj en fazla yapraktaki kümelerle karşılaştırılır.
-        for esnek_esik in [false, true] {
-            let ayarlar = Ayarlar {
-                en_fazla_cocuk: 3,
-                esnek_esik,
-                ..Ayarlar::default()
+    fn in_a_full_leaf_dissimilar_messages_go_to_the_overflow_cluster() {
+        // Messages whose every position takes few values but whose combinations are countless: none
+        // resembles another (at most 1 of 3 tokens is the same). Once the leaf is full, the new ones
+        // collect in the overflow cluster; a message is compared with at most the clusters in the
+        // leaf.
+        for flexible_threshold in [false, true] {
+            let settings = Settings {
+                max_children: 3,
+                flexible_threshold,
+                ..Settings::default()
             };
-            let sinir = YAPRAK_KATSAYISI * ayarlar.en_fazla_cocuk;
-            let mesajlar: Vec<String> = (0..sinir + 20)
-                .map(|sira| format!("olay {} {}", ad(sira), ad(sira + 7_000)))
+            let limit = LEAF_FACTOR * settings.max_children;
+            let messages: Vec<String> = (0..limit + 20)
+                .map(|i| format!("event {} {}", name(i), name(i + 7_000)))
                 .collect();
-            let mut drain = Drain::new(ayarlar.clone());
-            for mesaj in &mesajlar {
-                drain.ekle(mesaj);
+            let mut drain = Drain::new(settings.clone());
+            for message in &messages {
+                drain.add(message);
             }
-            if esnek_esik {
-                // Esnek eşikte konumlar `en_fazla_cocuk`'tan fazla değer alınca değişkendir:
-                // ikinci turda hepsi tek kalıptır
-                assert!(!drain.degiskenler.is_empty());
-                let (kumeler, _) = kumele(&ayarlar, &mesajlar);
-                assert_eq!(ozetle(&kumeler), [format!("{} × olay <*> <*>", sinir + 20)]);
+            if flexible_threshold {
+                // With the flexible threshold, the positions are variable once they take more
+                // than `max_children` values: in the second pass everything is a single pattern
+                assert!(!drain.variables.is_empty());
+                let (clusters, _) = cluster(&settings, &messages);
+                assert_eq!(
+                    summarize(&clusters),
+                    [format!("{} × event <*> <*>", limit + 20)]
+                );
                 continue;
             }
-            assert_eq!(drain.kumeler.len(), sinir + 1);
-            let tasma = &drain.kumeler[sinir];
-            assert_eq!((tasma.adet, tasma.metin().as_str()), (20, "olay <*> <*>"));
-            let yaprak = drain.yaprak_mut(&["olay", "x", "y"]).unwrap();
-            assert_eq!(yaprak.kume_numaralari.len(), sinir);
-            assert_eq!(yaprak.tasma, Some(sinir));
-            // Yapraktaki bir kümeye benzeyen mesaj yine ona katılır
-            assert_eq!(drain.ekle(&mesajlar[3]), 3);
-            // Önbellekli kümeleme aynı sonucu verir
-            let mut kumeleyici = Kumeleyici::new(ayarlar.clone());
-            let numaralar: Vec<usize> = mesajlar
+            assert_eq!(drain.clusters.len(), limit + 1);
+            let overflow = &drain.clusters[limit];
+            assert_eq!(
+                (overflow.count, overflow.text().as_str()),
+                (20, "event <*> <*>")
+            );
+            let leaf = drain.leaf_mut(&["event", "x", "y"]).unwrap();
+            assert_eq!(leaf.cluster_ids.len(), limit);
+            assert_eq!(leaf.overflow, Some(limit));
+            // A message that resembles a cluster in the leaf still joins it
+            assert_eq!(drain.add(&messages[3]), 3);
+            // Clustering with the cache gives the same result
+            let mut clusterer = Clusterer::new(settings.clone());
+            let ids: Vec<usize> = messages
                 .iter()
-                .chain(&mesajlar)
+                .chain(&messages)
                 .enumerate()
-                .map(|(no, mesaj)| kumeleyici.ekle_metin(no % mesajlar.len(), mesaj))
+                .map(|(id, message)| clusterer.add_text(id % messages.len(), message))
                 .collect();
-            let iki_kez: Vec<&String> = mesajlar.iter().chain(&mesajlar).collect();
-            let (referans, referans_numaralari) = kumele(&ayarlar, &iki_kez);
-            assert_eq!(numaralar, referans_numaralari);
-            assert_eq!(ozetle(kumeleyici.kumeler()), ozetle(&referans));
+            let twice: Vec<&String> = messages.iter().chain(&messages).collect();
+            let (reference, reference_ids) = cluster(&settings, &twice);
+            assert_eq!(ids, reference_ids);
+            assert_eq!(summarize(clusterer.clusters()), summarize(&reference));
         }
-        // Tek belirteçli mesajların yaprağı dolmaz (her mesaj zaten en fazla iki kümeyle
-        // karşılaştırılır): her farklı kelime, yaprağın sınırından sonra da kendi kümesidir
-        for esnek_esik in [false, true] {
-            let ayarlar = Ayarlar {
-                en_fazla_cocuk: 3,
-                esnek_esik,
-                ..Ayarlar::default()
+        // The leaf of single-token messages does not fill up (every message is compared with at
+        // most two clusters anyway): every different word is its own cluster, past the limit of
+        // the leaf too
+        for flexible_threshold in [false, true] {
+            let settings = Settings {
+                max_children: 3,
+                flexible_threshold,
+                ..Settings::default()
             };
-            let kelimeler: Vec<String> = (0..YAPRAK_KATSAYISI * 3 + 20).map(ad).collect();
-            let (kumeler, _) = kumele(&ayarlar, &kelimeler);
-            assert_eq!(kumeler.len(), kelimeler.len());
+            let words: Vec<String> = (0..LEAF_FACTOR * 3 + 20).map(name).collect();
+            let (clusters, _) = cluster(&settings, &words);
+            assert_eq!(clusters.len(), words.len());
         }
     }
 
     #[test]
-    fn onbellek_agac_degisince_yeniden_arar() {
-        // "a b c" önce kendi kümesini açar; sonra aynı uzunlukta bir mesaj o kümenin kalıbını
-        // değiştirir. "a b c" yeniden geldiğinde önbellekteki sonuç eskidir; yeniden aranır.
-        let mut kumeleyici = Kumeleyici::new(Ayarlar::default());
-        assert_eq!(kumeleyici.ekle_metin(0, "a b c d"), 0);
-        assert_eq!(kumeleyici.ekle_metin(1, "a b c e"), 0);
-        assert_eq!(kumeleyici.ekle_metin(0, "a b c d"), 0);
-        // Başka uzunluktaki bir değişiklik önbelleği bozmaz
-        assert_eq!(kumeleyici.ekle_metin(2, "x y"), 1);
-        assert_eq!(kumeleyici.ekle_metin(0, "a b c d"), 0);
-        assert_eq!(ozetle(kumeleyici.kumeler()), ["4 × a b c <*>", "1 × x y"]);
+    fn cache_searches_again_after_the_tree_changes() {
+        // "a b c d" first opens its own cluster; then a message of the same length changes that
+        // cluster's pattern. When "a b c d" comes again, the result in the cache is stale; it is
+        // searched again.
+        let mut clusterer = Clusterer::new(Settings::default());
+        assert_eq!(clusterer.add_text(0, "a b c d"), 0);
+        assert_eq!(clusterer.add_text(1, "a b c e"), 0);
+        assert_eq!(clusterer.add_text(0, "a b c d"), 0);
+        // A change in another length does not spoil the cache
+        assert_eq!(clusterer.add_text(2, "x y"), 1);
+        assert_eq!(clusterer.add_text(0, "a b c d"), 0);
+        assert_eq!(
+            summarize(clusterer.clusters()),
+            ["4 × a b c <*>", "1 × x y"]
+        );
     }
 
     #[test]
-    fn tek_belirtecli_aday_kisaltmasi_tam_taramayla_ayni() {
-        // Tek belirteçli bir mesaj, yapraktaki bütün kümeler yerine en fazla iki adayla
-        // karşılaştırılır. Her ayarda sonuç, bütün kümeleri taramakla aynı olmalı.
-        for (esnek_esik, benzerlik_esigi) in [
+    fn single_token_shortcut_matches_a_full_scan() {
+        // A single-token message is compared with at most two candidates instead of all the
+        // clusters in the leaf. With every setting the result must be the same as scanning all
+        // the clusters.
+        for (flexible_threshold, similarity_threshold) in [
             (true, 0.7),
             (true, 1.0),
             (true, 0.3),
@@ -2057,31 +2106,31 @@ mod testler {
             (false, 0.7),
             (false, 0.0),
         ] {
-            let ayarlar = Ayarlar {
-                esnek_esik,
-                benzerlik_esigi,
-                ..Ayarlar::default()
+            let settings = Settings {
+                flexible_threshold,
+                similarity_threshold,
+                ..Settings::default()
             };
-            let mut rastgele = Rastgele(0x9E37_79B9_7F4A_7C15);
-            let mut drain = Drain::new(ayarlar);
+            let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+            let mut drain = Drain::new(settings);
             for _ in 0..3_000 {
-                // Rakamsız adlar, rakamlı kimlikler ve birkaç sabit kelime
-                let mesaj = match rastgele.sayi(4) {
-                    0 => ad(rastgele.sayi(300)),
-                    1 => format!("k{}", rastgele.sayi(60)),
-                    2 => ["Unauthenticated.", "<*>", "a1b2", "ok"][rastgele.sayi(4)].to_string(),
-                    _ => format!("{}{}", ad(rastgele.sayi(5)), rastgele.sayi(3)),
+                // Digit-free names, IDs with digits and a few fixed words
+                let message = match rng.below(4) {
+                    0 => name(rng.below(300)),
+                    1 => format!("k{}", rng.below(60)),
+                    2 => ["Unauthenticated.", "<*>", "a1b2", "ok"][rng.below(4)].to_string(),
+                    _ => format!("{}{}", name(rng.below(5)), rng.below(3)),
                 };
-                let belirtecler = [mesaj.as_str()];
-                let tam_tarama = drain.uzunluklar.get(&1).and_then(|yaprak| {
-                    drain.en_benzer(&yaprak.kume_numaralari, &belirtecler, &yaprak.konumlar)
+                let tokens = [message.as_str()];
+                let full_scan = drain.by_length.get(&1).and_then(|leaf| {
+                    drain.most_similar(&leaf.cluster_ids, &tokens, &leaf.positions)
                 });
                 assert_eq!(
-                    drain.ara(&belirtecler),
-                    tam_tarama.map_or(Arama::Yok, Arama::Bulundu),
-                    "{mesaj}"
+                    drain.search(&tokens),
+                    full_scan.map_or(Search::NotFound, Search::Found),
+                    "{message}"
                 );
-                drain.ekle(&mesaj);
+                drain.add(&message);
             }
         }
     }

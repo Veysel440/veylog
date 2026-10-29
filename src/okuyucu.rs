@@ -25,7 +25,7 @@ use crate::filtre::CozulmusFiltre;
 use crate::kayit::{
     Kayit, KayitAlici, KayitBilgisi, KayitToplayici, SatirSayilari, Seviye, kayit_baslangici,
 };
-use crate::maske::maskele;
+use crate::mask::mask;
 use crate::satir_bicimi::SatirBicimi;
 
 /// Bir satırın en fazla bu kadar baytı (256 MB) okunur; ötesi atlanır. Gerçek bir logda en
@@ -391,7 +391,7 @@ impl KayitAlici for Arayan<'_, '_> {
             return;
         }
         if self.siradaki == istek.sira {
-            if kayit.seviye() == istek.seviye && maskele(kayit.mesaj()) == istek.maskeli {
+            if kayit.seviye() == istek.seviye && mask(kayit.mesaj()) == istek.maskeli {
                 self.bulunanlar.insert(istek.sira, kayit.mesaj().to_owned());
             } else {
                 *self.degisti = true;
@@ -696,7 +696,7 @@ mod testler {
     fn maskeliler(kayitlar: &[ToplananKayit]) -> Vec<String> {
         kayitlar
             .iter()
-            .map(|kayit| maskele(&kayit.mesaj).into_owned())
+            .map(|kayit| mask(&kayit.mesaj).into_owned())
             .collect()
     }
 
@@ -834,7 +834,7 @@ mod testler {
             .iter()
             .map(|&sira| OrnekIstegi {
                 sira,
-                maskeli: "Kayıt <SAYI>",
+                maskeli: "Kayıt <NUM>",
                 seviye: Seviye::Warning,
             })
             .collect();
@@ -880,7 +880,7 @@ mod testler {
             .iter()
             .map(|&sira| OrnekIstegi {
                 sira,
-                maskeli: "Kayıt <SAYI>",
+                maskeli: "Kayıt <NUM>",
                 seviye: Seviye::Warning,
             })
             .collect();

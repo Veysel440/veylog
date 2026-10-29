@@ -13,7 +13,6 @@ use std::io::{self, Write};
 use crate::ani_artis::{AniArtis, AniArtislar, EN_AZ_DILIM, EN_AZ_MAD, EN_DUSUK_SEVIYE, ESIK};
 use crate::datetime::DateTime;
 use crate::karsilastirma::{ANLAMLILIK, ARTIS_KATI, Degisim, EN_AZ_KAYIT, Karsilastirma, Pencere};
-use crate::lang;
 use crate::rapor::{FiltreOzeti, KalipSatiri, Ozet, SaatDilimiOzeti};
 
 /// Bir JSON değeri. Nesnelerde alanlar eklendikleri sırayla yazılır.
@@ -177,7 +176,7 @@ fn ozet_json(ozet: &Ozet) -> Json {
                 ("groups", Json::Sayi(analiz.satirlar.len())),
                 (
                     "threshold",
-                    Json::Ondalik(ozet.ayarlar.drain.benzerlik_esigi),
+                    Json::Ondalik(ozet.ayarlar.drain.similarity_threshold),
                 ),
                 ("location", metin(ozet.ayarlar.konum_turu.ingilizce_ad())),
                 ("sort", metin(ozet.ayarlar.siralama.ingilizce_ad())),
@@ -389,7 +388,7 @@ fn satir_alanlari(satir: &KalipSatiri) -> Vec<(&'static str, Json)> {
         ("level", metin(satir.seviye.ad())),
         ("first", zaman(satir.ilk)),
         ("last", zaman(satir.son)),
-        ("pattern", metin(&lang::english_placeholders(&satir.kalip))),
+        ("pattern", metin(&satir.kalip)),
         ("sample", metin(&satir.ornek)),
         ("variables", degiskenler_json(satir)),
         ("exception", istisna),

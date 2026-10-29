@@ -705,7 +705,7 @@ mod testler {
             _ => (2, 0),
         });
         let (ani, kaliplar) = hesapla(&metin, 1);
-        assert_eq!(kaliplar, ["Kullanıcı <SAYI> giriş <*>"]);
+        assert_eq!(kaliplar, ["Kullanıcı <NUM> giriş <*>"]);
         assert!(ani.artislar.is_empty(), "{:?}", ani.artislar);
     }
 
@@ -725,7 +725,7 @@ mod testler {
             (info, warning)
         });
         let (ani, kaliplar) = hesapla(&metin, 1);
-        assert_eq!(kaliplar, ["Kullanıcı <SAYI> giriş <*>"]);
+        assert_eq!(kaliplar, ["Kullanıcı <NUM> giriş <*>"]);
         assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
         let artis = &ani.artislar[0];
         assert_eq!((artis.olagan, artis.mad), (0.0, 0.0));
@@ -845,7 +845,7 @@ mod testler {
         let (ani, kaliplar) = hesapla(&satirlar.join("\n"), 1);
         assert_eq!(ani.artislar.len(), 1, "{:?}", ani.artislar);
         let artis = &ani.artislar[0];
-        assert_eq!(kaliplar[artis.satir], "Kuyruk <SAYI> dolu");
+        assert_eq!(kaliplar[artis.satir], "Kuyruk <NUM> dolu");
         assert_eq!(artis.ornek, "Kuyruk 7 dolu");
         assert_eq!(
             (artis.ilk.to_string(), artis.kayit_sayisi),
@@ -995,7 +995,7 @@ mod testler {
         assert_eq!(sonuc.0.dilim_sayisi, 59);
         let artislar = ozetle(&sonuc);
         assert_eq!(artislar.len(), 1, "{artislar:?}");
-        assert!(artislar[0].0.starts_with("cURL error <SAYI>"));
+        assert!(artislar[0].0.starts_with("cURL error <NUM>"));
         let artis = &sonuc.0.artislar[0];
         assert_eq!((artis.zirve_adet, artis.kayit_sayisi), (6, 6));
         assert_eq!(

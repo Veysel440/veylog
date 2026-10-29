@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixes
+
+- JSON output wrote the values of variable positions (`patterns.rows[].variables[].values`)
+  with Turkish placeholders, such as `varchar(<SAYI>`; they now use the English ones
+  (`<NUM>`), like the patterns. Placeholders are now kept in English internally and translated
+  only for the Turkish interface.
+
+### Other
+
+- The source code is being translated to English: module names, identifiers, comments and
+  tests.
+
 ## [0.3.0] - 2026-10-28
 
 ### Changed
