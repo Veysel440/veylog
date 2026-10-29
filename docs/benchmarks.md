@@ -197,6 +197,69 @@ The gain shrinks with size: high_cardinality 300k (the first 300 000 lines of th
 high-cardinality records the time grows faster than linearly; why the gain disappears there has
 not been measured yet.
 
+### Reading the pattern's tokens only when needed
+
+Where the time went, profiled on the build with early rejection (high_cardinality; callgrind up
+to 300k records, a cache simulation at 100k, gdb stack samples at 1M): candidate comparison was
+92% of the instructions at 300k and on the stack in 93% of the samples at 1M. About 70% of the
+samples at 1M were in getting each pattern token: reading its place and slicing it out of the
+opening message's text. 16% of all instructions at 300k went to decoding characters, mostly in
+`has_digit`, which looked at the same message token again for every candidate.
+
+The change is in `compare` (`src/drain/similarity.rs`):
+
+- A wildcard is recognised from the token's place (`WILDCARD_SPAN`), and the token's length is
+  known from its place too. Tokens of different lengths are not equal, so the pattern's text is
+  read for the equality test only when the lengths are equal.
+- The text of a differing pattern token is read only when the message's token has a digit or is
+  code-like: `has_digit(t) && has_digit(p)`, the message's side first.
+- Which of the message's tokens have a digit is found once per message (`digit_bits`, one bit
+  per token in a `u64`) instead of once per candidate. Only the first 64 tokens fit; for a token
+  after them `has_digit` is called each time it is needed, as before.
+
+No new type, field or allocation. Same clustering:
+
+- `src/drain/tests.rs` compares `compare` with a copy of the previous one
+  (`compare_reading_every_token`) in 144 000 random comparisons, early rejection included, with
+  multibyte tokens of the same byte length and messages longer than 64 tokens. A direct test
+  checks tokens 62, 63, 64, 65 and 69 of messages of 63 to 70 tokens, at the edge of the digit
+  bits and after it. Nine bugs put into the new code on purpose were all caught. The copy is
+  kept on purpose: a change that only makes `compare` faster leaves it alone; a change to what
+  `compare` decides changes it too, in the same commit.
+- The unit tests and the accuracy baseline are unchanged.
+- The golden outputs that can still be run: 563 original cases, 62 original cases whose input
+  was rebuilt and 372 synthetic cases, without a difference. The inputs of 372 original cases
+  were lost; those cases were not run.
+- The complete JSON output (`--all --format json`) at thresholds 0, 0.5, 0.7, 0.9 and 1 of 12
+  workload files (high_cardinality up to 300k, realistic and repeated up to 1M) and two real
+  Laravel logs that are not in the repository: 70 runs, byte for byte the same.
+- An instrumented build counted the same candidates, comparisons, positions looked at and early
+  rejections before and after the change, in every pass.
+
+Before is commit 4d64286 (early rejection), after is this change; same machine and build
+settings as the baseline. Binary on files, GNU time, 3 runs each with before and after
+interleaved (min / median / max):
+
+| Workload | Before | After | Change (median) | Peak RSS |
+|---|---:|---:|---:|---:|
+| high_cardinality 300k | 45.0 / 45.8 / 46.6 s | 29.4 / 30.2 / 31.2 s | −34% | 405 MB, unchanged |
+| high_cardinality 1M | 267.8 / 277.8 / 285.8 s | 200.1 / 205.7 / 206.0 s | −26% | 998 MB, unchanged |
+
+The ranges do not overlap. Another session at 300k gave medians of 46.6 s and 30.0 s (−36%).
+Times from different sessions on this shared machine are not comparable: the build before this
+change took 57.5 s on the same 300k file in the session of the previous section and 45.0–46.6 s
+in this one, so only runs interleaved in the same session are compared.
+
+Instructions (callgrind, binary on files): high_cardinality 30k −18.0%, 100k −24.5%, 300k
+−29.5%; repeated 100k −0.8%, realistic 10k +0.3% (the digit bits are found for every message,
+also when it has few candidates), long_messages 100k and stack_traces 20k 0.0%. Counts of the
+instrumented build over all passes, 300k / 1M: `has_digit` calls −89% / −93%, pattern tokens
+read out of the text −56% / −52%; the number of allocations and the peak live heap unchanged.
+
+What remains at 1M (90 gdb stack samples, about ±5 points): going through each candidate's
+token places, about 43%, and reading the pattern's text for tokens of equal length, about 32%.
+The cache simulation at 100k puts the gain in instructions: D1 misses −3%, LL misses unchanged.
+
 ## Evaluated and rejected
 
 Optimizations that were implemented, measured on the baseline above and dropped because the

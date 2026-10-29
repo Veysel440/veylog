@@ -53,6 +53,18 @@ impl Cluster {
         })
     }
 
+    /// The places of the pattern's tokens in order, without reading the text: for a token, its
+    /// start and end in `origin`, so `end - start` is its length in bytes; `WILDCARD_SPAN` for a
+    /// wildcard. The text of a token: `token_text`.
+    pub(super) fn spans(&self) -> &[(u32, u32)] {
+        &self.spans
+    }
+
+    /// The text of the pattern's token at `span`, one of `spans` that is not a wildcard.
+    pub(super) fn token_text(&self, (start, end): (u32, u32)) -> &str {
+        &self.origin[start as usize..end as usize]
+    }
+
     /// Turns the positions where the pattern differs from the message into wildcards. True if the
     /// pattern changed.
     pub(super) fn update(&mut self, tokens: &[&str]) -> bool {

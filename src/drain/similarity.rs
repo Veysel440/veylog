@@ -1,9 +1,9 @@
 //! Comparing a message with a cluster's pattern position by position.
 
-use super::cluster::Cluster;
+use super::Settings;
+use super::cluster::{Cluster, WILDCARD_SPAN};
 use super::shape::{Shape, has_digit, token_shape};
 use super::tree::Position;
-use super::{Settings, WILDCARD};
 
 /// The result of comparing a pattern and a message position by position.
 #[derive(Debug, Clone, Copy)]
@@ -28,7 +28,14 @@ pub(super) struct Comparison {
 /// A wildcard says that the pattern has seen different values at that position; whether those
 /// values had digits or were code-like is not known. If the token facing the wildcard has a
 /// digit, the difference counts as a digit difference; if the token has a code-like shape, as a
-/// code-like one. `shapes`: the shapes of the message's tokens, found as needed.
+/// code-like one. `shapes`: the shapes of the message's tokens, found as needed; `message_digits`:
+/// which of the message's tokens have a digit (`digit_bits`).
+///
+/// The text of a pattern token is read only when it is needed. Tokens of different lengths are
+/// not equal, and the length is known from the token's place (`Cluster::spans`); so the text is
+/// read to see whether the two tokens are equal only when their lengths are. A differing token's
+/// text is read only when the message's token has a digit or a code-like shape, to see whether
+/// the pattern's has one too.
 ///
 /// `None` when the comparison was given up early: the cluster can no longer pass the threshold,
 /// or can no longer reach `best_equal`, the number of equal positions of the best cluster found
@@ -40,6 +47,7 @@ pub(super) fn compare(
     tokens: &[&str],
     positions: &[Position],
     shapes: &mut Shapes<'_>,
+    message_digits: u64,
     best_equal: Option<usize>,
 ) -> Option<Comparison> {
     let mut result = Comparison {
@@ -49,23 +57,35 @@ pub(super) fn compare(
         digit_diffs: 0,
     };
     let len = tokens.len();
-    for (i, (p, t)) in cluster.tokens().zip(tokens).enumerate() {
-        let (digits, code) = if p == WILDCARD {
+    for (i, (&span, &t)) in cluster.spans().iter().zip(tokens).enumerate() {
+        let (digits, code) = if span == WILDCARD_SPAN {
             result.wildcards += 1;
-            (has_digit(t), shapes.shape(i).is_code())
-        } else if p == *t {
-            result.equal += 1;
-            continue;
+            (
+                has_digit_at(message_digits, i, t),
+                shapes.shape(i).is_code(),
+            )
         } else {
+            let p = ((span.1 - span.0) as usize == t.len()).then(|| cluster.token_text(span));
+            if p == Some(t) {
+                result.equal += 1;
+                continue;
+            }
             // Do the two different tokens have the same code-like shape? `ORDER_CREATED` and
             // `ORDER_FAILED` yes; `received` and `rejected` (ordinary words) and `ORDER_FAILED`
-            // and `ready` no. If the message's token is not code-like (most of the time), the
-            // pattern's is not looked at.
+            // and `ready` no. Do both have a digit? The message's side is looked at first: if
+            // its token has no digit and is not code-like (most of the time), the pattern's is
+            // not looked at.
             let shape_t = shapes.shape(i);
-            (
-                has_digit(p) && has_digit(t),
-                shape_t.is_code() && token_shape(p) == shape_t,
-            )
+            let digit_t = has_digit_at(message_digits, i, t);
+            if digit_t || shape_t.is_code() {
+                let p = p.unwrap_or_else(|| cluster.token_text(span));
+                (
+                    digit_t && has_digit(p),
+                    shape_t.is_code() && token_shape(p) == shape_t,
+                )
+            } else {
+                (false, false)
+            }
         };
         if digits {
             result.digit_diffs += 1;
@@ -127,7 +147,7 @@ pub(super) fn passes_threshold(settings: &Settings, result: &Comparison, len: us
 /// If the exact comparison passes, the exact bound holds, and the rounded bound is off by far
 /// less than the margin; so a comparison that passes is never rejected early. The margin can only
 /// let a comparison through that would fail at the end, where `passes_threshold` rejects it.
-fn may_pass(
+pub(super) fn may_pass(
     settings: &Settings,
     equal: usize,
     variable_diffs: usize,
@@ -169,5 +189,29 @@ impl<'a> Shapes<'a> {
     /// The shape of token `i`.
     pub(super) fn shape(&mut self, i: usize) -> Shape {
         *self.shapes[i].get_or_insert_with(|| token_shape(self.tokens[i]))
+    }
+}
+
+/// How many of a message's tokens `digit_bits` covers: one bit each in a `u64`.
+const DIGIT_BITS: usize = u64::BITS as usize;
+
+/// Which of the message's tokens have a digit: bit i for token i. Found once per message, before
+/// it is compared with the clusters of the leaf, instead of once per cluster. Only the first 64
+/// tokens fit; a token after them is looked at each time it is needed (`has_digit_at`).
+pub(super) fn digit_bits(tokens: &[&str]) -> u64 {
+    tokens
+        .iter()
+        .take(DIGIT_BITS)
+        .enumerate()
+        .filter(|(_, token)| has_digit(token))
+        .fold(0, |bits, (i, _)| bits | (1 << i))
+}
+
+/// Does the message's token `i` have a digit? `bits`: `digit_bits` of the message.
+fn has_digit_at(bits: u64, i: usize, token: &str) -> bool {
+    if i < DIGIT_BITS {
+        bits & (1 << i) != 0
+    } else {
+        has_digit(token)
     }
 }

@@ -1,5 +1,5 @@
 use super::shape::{Shape, has_digit, token_shape};
-use super::similarity::{Comparison, Shapes, compare, passes_threshold};
+use super::similarity::{Comparison, Shapes, compare, digit_bits, may_pass, passes_threshold};
 use super::tree::Position;
 use super::*;
 use crate::kayit::deneme::topla;
@@ -1229,7 +1229,15 @@ fn early_rejection_never_drops_a_cluster_that_passes() {
                     };
                     let passes = passes_threshold(&settings, &reference, tokens.len());
                     let mut shapes = Shapes::new(tokens);
-                    let result = compare(&settings, cluster, tokens, &positions, &mut shapes, None);
+                    let result = compare(
+                        &settings,
+                        cluster,
+                        tokens,
+                        &positions,
+                        &mut shapes,
+                        digit_bits(tokens),
+                        None,
+                    );
                     match result {
                         Some(r) => {
                             assert_eq!(
@@ -1276,6 +1284,7 @@ fn early_rejection_by_the_best_so_far_keeps_every_possible_winner() {
                     tokens,
                     &positions,
                     &mut shapes,
+                    digit_bits(tokens),
                     Some(best),
                 );
                 if equal >= best {
@@ -1283,8 +1292,15 @@ fn early_rejection_by_the_best_so_far_keeps_every_possible_winner() {
                     // dropped for the threshold, which `None` does not distinguish; so check the
                     // threshold side separately
                     let mut shapes = Shapes::new(tokens);
-                    let unbounded =
-                        compare(&settings, cluster, tokens, &positions, &mut shapes, None);
+                    let unbounded = compare(
+                        &settings,
+                        cluster,
+                        tokens,
+                        &positions,
+                        &mut shapes,
+                        digit_bits(tokens),
+                        None,
+                    );
                     assert_eq!(
                         result.map(|r| r.equal),
                         unbounded.map(|r| r.equal),
@@ -1314,7 +1330,15 @@ fn early_rejection_at_the_threshold_boundary() {
         for flexible in [true, false] {
             let settings = settings_with(0.7, flexible);
             let mut shapes = Shapes::new(&tokens);
-            let result = compare(&settings, &cluster, &tokens, &positions, &mut shapes, None);
+            let result = compare(
+                &settings,
+                &cluster,
+                &tokens,
+                &positions,
+                &mut shapes,
+                digit_bits(&tokens),
+                None,
+            );
             let passed = result.is_some_and(|r| passes_threshold(&settings, &r, tokens.len()));
             assert_eq!(passed, expect, "{message} flexible={flexible}");
         }
@@ -1324,7 +1348,15 @@ fn early_rejection_at_the_threshold_boundary() {
         let settings = settings_with(t, true);
         let tokens: Vec<&str> = "x y z w v f g h i j".split_whitespace().collect();
         let mut shapes = Shapes::new(&tokens);
-        let result = compare(&settings, &cluster, &tokens, &positions, &mut shapes, None);
+        let result = compare(
+            &settings,
+            &cluster,
+            &tokens,
+            &positions,
+            &mut shapes,
+            digit_bits(&tokens),
+            None,
+        );
         assert_eq!(result.map(|r| r.equal), Some(5), "t={t}");
     }
 }
@@ -1339,7 +1371,15 @@ fn early_rejection_with_variable_differences_and_wildcards() {
     for t in [0.5, 0.7, 1.0] {
         let settings = settings_with(t, true);
         let mut shapes = Shapes::new(&tokens);
-        let result = compare(&settings, &cluster, &tokens, &positions, &mut shapes, None);
+        let result = compare(
+            &settings,
+            &cluster,
+            &tokens,
+            &positions,
+            &mut shapes,
+            digit_bits(&tokens),
+            None,
+        );
         assert!(
             result.is_some_and(|r| passes_threshold(&settings, &r, 10)),
             "t={t}"
@@ -1351,10 +1391,433 @@ fn early_rejection_with_variable_differences_and_wildcards() {
     let words: Vec<&str> = "k l m n o p q r s t".split_whitespace().collect();
     let settings = settings_with(0.7, true);
     let mut shapes = Shapes::new(&words);
-    assert!(compare(&settings, &all_wild, &words, &positions, &mut shapes, None).is_none());
+    assert!(
+        compare(
+            &settings,
+            &all_wild,
+            &words,
+            &positions,
+            &mut shapes,
+            digit_bits(&words),
+            None
+        )
+        .is_none()
+    );
     // ... but with t = 0 everything passes, and the full result comes back
     let settings = settings_with(0.0, true);
     let mut shapes = Shapes::new(&words);
-    let r = compare(&settings, &all_wild, &words, &positions, &mut shapes, None).unwrap();
+    let r = compare(
+        &settings,
+        &all_wild,
+        &words,
+        &positions,
+        &mut shapes,
+        digit_bits(&words),
+        None,
+    )
+    .unwrap();
     assert_eq!((r.equal, r.wildcards), (0, 10));
+}
+
+// ---- Reading the pattern's text only when it is needed
+
+/// The comparison as it was before the pattern's text was read only when needed: every token of
+/// the pattern is read from the text (`Cluster::tokens`), and whether the message's token has a
+/// digit is looked at again for every cluster. Early rejection included: `compare` must give
+/// exactly the same result, `None` included.
+///
+/// Keep it in this plain form and in step with `compare`. A change that only makes `compare`
+/// faster leaves this function alone: checking such a change is what it is for. A change to what
+/// `compare` decides (what counts as equal, as a digit or code-like difference, or when a
+/// comparison is given up) is made here too, the same way, in the same commit.
+fn compare_reading_every_token(
+    settings: &Settings,
+    cluster: &Cluster,
+    tokens: &[&str],
+    positions: &[Position],
+    shapes: &mut Shapes<'_>,
+    best_equal: Option<usize>,
+) -> Option<Comparison> {
+    let mut result = Comparison {
+        equal: 0,
+        wildcards: 0,
+        variable_diffs: 0,
+        digit_diffs: 0,
+    };
+    let len = tokens.len();
+    for (i, (p, t)) in cluster.tokens().zip(tokens).enumerate() {
+        let (digits, code) = if p == WILDCARD {
+            result.wildcards += 1;
+            (has_digit(t), shapes.shape(i).is_code())
+        } else if p == *t {
+            result.equal += 1;
+            continue;
+        } else {
+            let shape_t = shapes.shape(i);
+            (
+                has_digit(p) && has_digit(t),
+                shape_t.is_code() && token_shape(p) == shape_t,
+            )
+        };
+        if digits {
+            result.digit_diffs += 1;
+        }
+        if digits || code || positions.get(i).is_some_and(Position::is_variable) {
+            result.variable_diffs += 1;
+        }
+        let remaining = len - (i + 1);
+        if best_equal.is_some_and(|best| result.equal + remaining < best)
+            || !may_pass(
+                settings,
+                result.equal,
+                result.variable_diffs,
+                remaining,
+                len,
+            )
+        {
+            return None;
+        }
+    }
+    Some(result)
+}
+
+/// Tokens for the random comparisons: ordinary words, tokens with digits, code-like tokens of
+/// every shape, multibyte letters, quotes and punctuation. Some pairs have the same length in
+/// bytes but a different text (`ışık`/`ışıl`, `Ayşe`/`Ayse1`, `ORDER_A`/`ORDER_B`,
+/// `1234`/`abcd`), so that the length check is put to the test.
+const MIXED_TOKENS: &[&str] = &[
+    "Payment",
+    "received",
+    "rejected",
+    "ok",
+    "GET",
+    "a",
+    "b",
+    "12ms",
+    "40ms",
+    "user_42",
+    "user_9",
+    "node-7",
+    "100",
+    "101",
+    "10:00:00",
+    "a1b2",
+    "1234",
+    "abcd",
+    "ORDER_CREATED",
+    "ORDER_FAILED",
+    "ORDER_A",
+    "ORDER_B",
+    "sendInvoice",
+    "SendSms",
+    "send_invoice",
+    "App\\Jobs\\SendInvoice",
+    "App\\Jobs\\SendSms",
+    "[App\\Jobs\\X]",
+    "payment.failed",
+    "rates:update",
+    "'price'",
+    "\"dsn\"",
+    "$product",
+    "$order",
+    "ışık",
+    "ışıl",
+    "Ayşe",
+    "Ayse1",
+    "İstanbul",
+    "çalışma",
+    "ğüşiöç",
+    "٣٤",
+    "(Ayşe,",
+    "'Ali",
+    "Veli'",
+    ",",
+    "<NUM>",
+    "<*>",
+    "x1",
+];
+
+/// A token with the same length in bytes as `token` but a different text: another token of the
+/// list if there is one, otherwise letters or digits.
+fn same_length_token(rng: &mut Rng, token: &str) -> String {
+    let others: Vec<&str> = MIXED_TOKENS
+        .iter()
+        .copied()
+        .filter(|other| other.len() == token.len() && *other != token)
+        .collect();
+    if !others.is_empty() && rng.below(2) == 0 {
+        return others[rng.below(others.len())].to_string();
+    }
+    let fill = if rng.below(2) == 0 { "z" } else { "7" };
+    let other = fill.repeat(token.len());
+    if other != token {
+        other
+    } else {
+        "y".repeat(token.len())
+    }
+}
+
+/// A cluster of `len` tokens of `MIXED_TOKENS` (now and then a name with a digit), separated by
+/// different kinds of whitespace, multibyte ones included; some positions are wildcards.
+fn random_cluster(rng: &mut Rng, len: usize) -> Cluster {
+    const SEPARATORS: [&str; 5] = [" ", "  ", "\t", "\u{a0}", "\u{3000}"];
+    let tokens: Vec<String> = (0..len)
+        .map(|_| {
+            if rng.below(8) == 0 {
+                format!("{}{}", name(rng.below(30)), rng.below(100))
+            } else {
+                MIXED_TOKENS[rng.below(MIXED_TOKENS.len())].to_string()
+            }
+        })
+        .collect();
+    let mut text = String::new();
+    for (j, token) in tokens.iter().enumerate() {
+        if j > 0 || rng.below(4) == 0 {
+            text.push_str(SEPARATORS[rng.below(SEPARATORS.len())]);
+        }
+        text.push_str(token);
+    }
+    let wildcards: Vec<usize> = (0..len).filter(|_| rng.below(4) == 0).collect();
+    pattern_cluster(&text, &wildcards)
+}
+
+/// A message token facing the pattern's token `p` (`None`: a wildcard, or beyond the pattern):
+/// the same token, one of the same length with a different text, a name with a digit, an
+/// unusual token, or any token of the list.
+fn message_token(rng: &mut Rng, p: Option<&str>) -> String {
+    let p = p.filter(|p| *p != WILDCARD);
+    match (p, rng.below(10)) {
+        (Some(p), 0..=3) => p.to_string(),
+        (Some(p), 4..=5) => same_length_token(rng, p),
+        (_, 6) => format!("{}{}", name(rng.below(30)), rng.below(100)),
+        // Never produced by splitting a message, but `compare` must not care
+        (_, 7) if rng.below(4) == 0 => [WILDCARD, ""][rng.below(2)].to_string(),
+        _ => MIXED_TOKENS[rng.below(MIXED_TOKENS.len())].to_string(),
+    }
+}
+
+/// Leaf positions for the flexible threshold: none (the threshold is off, or the leaf is not
+/// counted yet), or about one per position, some of them variable.
+fn random_positions(rng: &mut Rng, len: usize) -> Vec<Position> {
+    if rng.below(3) == 0 {
+        return Vec::new();
+    }
+    let count = (len + rng.below(3)).saturating_sub(1);
+    (0..count)
+        .map(|_| {
+            if rng.below(5) == 0 {
+                Position::Variable
+            } else {
+                Position::Values(HashSet::new())
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn reading_the_pattern_text_only_when_needed_changes_no_comparison() {
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let all_settings: Vec<Settings> = [0.0, 0.3, 0.5, 0.7, 0.8, 1.0, 1.5, f64::NAN]
+        .into_iter()
+        .flat_map(|t| [settings_with(t, true), settings_with(t, false)])
+        .collect();
+    // Wildcard, equal, same length but different; with different lengths: a digit only in the
+    // message's token, a digit in both, code-like of the same shape, code-like of another shape,
+    // none of these (the pattern's text is not read). Then: differing positions after the 64th.
+    let mut seen = [0usize; 8];
+    let mut after_64 = 0;
+    let (mut kept, mut rejected) = (0, 0);
+    for case in 0..1_500 {
+        let len = if case % 10 == 0 {
+            60 + rng.below(11)
+        } else {
+            1 + rng.below(12)
+        };
+        let clusters: Vec<Cluster> = (0..3).map(|_| random_cluster(&mut rng, len)).collect();
+        // The message follows the first cluster; now and then it has a token more or less, so
+        // that comparing stops where the shorter side ends, as before
+        let message_len = match rng.below(10) {
+            0 => len + 1 + rng.below(2),
+            1 => len.saturating_sub(1).max(1),
+            _ => len,
+        };
+        let model: Vec<&str> = clusters[0].tokens().collect();
+        let message: Vec<String> = (0..message_len)
+            .map(|j| message_token(&mut rng, model.get(j).copied()))
+            .collect();
+        let tokens: Vec<&str> = message.iter().map(String::as_str).collect();
+        let positions = random_positions(&mut rng, len);
+        let digits = digit_bits(&tokens);
+        for settings in &all_settings {
+            // One `Shapes` per message, shared by the clusters, as in `most_similar`
+            let mut shapes_before = Shapes::new(&tokens);
+            let mut shapes_now = Shapes::new(&tokens);
+            for cluster in &clusters {
+                for best_equal in [None, Some(rng.below(message_len + 2))] {
+                    let before = compare_reading_every_token(
+                        settings,
+                        cluster,
+                        &tokens,
+                        &positions,
+                        &mut shapes_before,
+                        best_equal,
+                    );
+                    let now = compare(
+                        settings,
+                        cluster,
+                        &tokens,
+                        &positions,
+                        &mut shapes_now,
+                        digits,
+                        best_equal,
+                    );
+                    let fields = |c: Option<Comparison>| {
+                        c.map(|c| (c.equal, c.wildcards, c.variable_diffs, c.digit_diffs))
+                    };
+                    assert_eq!(
+                        fields(now),
+                        fields(before),
+                        "{tokens:?} / {} t={} flexible={} best={best_equal:?}",
+                        cluster.text(),
+                        settings.similarity_threshold,
+                        settings.flexible_threshold
+                    );
+                    if now.is_some() {
+                        kept += 1;
+                    } else {
+                        rejected += 1;
+                    }
+                }
+            }
+        }
+        for cluster in &clusters {
+            for (i, (p, &t)) in cluster.tokens().zip(&tokens).enumerate() {
+                let shape_t = token_shape(t);
+                let kind = if p == WILDCARD {
+                    0
+                } else if p == t {
+                    1
+                } else if p.len() == t.len() {
+                    2
+                } else if has_digit(t) && !has_digit(p) {
+                    3
+                } else if has_digit(t) {
+                    4
+                } else if shape_t.is_code() && token_shape(p) == shape_t {
+                    5
+                } else if shape_t.is_code() {
+                    6
+                } else {
+                    7
+                };
+                seen[kind] += 1;
+                if i >= 64 && p != t {
+                    after_64 += 1;
+                }
+            }
+        }
+    }
+    assert!(seen.iter().all(|&n| n >= 20), "{seen:?}");
+    assert!(after_64 >= 20, "{after_64}");
+    assert!(kept >= 1_000 && rejected >= 1_000, "{kept} {rejected}");
+}
+
+#[test]
+fn digit_bits_cover_the_first_64_tokens() {
+    let message: Vec<String> = (0..70)
+        .map(|i| {
+            if i % 3 == 0 {
+                format!("{}{i}", name(i))
+            } else {
+                name(i)
+            }
+        })
+        .collect();
+    let tokens: Vec<&str> = message.iter().map(String::as_str).collect();
+    let bits = digit_bits(&tokens);
+    for (i, token) in tokens.iter().enumerate().take(64) {
+        assert_eq!(bits & (1 << i) != 0, has_digit(token), "{i} {token}");
+    }
+    // The tokens after the 64th have no bit: they are looked at when needed
+    assert_eq!(digit_bits(&tokens[..64]), bits);
+    assert_eq!(digit_bits(&[]), 0);
+    // Every bit, the last one (token 63) included; a 65th token changes nothing
+    let all_digits: Vec<String> = (0..65).map(|i| format!("k{i}")).collect();
+    let all_digits: Vec<&str> = all_digits.iter().map(String::as_str).collect();
+    assert_eq!(digit_bits(&all_digits[..64]), u64::MAX);
+    assert_eq!(digit_bits(&all_digits), u64::MAX);
+    assert_eq!(digit_bits(&all_digits[..63]), u64::MAX >> 1);
+}
+
+#[test]
+fn tokens_at_and_after_the_64th_are_compared_as_before() {
+    // Indexes from 0: the digits of tokens 0–63 come from `digit_bits`, those of token 64 and
+    // after are looked at directly, as before. The message's only digit, if any, is at `at`; the
+    // other tokens are equal digit-free words. A threshold of 0 gives nothing up early, so every
+    // position is compared.
+    let settings = settings_with(0.0, true);
+    let positions: Vec<Position> = Vec::new();
+    let mut checked = 0;
+    for len in [63, 64, 65, 66, 70] {
+        for at in [0, 62, 63, 64, 65, 69].into_iter().filter(|&at| at < len) {
+            // Pattern token, whether it is a wildcard, message token, digit difference expected
+            for (pattern_token, wildcard, message_token, digit_diff) in [
+                ("xyzw", true, "k42", true),     // a digit facing a wildcard
+                ("xyzw", true, "word", false),   // no digit facing a wildcard
+                ("p1234", false, "m5", true),    // digits on both sides, different lengths
+                ("p12", false, "m34", true),     // digits on both sides, the same length
+                ("p1234", false, "word", false), // a digit only in the pattern
+                ("abcd", false, "m5", false),    // a digit only in the message
+            ] {
+                let mut pattern: Vec<String> = (0..len).map(name).collect();
+                pattern[at] = pattern_token.to_string();
+                let wildcards = if wildcard { vec![at] } else { Vec::new() };
+                let cluster = pattern_cluster(&pattern.join(" "), &wildcards);
+                let mut message: Vec<String> = (0..len).map(name).collect();
+                message[at] = message_token.to_string();
+                let tokens: Vec<&str> = message.iter().map(String::as_str).collect();
+                let digits = digit_bits(&tokens);
+                let expected_bits = if has_digit(message_token) && at < 64 {
+                    1 << at
+                } else {
+                    0
+                };
+                assert_eq!(digits, expected_bits, "len {len}, token {at}");
+                let fields = |c: Option<Comparison>| {
+                    c.map(|c| (c.equal, c.wildcards, c.variable_diffs, c.digit_diffs))
+                };
+                let mut shapes = Shapes::new(&tokens);
+                let now = fields(compare(
+                    &settings,
+                    &cluster,
+                    &tokens,
+                    &positions,
+                    &mut shapes,
+                    digits,
+                    None,
+                ));
+                // None of these tokens is code-like: a digit difference is the only variable one
+                let expected = (
+                    len - 1,
+                    usize::from(wildcard),
+                    usize::from(digit_diff),
+                    usize::from(digit_diff),
+                );
+                let case = format!("len {len}, token {at}: {pattern_token} / {message_token}");
+                assert_eq!(now, Some(expected), "{case}");
+                let mut shapes = Shapes::new(&tokens);
+                let before = fields(compare_reading_every_token(
+                    &settings,
+                    &cluster,
+                    &tokens,
+                    &positions,
+                    &mut shapes,
+                    None,
+                ));
+                assert_eq!(now, before, "{case}");
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 120);
 }

@@ -20,6 +20,13 @@ All notable changes to this project are documented in this file. The format is b
   high-cardinality logs (almost every message a new pattern) clustering is 22–36% faster with
   10k–50k records; the gain shrinks with size and is not measurable at 1M records. Memory use is
   unchanged. See `docs/benchmarks.md`.
+- Drain reads a candidate pattern's tokens only when it needs them: tokens of different lengths
+  are not equal, and a differing token is only looked at when the message's token has a digit or
+  is code-like. Whether the message's tokens have digits is found once per message instead of
+  once per candidate. The clusters are the same as before. On high-cardinality logs a whole run
+  takes 34% less time with 300k records and 26% less with 1M records; on the other workloads
+  the instruction count changes by less than 1%. Memory use is unchanged. See
+  `docs/benchmarks.md`.
 
 ### Other
 

@@ -107,7 +107,7 @@ pub use shape::token_core;
 
 use cluster::token_bounds;
 use shape::has_digit;
-use similarity::{Shapes, compare, passes_threshold};
+use similarity::{Shapes, compare, digit_bits, passes_threshold};
 use tree::{LeafPath, Node, Position, branch_key, hash_token};
 
 /// The internal marker of a variable position in a pattern. It contains spaces, so it is never
@@ -511,6 +511,7 @@ impl Drain {
     ) -> Option<usize> {
         let mut best: Option<(usize, (usize, usize))> = None;
         let mut shapes = Shapes::new(tokens);
+        let digits = digit_bits(tokens);
         for &id in candidates {
             let best_equal = best.map(|(_, (equal, _))| equal);
             let Some(result) = compare(
@@ -519,6 +520,7 @@ impl Drain {
                 tokens,
                 positions,
                 &mut shapes,
+                digits,
                 best_equal,
             ) else {
                 continue;
