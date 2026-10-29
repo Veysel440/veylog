@@ -1,0 +1,355 @@
+# Labeled evaluation set for masking + Drain clustering (tests/accuracy.rs).
+#
+# Format: a line starting with "==" opens a group: "== <group id> | <expected pattern>".
+# The lines that follow, until the next group, are the messages of that group, in the order
+# they are clustered (Drain depends on order). Blank lines and lines starting with "#" are
+# ignored. In a message, "\e" stands for the empty message and "\xNN" for a byte (control
+# characters). The expected pattern is written as veylog shows it after masking (<NUM>, <IP>,
+# <EMAIL>, <PATH>, <URL>, <UUID>, <TIME>) and clustering (<*>). Tokens are split at whitespace,
+# so a wildcard always covers a whole token ("[panel.list]" or "$product" become <*>).
+#
+# "Expected" means the grouping a reader of the report would want: messages that differ only
+# in variable data belong together; messages that differ in an exception class, a SQLSTATE
+# code, an HTTP status code, an error code or a word that changes the meaning stay apart. The
+# set deliberately contains such negative pairs (groups with a "-" suffix). The metrics in
+# tests/accuracy.rs report how close the current implementation is; the baseline numbers are
+# documented there and in docs/benchmarks.md. All data is fictional.
+
+# --- identical and near-identical messages ---------------------------------------------------
+
+== identical | Cache cleared
+Cache cleared
+Cache cleared
+Cache cleared
+
+== timestamp-only | Backup finished at <TIME>
+Backup finished at 2026-10-24 02:00:03
+Backup finished at 2026-10-25 02:00:11
+Backup finished at 2026-10-26 02:00:07
+
+== numeric-id | User <NUM> logged in
+User 381 logged in
+User 1024 logged in
+User 7 logged in
+User 99812 logged in
+
+== uuid | Payment <UUID> captured
+Payment 3f2b8c1e-9d4a-4e7b-8a6f-1c2d3e4f5a6b captured
+Payment 9a1c0d2e-3f4b-4a5c-8d6e-7f8091a2b3c4 captured
+Payment 00000000-1111-4222-8333-444455556666 captured
+
+== ip | Login attempt from <IP> blocked
+Login attempt from 203.0.113.24 blocked
+Login attempt from 198.51.100.7 blocked
+Login attempt from 10.0.3.12 blocked
+
+== email | Verification mail sent to <EMAIL>
+Verification mail sent to ayse@example.test
+Verification mail sent to ali.veli+shop@example.test
+Verification mail sent to user9@mail.example.test
+
+== url | Webhook <URL> did not respond
+Webhook https://hooks.example.test/orders/15 did not respond
+Webhook https://hooks.example.test/refunds?x=1 did not respond
+Webhook https://api.partner.test/v2/callback did not respond
+
+== path-line | Undefined variable $product in <PATH>:<NUM>
+Undefined variable $product in /var/www/shop/app/Http/Controllers/ProductController.php:42
+Undefined variable $product in /var/www/shop/app/Http/Controllers/ProductController.php:57
+Undefined variable $product in /var/www/shop/app/Services/StockService.php:118
+
+== view-path | Route <*> not defined. (View: <PATH>)
+Route [panel.campaign.create] not defined. (View: /var/www/shop/resources/views/panel/campaigns.blade.php)
+Route [shop.cart.show] not defined. (View: /var/www/shop/resources/views/cart/index.blade.php)
+Route [account.orders] not defined. (View: C:\Users\Irem\Herd\shop\resources\views\account\orders.blade.php)
+
+# --- durations and units stuck to numbers ------------------------------------------------------
+
+== duration-ms | Response time <*>
+Response time 120ms
+Response time 95ms
+Response time 1300ms
+Response time 7ms
+
+== slow-query-select | Slow query (<NUM> ms): select * from `orders` where `user_id` = <NUM> order by `created_at` desc
+Slow query (1250 ms): select * from `orders` where `user_id` = 381 order by `created_at` desc
+Slow query (980 ms): select * from `orders` where `user_id` = 1024 order by `created_at` desc
+Slow query (2301 ms): select * from `orders` where `user_id` = 7 order by `created_at` desc
+
+== slow-query-update- | Slow query (<NUM> ms): update `orders` set `status` = <*> where `id` = <NUM>
+Slow query (1100 ms): update `orders` set `status` = 'paid' where `id` = 15
+Slow query (1700 ms): update `orders` set `status` = 'shipped' where `id` = 99
+Slow query (640 ms): update `orders` set `status` = 'paid' where `id` = 1024
+
+# --- exception classes: a different class is a different error ---------------------------------
+
+# A class name in a message is a categorical value: one pattern, the classes are counted as
+# values (see docs/nasil-calisir.md, "Kategorik konumlar").
+== job-failed | Job <*> failed after <NUM> attempts
+Job App\Jobs\SendInvoice failed after 3 attempts
+Job App\Jobs\SendInvoice failed after 5 attempts
+Job App\Jobs\SendEmail failed after 3 attempts
+Job App\Jobs\SendInvoice failed after 1 attempts
+Job App\Jobs\SendEmail failed after 2 attempts
+
+== handled-class | Handled: <*>
+Handled: App\Jobs\SendInvoice
+Handled: App\Jobs\SendEmail
+Handled: App\Jobs\SyncStock
+
+== exception-class-pdo | PDOException: SQLSTATE[HY000] [<NUM>] Connection refused
+PDOException: SQLSTATE[HY000] [2002] Connection refused
+PDOException: SQLSTATE[HY000] [2002] Connection refused
+PDOException: SQLSTATE[HY000] [2002] Connection refused
+
+== exception-class-redis- | RedisException: Connection refused [tcp://<IP>:<NUM>]
+RedisException: Connection refused [tcp://10.0.3.12:6379]
+RedisException: Connection refused [tcp://10.0.3.13:6379]
+
+# --- SQLSTATE and driver error codes --------------------------------------------------------------
+
+== sqlstate-23000 | SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry <*> for key 'users_email_unique'
+SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'ayse@example.test' for key 'users_email_unique'
+SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'ali@example.test' for key 'users_email_unique'
+SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry 'zeynep@example.test' for key 'users_email_unique'
+
+== sqlstate-23000-fk- | SQLSTATE[23000]: Integrity constraint violation: 1451 Cannot delete or update a parent row: a foreign key constraint fails
+SQLSTATE[23000]: Integrity constraint violation: 1451 Cannot delete or update a parent row: a foreign key constraint fails
+SQLSTATE[23000]: Integrity constraint violation: 1451 Cannot delete or update a parent row: a foreign key constraint fails
+
+== sqlstate-42s02- | SQLSTATE[42S02]: Base table or view not found: 1146 Table <*> doesn't exist
+SQLSTATE[42S02]: Base table or view not found: 1146 Table 'shop.campaigns' doesn't exist
+SQLSTATE[42S02]: Base table or view not found: 1146 Table 'shop.coupons' doesn't exist
+
+== sqlstate-22001- | SQLSTATE[22001]: String data, right truncated: 1406 Data too long for column <*> at row <NUM>
+SQLSTATE[22001]: String data, right truncated: 1406 Data too long for column 'title' at row 1
+SQLSTATE[22001]: String data, right truncated: 1406 Data too long for column 'note' at row 3
+
+== sqlstate-42000- | SQLSTATE[42000]: Syntax error or access violation: 1064 You have an error in your SQL syntax
+SQLSTATE[42000]: Syntax error or access violation: 1064 You have an error in your SQL syntax
+SQLSTATE[42000]: Syntax error or access violation: 1064 You have an error in your SQL syntax
+
+# --- HTTP status codes: 404 and 500 are different events --------------------------------------------
+
+== http-404 | Client error: `GET <URL>` resulted in a `404 Not Found` response
+Client error: `GET https://api.payments.test/v1/charges/15` resulted in a `404 Not Found` response
+Client error: `GET https://api.payments.test/v1/charges/99` resulted in a `404 Not Found` response
+Client error: `GET https://api.payments.test/v1/customers/7` resulted in a `404 Not Found` response
+
+== http-500- | Server error: `POST <URL>` resulted in a `500 Internal Server Error` response
+Server error: `POST https://api.payments.test/v1/charge` resulted in a `500 Internal Server Error` response
+Server error: `POST https://api.payments.test/v1/refund` resulted in a `500 Internal Server Error` response
+
+== http-429- | Client error: `POST <URL>` resulted in a `429 Too Many Requests` response
+Client error: `POST https://api.payments.test/v1/charge` resulted in a `429 Too Many Requests` response
+Client error: `POST https://api.payments.test/v1/charge` resulted in a `429 Too Many Requests` response
+
+== status-code-404 | Request failed with status code 404
+Request failed with status code 404
+Request failed with status code 404
+Request failed with status code 404
+
+== status-code-500- | Request failed with status code 500
+Request failed with status code 500
+Request failed with status code 500
+
+== curl-28 | cURL error 28: Operation timed out after <NUM> milliseconds with <NUM> bytes received
+cURL error 28: Operation timed out after 10001 milliseconds with 0 bytes received
+cURL error 28: Operation timed out after 30000 milliseconds with 512 bytes received
+cURL error 28: Operation timed out after 10000 milliseconds with 0 bytes received
+
+== curl-6- | cURL error 6: Could not resolve host: <*>
+cURL error 6: Could not resolve host: api.payments.test
+cURL error 6: Could not resolve host: hooks.example.test
+
+# --- Laravel validation and framework errors ---------------------------------------------------------
+
+== validation-required | The given data was invalid. <*> <*> field is required."]}}
+The given data was invalid. {"errors":{"email":["The email field is required."]}}
+The given data was invalid. {"errors":{"name":["The name field is required."]}}
+The given data was invalid. {"errors":{"phone":["The phone field is required."]}}
+
+== validation-number- | The given data was invalid. <*> <*> must be a number."]}}
+The given data was invalid. {"errors":{"price":["The price must be a number."]}}
+The given data was invalid. {"errors":{"stock":["The stock must be a number."]}}
+
+== undefined-array-key | Undefined array key <*>
+Undefined array key "price"
+Undefined array key "stock"
+Undefined array key "title"
+
+== undefined-method | Call to undefined method <*>
+Call to undefined method App\Models\Product::price()
+Call to undefined method App\Models\Order::total()
+Call to undefined method App\Models\User::fullName()
+
+== null-property | Attempt to read property <*> on null
+Attempt to read property "name" on null
+Attempt to read property "id" on null
+Attempt to read property "email" on null
+
+== memory-exhausted | Allowed memory size of <NUM> bytes exhausted (tried to allocate <NUM> bytes)
+Allowed memory size of 134217728 bytes exhausted (tried to allocate 20480 bytes)
+Allowed memory size of 134217728 bytes exhausted (tried to allocate 4096 bytes)
+Allowed memory size of 268435456 bytes exhausted (tried to allocate 1048576 bytes)
+
+== max-execution- | Maximum execution time of <NUM> seconds exceeded
+Maximum execution time of 30 seconds exceeded
+Maximum execution time of 60 seconds exceeded
+
+== trait-not-found | Trait <*> not found
+Trait "App\Traits\Taggable" not found
+Trait "App\Traits\Sluggable" not found
+
+== class-not-found- | Class <*> not found
+Class "App\Services\PaymentService" not found
+Class "App\Services\ShippingService" not found
+
+# --- scheduled tasks, queues, events: code-like values are categorical -------------------------------
+
+== scheduled-task | Scheduled task started: <*>
+Scheduled task started: rates:update
+Scheduled task started: backup:run
+Scheduled task started: cache:prune
+Scheduled task started: rates:update
+
+== event-status | Status: <*>
+Status: ORDER_CREATED
+Status: ORDER_FAILED
+Status: ORDER_SHIPPED
+
+== event-dotted | Event: <*>
+Event: payment.failed
+Event: payment.succeeded
+Event: order.created
+
+== queue-pending | Queue <*> has <NUM> pending jobs
+Queue emails has 12 pending jobs
+Queue emails has 850 pending jobs
+Queue emails has 3 pending jobs
+
+== queue-default- | Queue default has <NUM> pending jobs
+Queue default has 1200 pending jobs
+Queue default has 9 pending jobs
+
+# --- words that change the meaning: must stay apart --------------------------------------------------
+
+== payment-received | Payment received
+Payment received
+Payment received
+Payment received
+
+== payment-rejected- | Payment rejected
+Payment rejected
+Payment rejected
+
+== upload-completed | S3 upload completed for file <*>
+S3 upload completed for file invoices/2026/10/0001.pdf
+S3 upload completed for file invoices/2026/10/0002.pdf
+S3 upload completed for file images/products/15.jpg
+
+== upload-failed- | S3 upload failed for file <*>
+S3 upload failed for file invoices/2026/10/0003.pdf
+S3 upload failed for file images/products/16.jpg
+
+== response-time-exceeded- | Response time exceeded
+Response time exceeded
+Response time exceeded
+
+== get-slow | GET /api/products/<NUM> slow
+GET /api/products/15 slow
+GET /api/products/16 slow
+GET /api/products/17 slow
+
+== post-slow- | POST /api/products/<NUM> slow
+POST /api/products/15 slow
+POST /api/products/16 slow
+
+# --- variable positions without digits: user names, slugs ----------------------------------------------
+# Known limitation: a position becomes variable only after more than 100 different values
+# (docs/sinirlamalar.md), so eight names are eight clusters today.
+
+== unknown-user | Unknown user: <*>
+Unknown user: ahmet
+Unknown user: ayse
+Unknown user: mehmet
+Unknown user: zeynep
+Unknown user: elif
+Unknown user: can
+Unknown user: deniz
+Unknown user: ece
+
+== product-slug | Product <*> is out of stock
+Product red-sofa is out of stock
+Product oak-table is out of stock
+Product blue-lamp is out of stock
+Product red-sofa is out of stock
+
+# --- repeated tokens, token counts, short and empty messages ---------------------------------------
+
+== repeated-tokens | retry retry retry giving up after <NUM> retries
+retry retry retry giving up after 3 retries
+retry retry retry giving up after 5 retries
+
+== repeated-tokens-short- | retry retry giving up
+retry retry giving up
+retry retry giving up
+
+== short-unauthenticated | Unauthenticated.
+Unauthenticated.
+Unauthenticated.
+Unauthenticated.
+
+== short-forbidden- | Forbidden
+Forbidden
+Forbidden
+
+== short-too-many- | Too Many Attempts.
+Too Many Attempts.
+Too Many Attempts.
+
+== empty |
+\e
+\e
+\e
+== single-token-ids | <*>
+user42
+user43
+a1b2c3
+
+# --- Unicode, embedded JSON, control characters -----------------------------------------------------------
+
+== unicode-turkish | Kullanıcı <NUM> giriş yaptı
+Kullanıcı 381 giriş yaptı
+Kullanıcı 1024 giriş yaptı
+Kullanıcı 7 giriş yaptı
+
+== unicode-turkish-logout- | Kullanıcı <NUM> çıkış yaptı
+Kullanıcı 381 çıkış yaptı
+Kullanıcı 7 çıkış yaptı
+
+== unicode-emoji | Deploy 🚀 finished in <*>
+Deploy 🚀 finished in 42s
+Deploy 🚀 finished in 61s
+Deploy 🚀 finished in 7s
+
+== embedded-json | Payload rejected: <*>
+Payload rejected: {"order":15,"reason":"expired"}
+Payload rejected: {"order":16,"reason":"invalid"}
+Payload rejected: {"order":99,"reason":"expired"}
+
+== control-chars | Terminal output: <*> done
+Terminal output: \x1b[31mred\x1b[0m done
+Terminal output: \x1b[32mgreen\x1b[0m done
+
+== long-message | Deadlock found when trying to get lock; try restarting transaction (SQL: insert into `order_items` (`order_id`, `product_id`, `quantity`, `price`, `created_at`, `updated_at`) values (<NUM>, <NUM>, <NUM>, <NUM>, <TIME>, <TIME>))
+Deadlock found when trying to get lock; try restarting transaction (SQL: insert into `order_items` (`order_id`, `product_id`, `quantity`, `price`, `created_at`, `updated_at`) values (15, 7, 1, 120.5, 2026-10-24 10:00:00, 2026-10-24 10:00:00))
+Deadlock found when trying to get lock; try restarting transaction (SQL: insert into `order_items` (`order_id`, `product_id`, `quantity`, `price`, `created_at`, `updated_at`) values (16, 9, 2, 80, 2026-10-24 10:00:05, 2026-10-24 10:00:05))
+Deadlock found when trying to get lock; try restarting transaction (SQL: insert into `order_items` (`order_id`, `product_id`, `quantity`, `price`, `created_at`, `updated_at`) values (17, 7, 1, 120.5, 2026-10-24 10:00:09, 2026-10-24 10:00:09))
+
+# --- the view error family with different templates and machines --------------------------------------
+
+== view-undefined-variable | Undefined variable <*> (View: <PATH>)
+Undefined variable $product (View: /var/www/shop/resources/views/product/show.blade.php)
+Undefined variable $order (View: /var/www/shop/resources/views/order/show.blade.php)
+Undefined variable $product (View: C:\Users\Irem\Herd\shop\resources\views\product\show.blade.php)

@@ -613,7 +613,11 @@ src/
 ├── json.rs          JSON çıktısı
 └── markdown.rs      Markdown çıktısı
 tests/cli.rs         derlenmiş programı çalıştıran uçtan uca testler
-docs/                ayrıntılı belgeler
+tests/accuracy.rs    etiketli kümeye (tests/data/accuracy.txt) göre kümeleme doğruluğu
+benches/             criterion ölçümleri: üretilen iş yüklerinde maskeleme ve Drain, program uçtan uca
+examples/            workload_dump: ölçüm iş yüklerini dosyaya yazar
+scripts/             measure_memory.sh: programın süresi ve en yüksek belleği (Linux)
+docs/                ayrıntılı belgeler (docs/benchmarks.md İngilizce)
 ornekler/            kurgusal örnek loglar
 ```
 

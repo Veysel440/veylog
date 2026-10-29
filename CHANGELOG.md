@@ -17,6 +17,12 @@ All notable changes to this project are documented in this file. The format is b
 
 - The source code is being translated to English: module names, identifiers, comments and
   tests.
+- Benchmarks and an accuracy baseline: `cargo bench` (criterion, dev-dependency only) measures
+  masking and Drain on deterministic workloads and the binary end to end;
+  `scripts/measure_memory.sh` records wall time and peak memory; `tests/accuracy.rs` scores
+  clustering against a labeled set of 182 messages (pairwise precision, recall, F1, false
+  merges, false splits, template accuracy) and asserts the measured baseline. See
+  `docs/benchmarks.md`.
 
 ## [0.3.0] - 2026-10-28
 

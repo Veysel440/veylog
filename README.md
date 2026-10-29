@@ -593,6 +593,12 @@ about a minute and produced a 40,000-row table; now it yields a single pattern,
 - **Tests:** 386 unit tests cover each module on its own; 54 end-to-end tests run the compiled
   binary and check what the user sees: output text character by character, JSON parsed with
   serde_json, Markdown tables line by line.
+- **Benchmarks and accuracy baseline:** `cargo bench` measures masking and Drain on
+  deterministic workloads (repeated templates, high cardinality, long messages, stack traces,
+  malformed input, realistic Laravel logs) and the binary end to end; `tests/accuracy.rs`
+  scores the clustering against a labeled set (precision, recall, F1, false merges, false
+  splits, template accuracy). The measured baseline and the procedure are in
+  [docs/benchmarks.md](docs/benchmarks.md).
 - **Reference comparisons:** see the table above. On real and synthetic logs, the clustering
   produces exactly the same clusters as [Drain3](https://github.com/logpai/Drain3); the
   flexible threshold only differs where it relaxes the threshold
@@ -666,7 +672,11 @@ src/
 ├── json.rs          JSON output
 └── markdown.rs      Markdown output
 tests/cli.rs         end-to-end tests that run the compiled binary
-docs/                detailed documentation (in Turkish)
+tests/accuracy.rs    clustering accuracy against the labeled set in tests/data/accuracy.txt
+benches/             criterion benchmarks: masking and Drain on generated workloads, the binary end to end
+examples/            workload_dump: writes the benchmark workloads to files
+scripts/             measure_memory.sh: wall time and peak memory of the binary (Linux)
+docs/                detailed documentation (in Turkish; docs/benchmarks.md in English)
 ornekler/            fictional sample logs
 ```
 
