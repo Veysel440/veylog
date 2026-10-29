@@ -107,7 +107,7 @@ pub use shape::token_core;
 
 use cluster::token_bounds;
 use shape::has_digit;
-use similarity::{Comparison, Shapes, compare};
+use similarity::{Shapes, compare, passes_threshold};
 use tree::{LeafPath, Node, Position, branch_key, hash_token};
 
 /// The internal marker of a variable position in a pattern. It contains spaces, so it is never
@@ -512,8 +512,18 @@ impl Drain {
         let mut best: Option<(usize, (usize, usize))> = None;
         let mut shapes = Shapes::new(tokens);
         for &id in candidates {
-            let result = compare(&self.clusters[id], tokens, positions, &mut shapes);
-            if !self.passes_threshold(&result, tokens.len()) {
+            let best_equal = best.map(|(_, (equal, _))| equal);
+            let Some(result) = compare(
+                &self.settings,
+                &self.clusters[id],
+                tokens,
+                positions,
+                &mut shapes,
+                best_equal,
+            ) else {
+                continue;
+            };
+            if !passes_threshold(&self.settings, &result, tokens.len()) {
                 continue;
             }
             let key = (result.equal, result.wildcards);
@@ -522,24 +532,6 @@ impl Drain {
             }
         }
         best.map(|(id, _)| id)
-    }
-
-    /// Does the compared cluster pass the threshold? `len`: the number of tokens of the message
-    /// (n).
-    fn passes_threshold(&self, result: &Comparison, len: usize) -> bool {
-        let threshold = self.settings.similarity_threshold;
-        let n = len as f64;
-        let similarity = result.equal as f64 / n;
-        if !self.settings.flexible_threshold {
-            return similarity >= threshold;
-        }
-        // Variable differences are most likely variables; the threshold relaxes by their share:
-        // threshold × (n − variable differences) / n
-        let relaxed = threshold * (n - result.variable_diffs as f64) / n;
-        // A merge that keeps none of the tokens only happens if every difference has a digit on
-        // both sides. With a threshold of 0 everything merges, as in classic Drain.
-        let foothold = result.equal > 0 || result.digit_diffs == len || threshold <= 0.0;
-        similarity >= relaxed && foothold
     }
 
     /// Places the new cluster in the tree; creates the missing nodes on the way. With the flexible

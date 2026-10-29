@@ -13,6 +13,14 @@ All notable changes to this project are documented in this file. The format is b
   (`<NUM>`), like the patterns. Placeholders are now kept in English internally and translated
   only for the Turkish interface.
 
+### Performance
+
+- Drain gives a candidate cluster up as soon as it can no longer pass the similarity threshold
+  or beat the best cluster found so far. The clusters are the same as before. On
+  high-cardinality logs (almost every message a new pattern) clustering is 22–36% faster with
+  10k–50k records; the gain shrinks with size and is not measurable at 1M records. Memory use is
+  unchanged. See `docs/benchmarks.md`.
+
 ### Other
 
 - The source code is being translated to English: module names, identifiers, comments and

@@ -152,6 +152,51 @@ The misses, all known and documented:
 - Template misses: SQLSTATE codes, driver error codes, HTTP status codes and cURL error
   numbers are masked to `<NUM>`, so the pattern cannot keep them; the user names above.
 
+## Changes after the baseline
+
+### Early rejection in the candidate comparison
+
+`compare` gives a candidate cluster up as soon as it can no longer pass the threshold or no
+longer reach the number of equal positions of the best cluster found so far; for a cluster that
+is compared to the end nothing changes. The proof of the bound is with `may_pass` in
+`src/drain/similarity.rs`; `src/drain/tests.rs` checks it against the comparison without early
+rejection on a fixture, at the threshold boundary and with out-of-range thresholds.
+
+Same clustering as before: the 997 golden cases, the accuracy baseline, and the complete JSON
+output (`--all --format json`) at thresholds 0, 0.5, 0.7, 0.9 and 1 of 11 workload files
+(realistic and repeated up to 1M records, high_cardinality up to 100k) and two real Laravel logs
+that are not in the repository: 65 runs, byte for byte the same.
+
+Before is the build after the module split. Same machine and settings as the baseline; 3
+criterion runs before and 3 after (medians; the change is criterion's estimate in each run):
+
+| Benchmark | Before | After | Change |
+|---|---:|---:|---:|
+| drain/high_cardinality/10000 | 114–121 ms | 76–80 ms | −33 to −36% |
+| drain/high_cardinality/50000 | 2.12–2.18 s | 1.63–1.71 s | −22 to −23% |
+| passes/high_cardinality/first_pass | 227–244 ms | 150–161 ms | −32 to −35% |
+| passes/high_cardinality/second_pass | 223–234 ms | 152–161 ms | −24 to −35% |
+| drain/repeated/100000 | 92–103 ms | 80–87 ms | −8 to −16%, p ≥ 0.05 in two runs: not a sure gain |
+| drain/realistic/100000 | 8.3–8.9 ms | 8.9–9.5 ms | within noise (p ≥ 0.15) |
+| drain/long_messages/20000 | 388–397 µs | 392–443 µs | within noise (see below) |
+
+`long_messages` (30 distinct masked messages, almost only cache hits) came out 7–14% slower in
+the first three runs, with p ≥ 0.05 in each; three more runs against the same baselines gave
++0.5%, +1.8% and +6.9% (p 0.92, 0.69, 0.30), and the instruction count of the binary on the
+long_messages file is the same before and after (−0.002%). It is noise.
+
+Instructions (callgrind, binary on files): high_cardinality 10k −24.2%, repeated 10k −3.0%,
+realistic 10k −0.1%, long_messages 100k −0.002%, stack_traces 20k +0.0002%. Binary on files
+(GNU time, 3 interleaved runs): high_cardinality 10k 0.24–0.25 s → 0.15–0.19 s, 100k 9.2 s →
+6.7–8.8 s; the other workloads within noise (the widest, stack_traces 20k 0.33–0.44 s →
+0.42–0.50 s, does the same number of instructions). Peak RSS unchanged on every workload
+(±0.2 MB).
+
+The gain shrinks with size: high_cardinality 300k (the first 300 000 lines of the 1M file)
+60.3 s → 57.5 s, 1M 304 s → 299 s (one run each; peak RSS 1022 MB both). Above about 100k
+high-cardinality records the time grows faster than linearly; why the gain disappears there has
+not been measured yet.
+
 ## Evaluated and rejected
 
 Optimizations that were implemented, measured on the baseline above and dropped because the

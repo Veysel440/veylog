@@ -1,9 +1,9 @@
 //! Comparing a message with a cluster's pattern position by position.
 
-use super::WILDCARD;
 use super::cluster::Cluster;
 use super::shape::{Shape, has_digit, token_shape};
 use super::tree::Position;
+use super::{Settings, WILDCARD};
 
 /// The result of comparing a pattern and a message position by position.
 #[derive(Debug, Clone, Copy)]
@@ -29,18 +29,26 @@ pub(super) struct Comparison {
 /// values had digits or were code-like is not known. If the token facing the wildcard has a
 /// digit, the difference counts as a digit difference; if the token has a code-like shape, as a
 /// code-like one. `shapes`: the shapes of the message's tokens, found as needed.
+///
+/// `None` when the comparison was given up early: the cluster can no longer pass the threshold,
+/// or can no longer reach `best_equal`, the number of equal positions of the best cluster found
+/// so far (`may_pass`). Such a cluster would not be chosen anyway; the result of a comparison that
+/// is carried to the end is the same as without early rejection.
 pub(super) fn compare(
+    settings: &Settings,
     cluster: &Cluster,
     tokens: &[&str],
     positions: &[Position],
     shapes: &mut Shapes<'_>,
-) -> Comparison {
+    best_equal: Option<usize>,
+) -> Option<Comparison> {
     let mut result = Comparison {
         equal: 0,
         wildcards: 0,
         variable_diffs: 0,
         digit_diffs: 0,
     };
+    let len = tokens.len();
     for (i, (p, t)) in cluster.tokens().zip(tokens).enumerate() {
         let (digits, code) = if p == WILDCARD {
             result.wildcards += 1;
@@ -65,8 +73,81 @@ pub(super) fn compare(
         if digits || code || positions.get(i).is_some_and(Position::is_variable) {
             result.variable_diffs += 1;
         }
+        // This position was not equal: the best the comparison can still end with got worse
+        let remaining = len - (i + 1);
+        if best_equal.is_some_and(|best| result.equal + remaining < best)
+            || !may_pass(
+                settings,
+                result.equal,
+                result.variable_diffs,
+                remaining,
+                len,
+            )
+        {
+            return None;
+        }
     }
-    result
+    Some(result)
+}
+
+/// Does the compared cluster pass the threshold? `len`: the number of tokens of the message
+/// (n).
+pub(super) fn passes_threshold(settings: &Settings, result: &Comparison, len: usize) -> bool {
+    let threshold = settings.similarity_threshold;
+    let n = len as f64;
+    let similarity = result.equal as f64 / n;
+    if !settings.flexible_threshold {
+        return similarity >= threshold;
+    }
+    // Variable differences are most likely variables; the threshold relaxes by their share:
+    // threshold × (n − variable differences) / n
+    let relaxed = threshold * (n - result.variable_diffs as f64) / n;
+    // A merge that keeps none of the tokens only happens if every difference has a digit on
+    // both sides. With a threshold of 0 everything merges, as in classic Drain.
+    let foothold = result.equal > 0 || result.digit_diffs == len || threshold <= 0.0;
+    similarity >= relaxed && foothold
+}
+
+/// Can a comparison that has `equal` equal positions and `variable_diffs` variable differences
+/// so far, with `remaining` positions still to look at, still pass the threshold
+/// (`passes_threshold`)? `false` only when it certainly cannot.
+///
+/// Let e and v be the equal positions and the variable differences among the remaining r
+/// positions; a position is one or the other or neither, so e + v ≤ r. The comparison passes
+/// only if equal + e ≥ t·(n − variable_diffs − v), that is equal + e + t·v ≥ t·(n − variable_diffs).
+/// With 0 ≤ t ≤ 1, e + t·v ≤ e + v ≤ r, so passing needs equal + r ≥ t·(n − variable_diffs): the
+/// bound checked here. (Without the flexible threshold, v plays no part: equal + r ≥ t·n.) The
+/// foothold condition of `passes_threshold` only rejects more, never less, so it does not matter
+/// here. The bound is not valid for t > 1 (every remaining position counting as variable would
+/// then be the best case), so above 1, which the command line does not allow, and for NaN there
+/// is no early rejection.
+///
+/// Floating point: `passes_threshold` and this function round differently, but the quantities
+/// are ratios of small integers and every rounding error is below 1e-12, while `MARGIN` is 1e-9.
+/// If the exact comparison passes, the exact bound holds, and the rounded bound is off by far
+/// less than the margin; so a comparison that passes is never rejected early. The margin can only
+/// let a comparison through that would fail at the end, where `passes_threshold` rejects it.
+fn may_pass(
+    settings: &Settings,
+    equal: usize,
+    variable_diffs: usize,
+    remaining: usize,
+    len: usize,
+) -> bool {
+    const MARGIN: f64 = 1e-9;
+    let t = settings.similarity_threshold;
+    // Above 1 or NaN: no early rejection
+    if t > 1.0 || t.is_nan() {
+        return true;
+    }
+    let n = len as f64;
+    let best_similarity = (equal + remaining) as f64 / n;
+    let relaxed = if settings.flexible_threshold {
+        t * (n - variable_diffs as f64) / n
+    } else {
+        t
+    };
+    best_similarity + MARGIN >= relaxed
 }
 
 /// The shapes of a message's tokens, found as needed. While the message is compared with every

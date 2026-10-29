@@ -1,4 +1,6 @@
-use super::shape::{Shape, token_shape};
+use super::shape::{Shape, has_digit, token_shape};
+use super::similarity::{Comparison, Shapes, compare, passes_threshold};
+use super::tree::Position;
 use super::*;
 use crate::kayit::deneme::topla;
 use crate::mask::mask;
@@ -1088,4 +1090,271 @@ fn single_token_shortcut_matches_a_full_scan() {
             drain.add(&message);
         }
     }
+}
+
+// ---- Early rejection in the candidate comparison
+
+/// The comparison without early rejection, as it was before: the reference the early-rejecting
+/// `compare` is checked against.
+fn compare_to_the_end(
+    cluster: &Cluster,
+    tokens: &[&str],
+    positions: &[Position],
+) -> (usize, usize, usize, usize) {
+    let (mut equal, mut wildcards, mut variable_diffs, mut digit_diffs) = (0, 0, 0, 0);
+    for (i, (p, t)) in cluster.tokens().zip(tokens).enumerate() {
+        let (digits, code) = if p == WILDCARD {
+            wildcards += 1;
+            (has_digit(t), token_shape(t).is_code())
+        } else if p == *t {
+            equal += 1;
+            continue;
+        } else {
+            let shape_t = token_shape(t);
+            (
+                has_digit(p) && has_digit(t),
+                shape_t.is_code() && token_shape(p) == shape_t,
+            )
+        };
+        if digits {
+            digit_diffs += 1;
+        }
+        if digits || code || positions.get(i).is_some_and(Position::is_variable) {
+            variable_diffs += 1;
+        }
+    }
+    (equal, wildcards, variable_diffs, digit_diffs)
+}
+
+/// A cluster opened by `pattern` whose positions `wildcards` are wildcards.
+fn pattern_cluster(pattern: &str, wildcards: &[usize]) -> Cluster {
+    let origin: Rc<str> = Rc::from(pattern);
+    let mut cluster = Cluster::new(&origin, &token_bounds(pattern));
+    let mut other: Vec<&str> = pattern.split_whitespace().collect();
+    for &i in wildcards {
+        other[i] = "\u{1}";
+    }
+    cluster.update(&other);
+    cluster
+}
+
+fn settings_with(threshold: f64, flexible: bool) -> Settings {
+    Settings {
+        similarity_threshold: threshold,
+        flexible_threshold: flexible,
+        ..Settings::default()
+    }
+}
+
+/// Every (pattern, message) pair of the fixture, with the leaf positions for the flexible
+/// threshold: variable at index 6, so that `positions` plays a part too.
+fn comparison_fixture() -> (Vec<Cluster>, Vec<Vec<&'static str>>, Vec<Position>) {
+    let patterns = [
+        (
+            "Job App\\Jobs\\SendInvoice ORDER_CREATED took 12ms for user_42 on node-7",
+            vec![],
+        ),
+        (
+            "Job App\\Jobs\\SendInvoice ORDER_CREATED took 12ms for user_42 on node-7",
+            vec![4, 6],
+        ),
+        (
+            "Payment received from Ayşe for order 100 at 10:00:00",
+            vec![],
+        ),
+        (
+            "Payment received from Ayşe for order 100 at 10:00:00",
+            vec![3],
+        ),
+        ("a b c d e f g h i j", vec![]),
+        (
+            "<NUM> <NUM> <NUM> <NUM> <NUM> <NUM> <NUM> <NUM> <NUM> <NUM>",
+            vec![],
+        ),
+        ("one two", vec![]),
+        ("one two", vec![0]),
+    ];
+    let messages = [
+        "Job App\\Jobs\\SendInvoice ORDER_CREATED took 12ms for user_42 on node-7",
+        "Job App\\Jobs\\SendSms ORDER_FAILED took 40ms for user_9 on node-8",
+        "Job failed badly then took 12ms for user_42 on node-7",
+        "Job App\\Jobs\\SendInvoice ORDER_CREATED took 12ms for nobody on earth",
+        "Payment received from Ali for order 101 at 10:00:01",
+        "Payment rejected from Ali for order 100 at 10:00:00",
+        "Refund received from Ayşe for order 100 at 10:00:00",
+        "x y z d e f g h i j",
+        "a b c d e f g h i k",
+        "1 2 3 4 5 6 7 8 9 10",
+        "k l m n o p q r s t",
+        "one two",
+        "one three",
+        "two two",
+    ];
+    let mut positions: Vec<Position> = (0..10).map(|_| Position::Values(HashSet::new())).collect();
+    positions[6] = Position::Variable;
+    (
+        patterns
+            .iter()
+            .map(|(pattern, wildcards)| pattern_cluster(pattern, wildcards))
+            .collect(),
+        messages
+            .iter()
+            .map(|m| m.split_whitespace().collect())
+            .collect(),
+        positions,
+    )
+}
+
+#[test]
+fn early_rejection_never_drops_a_cluster_that_passes() {
+    let (clusters, messages, positions) = comparison_fixture();
+    let thresholds = [0.0, 0.1, 0.3, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 0.99, 1.0];
+    let mut checked = 0;
+    let mut rejected_early = 0;
+    for flexible in [true, false] {
+        for &t in &thresholds {
+            let settings = settings_with(t, flexible);
+            for cluster in &clusters {
+                for tokens in &messages {
+                    if cluster.tokens().count() != tokens.len() {
+                        continue;
+                    }
+                    let (equal, wildcards, variable_diffs, digit_diffs) =
+                        compare_to_the_end(cluster, tokens, &positions);
+                    let reference = Comparison {
+                        equal,
+                        wildcards,
+                        variable_diffs,
+                        digit_diffs,
+                    };
+                    let passes = passes_threshold(&settings, &reference, tokens.len());
+                    let mut shapes = Shapes::new(tokens);
+                    let result = compare(&settings, cluster, tokens, &positions, &mut shapes, None);
+                    match result {
+                        Some(r) => {
+                            assert_eq!(
+                                (r.equal, r.wildcards, r.variable_diffs, r.digit_diffs),
+                                (equal, wildcards, variable_diffs, digit_diffs),
+                                "t={t} flexible={flexible} {tokens:?}"
+                            );
+                        }
+                        None => {
+                            assert!(
+                                !passes,
+                                "rejected early but passes: t={t} flexible={flexible} {tokens:?}"
+                            );
+                            rejected_early += 1;
+                        }
+                    }
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 300, "{checked}");
+    assert!(
+        rejected_early > 50,
+        "early rejection was really exercised: {rejected_early}"
+    );
+}
+
+#[test]
+fn early_rejection_by_the_best_so_far_keeps_every_possible_winner() {
+    let (clusters, messages, positions) = comparison_fixture();
+    let settings = Settings::default();
+    for cluster in &clusters {
+        for tokens in &messages {
+            if cluster.tokens().count() != tokens.len() {
+                continue;
+            }
+            let (equal, ..) = compare_to_the_end(cluster, tokens, &positions);
+            for best in 0..=tokens.len() {
+                let mut shapes = Shapes::new(tokens);
+                let result = compare(
+                    &settings,
+                    cluster,
+                    tokens,
+                    &positions,
+                    &mut shapes,
+                    Some(best),
+                );
+                if equal >= best {
+                    // Could still win (or tie): must not be dropped for the best so far. It may be
+                    // dropped for the threshold, which `None` does not distinguish; so check the
+                    // threshold side separately
+                    let mut shapes = Shapes::new(tokens);
+                    let unbounded =
+                        compare(&settings, cluster, tokens, &positions, &mut shapes, None);
+                    assert_eq!(
+                        result.map(|r| r.equal),
+                        unbounded.map(|r| r.equal),
+                        "{tokens:?} best {best}"
+                    );
+                } else if let Some(r) = result {
+                    assert_eq!(r.equal, equal);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn early_rejection_at_the_threshold_boundary() {
+    // n = 10, t = 0.7: exactly 7 equal passes, 6 does not. Equal positions placed last, so the
+    // comparison walks through the differences first and the bound is tight on the way
+    let cluster = pattern_cluster("a b c d e f g h i j", &[]);
+    let positions: Vec<Position> = Vec::new();
+    for (message, expect) in [
+        ("x y z d e f g h i j", true),
+        ("x y z w e f g h i j", false),
+        ("a b c d e f g x y z", true),
+        ("a b c d e f w x y z", false),
+    ] {
+        let tokens: Vec<&str> = message.split_whitespace().collect();
+        for flexible in [true, false] {
+            let settings = settings_with(0.7, flexible);
+            let mut shapes = Shapes::new(&tokens);
+            let result = compare(&settings, &cluster, &tokens, &positions, &mut shapes, None);
+            let passed = result.is_some_and(|r| passes_threshold(&settings, &r, tokens.len()));
+            assert_eq!(passed, expect, "{message} flexible={flexible}");
+        }
+    }
+    // Thresholds the command line does not allow: no early rejection, the result is complete
+    for t in [1.5, f64::NAN, f64::INFINITY] {
+        let settings = settings_with(t, true);
+        let tokens: Vec<&str> = "x y z w v f g h i j".split_whitespace().collect();
+        let mut shapes = Shapes::new(&tokens);
+        let result = compare(&settings, &cluster, &tokens, &positions, &mut shapes, None);
+        assert_eq!(result.map(|r| r.equal), Some(5), "t={t}");
+    }
+}
+
+#[test]
+fn early_rejection_with_variable_differences_and_wildcards() {
+    // Every difference has digits on both sides: variable, the relaxed threshold lets it pass
+    // whatever t is, so nothing may be rejected early
+    let cluster = pattern_cluster("1 2 3 4 5 6 7 8 9 10", &[]);
+    let tokens: Vec<&str> = "11 12 13 14 15 16 17 18 19 20".split_whitespace().collect();
+    let positions: Vec<Position> = Vec::new();
+    for t in [0.5, 0.7, 1.0] {
+        let settings = settings_with(t, true);
+        let mut shapes = Shapes::new(&tokens);
+        let result = compare(&settings, &cluster, &tokens, &positions, &mut shapes, None);
+        assert!(
+            result.is_some_and(|r| passes_threshold(&settings, &r, 10)),
+            "t={t}"
+        );
+    }
+    // Wildcards do not count as equal: a pattern of only wildcards passes nothing at t > 0 with
+    // ordinary words, and is rejected early
+    let all_wild = pattern_cluster("a b c d e f g h i j", &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    let words: Vec<&str> = "k l m n o p q r s t".split_whitespace().collect();
+    let settings = settings_with(0.7, true);
+    let mut shapes = Shapes::new(&words);
+    assert!(compare(&settings, &all_wild, &words, &positions, &mut shapes, None).is_none());
+    // ... but with t = 0 everything passes, and the full result comes back
+    let settings = settings_with(0.0, true);
+    let mut shapes = Shapes::new(&words);
+    let r = compare(&settings, &all_wild, &words, &positions, &mut shapes, None).unwrap();
+    assert_eq!((r.equal, r.wildcards), (0, 10));
 }
