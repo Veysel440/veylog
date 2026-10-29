@@ -10,7 +10,7 @@
 //! - **Drain.** Her kaydın maskeli mesajı, logdaki sırasıyla kümelenir (`drain::Kumeleyici`):
 //!   Drain sıraya bağlıdır, aynı mesaj logun farklı yerlerinde farklı kümelere katılabilir. Bir
 //!   mesajın tekrarlarında ağaç değişmediyse önceki sonuç kullanılır; arama yapılmaz.
-//! - **Kayıt sütunları.** Her kaydın zamanı ve alt grubu, sıkıştırılmış olarak (`sutunlar`
+//! - **Kayıt sütunları.** Her kaydın zamanı ve alt grubu, sıkıştırılmış olarak (`columns`
 //!   modülü): kayıt başına çoğunlukla 2–3 bayt. Karşılaştırma ve ani artış bunlarla hesaplanır.
 //! - **Seyrek dizin.** Her `DIZIN_ARALIGI` kayıtta bir kaydın girdideki konumu: bir kaydın
 //!   mesajı sonradan gerekirse girdinin yalnızca o kısmı yeniden okunur.
@@ -19,7 +19,7 @@
 //!   fonksiyonla belirleniyorsa yığın izlerinden hangi satırın hangi fonksiyonda olduğu da
 //!   öğrenilir (`MetotHaritasi`): çağrıları bilinmeyen kayıtların (JSON'un yığın izi)
 //!   konumları okuma bitince bununla tamamlanır.
-//! - **Sayılar.** Seviyeler, farklı ham mesajlar (`farkli_sayac` modülü), en eski ve en yeni
+//! - **Sayılar.** Seviyeler, farklı ham mesajlar (`distinct` modülü), en eski ve en yeni
 //!   kayıt, kaç kaydın başka bir saat diliminden çevrildiği.
 //!
 //! Kayıt zamanları raporun saat dilimine çevrilerek alınır (`zaman::DilimCevirici`): sütunlardaki,
@@ -43,15 +43,15 @@ use std::hash::Hash;
 use std::io::{self, BufRead};
 use std::rc::Rc;
 
+use crate::columns::{ColumnsIter, RecordColumns};
+use crate::distinct::DistinctCounter;
 use crate::drain::{self, Kume, Kumeleyici};
-use crate::farkli_sayac::FarkliSayaci;
 use crate::filtre::CozulmusFiltre;
 use crate::kayit::{Kayit, KayitAlici, KayitBilgisi, SatirSayilari, Seviye};
 use crate::maske::maskele;
 use crate::okuyucu::{self, DIZIN_ARALIGI, OkumaSonucu, OrnekIstegi, OrnekKaynagi, SeyrekDizin};
 use crate::parmak_izi::{Istisna, IstisnaTaslagi, KonumTuru, MetotHaritasi, ParmakIzi};
 use crate::satir_bicimi::SatirBicimi;
-use crate::sutunlar::{KayitSutunlari, SutunOkuyucu};
 use crate::zaman::{DilimCevirici, KayitDilimi, SaatDilimi, Zaman};
 
 /// Bir kaydın istisnası: yok, parmak izi belli ya da bütün kökler bilinince çıkarılacak.
@@ -174,7 +174,7 @@ pub struct Depo {
     dilimler: DilimSayilari,
     sayilar: SatirSayilari,
     gecersiz_utf8: bool,
-    sutunlar: KayitSutunlari,
+    columns: RecordColumns,
     /// Her `DIZIN_ARALIGI` kayıtta bir kaydın girdideki konumu.
     dizin: SeyrekDizin,
     /// Girdi baştan başladı (`yeni_girdi`): gelen ilk kaydın konumu da dizine yazılır.
@@ -190,7 +190,7 @@ pub struct Depo {
     /// Saat dilimi sayılarının kaç kayıttan sayıldığı; None ise depodaki kayıtlardan. Zaman
     /// penceresinde (`pencere`) dilim sayıları okunan bütün kayıtlarındır.
     dilim_kapsami: Option<usize>,
-    ham_mesajlar: FarkliSayaci,
+    ham_mesajlar: DistinctCounter,
     /// Maskeli mesajlar, ilk görülme sırasıyla; numaraları bu listedeki sıralarıdır. Metinler
     /// `Rc` ile paylaşılır: liste ile sözlük aynı metni gösterir.
     maskeliler: Vec<Rc<str>>,
@@ -225,7 +225,7 @@ impl KayitAlici for Depo {
             return;
         }
         // Kaydın depodaki sıra numarası: filtreye uyan kayıtlar arasında kaçıncı olduğu
-        let sira = self.sutunlar.len();
+        let sira = self.columns.len();
         self.seviye_sayilari[seviye as usize] += 1;
         match dilim {
             KayitDilimi::Yazilmamis => self.dilimler.yazilmamis += 1,
@@ -237,7 +237,7 @@ impl KayitAlici for Depo {
         }
         self.en_eski = Some(self.en_eski.map_or(zaman, |en_eski| en_eski.min(zaman)));
         self.en_yeni = Some(self.en_yeni.map_or(zaman, |en_yeni| en_yeni.max(zaman)));
-        self.ham_mesajlar.ekle(kayit.mesaj());
+        self.ham_mesajlar.insert(kayit.mesaj());
 
         let (maskeli, maskelendi) = self.maskeli_no(kayit.mesaj());
         let kume = self
@@ -284,7 +284,7 @@ impl KayitAlici for Depo {
                 no
             }
         };
-        self.sutunlar.ekle(zaman.saniye(), no);
+        self.columns.push(zaman.saniye(), no);
         if self.yeni_girdi || sira.is_multiple_of(DIZIN_ARALIGI) {
             self.dizin.ekle(sira, bilgi.konum);
             self.yeni_girdi = false;
@@ -319,7 +319,7 @@ impl Depo {
             dilimler: DilimSayilari::default(),
             sayilar: SatirSayilari::default(),
             gecersiz_utf8: false,
-            sutunlar: KayitSutunlari::default(),
+            columns: RecordColumns::default(),
             dizin: SeyrekDizin::default(),
             yeni_girdi: false,
             seviye_sayilari: [0; 8],
@@ -327,7 +327,7 @@ impl Depo {
             en_yeni: None,
             okunan_en_yeni: None,
             dilim_kapsami: None,
-            ham_mesajlar: FarkliSayaci::default(),
+            ham_mesajlar: DistinctCounter::default(),
             maskeliler: Vec::new(),
             maskeli_sirasi: HashMap::new(),
             kokler: BTreeSet::new(),
@@ -404,13 +404,13 @@ impl Depo {
     /// seyrek dizini yoktur. Örneği kesin olmayan bir alt grup (pencereye ilk kaydıyla
     /// girmeyen) görünümde de kesin değildir: örneği `ornekleri_tamamla` ile yeniden okunur.
     pub fn pencere(&self, filtre: CozulmusFiltre) -> (Depo, Vec<usize>) {
-        let mut sutunlar = KayitSutunlari::default();
+        let mut columns = RecordColumns::default();
         let mut tam_sira = Vec::new();
         let mut alt_gruplar: Vec<AltGrup> = Vec::new();
         let mut yeni_no: Vec<Option<u32>> = vec![None; self.alt_gruplar.len()];
         let mut seviye_sayilari = [0; 8];
         let (mut en_eski, mut en_yeni) = (None, None);
-        for (sira, (saniye, eski_no)) in self.sutunlar.iter().enumerate() {
+        for (sira, (saniye, eski_no)) in self.columns.iter().enumerate() {
             let eski = &self.alt_gruplar[eski_no as usize];
             let seviye = eski.anahtar.seviye;
             if !filtre.gecer(saniye, seviye) {
@@ -449,7 +449,7 @@ impl Depo {
                     no
                 }
             };
-            sutunlar.ekle(saniye, no);
+            columns.push(saniye, no);
         }
         let depo = Depo {
             kumeleyici: self.kumeleyici.kumelerin_kopyasi(),
@@ -460,7 +460,7 @@ impl Depo {
             dilimler: self.dilimler.clone(),
             sayilar: self.sayilar,
             gecersiz_utf8: self.gecersiz_utf8,
-            sutunlar,
+            columns,
             dizin: SeyrekDizin::default(),
             yeni_girdi: false,
             seviye_sayilari,
@@ -495,7 +495,7 @@ impl Depo {
     fn ikinci_tur(&mut self) {
         let mut kumeleyici = self.kumeleyici.ikinci_tur();
         let mut kumeler: Vec<Option<u32>> = vec![None; self.alt_gruplar.len()];
-        for (_, no) in self.sutunlar.iter() {
+        for (_, no) in self.columns.iter() {
             let maskeli = self.alt_gruplar[no as usize].anahtar.maskeli;
             let kume =
                 numara(kumeleyici.ekle(maskeli as usize, &self.maskeliler[maskeli as usize]));
@@ -534,8 +534,8 @@ impl Depo {
         let mut kumeleyici = self.kumeleyici.ikinci_tur();
         let mut alt_gruplar: Vec<AltGrup> = Vec::new();
         let mut sirasi: HashMap<AltGrupAnahtari, u32> = HashMap::new();
-        let mut sutunlar = KayitSutunlari::default();
-        for (sira, (saniye, eski_no)) in self.sutunlar.iter().enumerate() {
+        let mut columns = RecordColumns::default();
+        for (sira, (saniye, eski_no)) in self.columns.iter().enumerate() {
             let eski = &self.alt_gruplar[eski_no as usize];
             let maskeli = eski.anahtar.maskeli;
             let kume = kumeleyici.ekle(maskeli as usize, &self.maskeliler[maskeli as usize]);
@@ -571,11 +571,11 @@ impl Depo {
                     no
                 }
             };
-            sutunlar.ekle(saniye, no);
+            columns.push(saniye, no);
         }
         self.kumeleyici = kumeleyici;
         self.alt_gruplar = alt_gruplar;
-        self.sutunlar = sutunlar;
+        self.columns = columns;
     }
 
     /// Örneği kesin olmayan alt grupların (ikinci turda bölünenlerin) ilk kayıtlarını girdiden
@@ -623,12 +623,12 @@ impl Depo {
     /// Depodaki (filtre varsa filtreye uyan) kayıt sayısı. Dosyadaki bütün kayıtlar:
     /// `sayilar().kayit`.
     pub fn kayit_sayisi(&self) -> usize {
-        self.sutunlar.len()
+        self.columns.len()
     }
 
     /// Kayıtlar logdaki sırayla: (zaman, alt grup numarası). Zaman 1970'ten bu yana saniyedir.
-    pub fn kayitlar(&self) -> SutunOkuyucu<'_> {
-        self.sutunlar.iter()
+    pub fn kayitlar(&self) -> ColumnsIter<'_> {
+        self.columns.iter()
     }
 
     pub fn alt_gruplar(&self) -> &[AltGrup] {
@@ -705,7 +705,7 @@ impl Depo {
     }
 
     /// Farklı ham (maskelenmemiş) mesajların sayısı.
-    pub fn ham_mesajlar(&self) -> &FarkliSayaci {
+    pub fn ham_mesajlar(&self) -> &DistinctCounter {
         &self.ham_mesajlar
     }
 
@@ -984,7 +984,7 @@ mod testler {
         // Laravel'in biçiminde saat dilimi yazılmaz
         assert_eq!(depo.saat_dilimi(), None);
         assert_eq!(depo.dilim_sayilari().yazilmamis, 59);
-        assert_eq!(depo.ham_mesajlar().sayi(), 45);
+        assert_eq!(depo.ham_mesajlar().count(), 45);
         assert_eq!(depo.maskeli_mesajlar().len(), 27);
         assert!(!depo.gecersiz_utf8());
     }
@@ -1304,7 +1304,7 @@ mod testler {
         let istek = |sira: usize| OrnekIstegi {
             sira,
             maskeli: &depo.maskeliler
-                [depo.alt_gruplar[depo.sutunlar.iter().nth(sira).unwrap().1 as usize].maskeli()],
+                [depo.alt_gruplar[depo.columns.iter().nth(sira).unwrap().1 as usize].maskeli()],
             seviye: Seviye::Error,
         };
         let bulunan = kaynak.mesajlar(&[istek(3), istek(4)]).unwrap();

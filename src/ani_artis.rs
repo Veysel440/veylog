@@ -35,10 +35,10 @@ use std::collections::HashMap;
 use std::io;
 
 use crate::depo::Depo;
-use crate::istatistik::medyan_ve_mad;
 use crate::kayit::Seviye;
 use crate::okuyucu::{OrnekIstegi, OrnekKaynagi};
 use crate::rapor::KalipAnalizi;
+use crate::stats::median_and_mad;
 use crate::zaman::Zaman;
 
 /// Sıçrama sayılmak için puanın geçmesi gereken eşik (Iglewicz ve Hoaglin, 1993).
@@ -211,15 +211,15 @@ impl AniArtislar {
             dolu.sort_unstable_by_key(|dilim| dilim.numara);
             let sayilar: Vec<usize> = dolu.iter().map(|dilim| dilim.adet).collect();
             // Kaydı olmayan dilimler 0 sayılır. Dizi boş olamaz: log en az `EN_AZ_DILIM` dilim.
-            let olagan = medyan_ve_mad(sonuc.dilim_sayisi - dolu.len(), &sayilar)
+            let olagan = median_and_mad(sonuc.dilim_sayisi - dolu.len(), &sayilar)
                 .expect("dilim dizisi boş değil");
             let puan =
-                |adet: usize| CARPAN * (adet as f64 - olagan.medyan) / olagan.mad.max(EN_AZ_MAD);
+                |adet: usize| CARPAN * (adet as f64 - olagan.median) / olagan.mad.max(EN_AZ_MAD);
             // Olağanın üstündeki dilimler: sayısı medyanı geçenler. Boş bir dilim olağanın
             // üstünde olamaz (0, medyanı geçemez); bu yüzden yalnızca dolulara bakılır.
             let ustundekiler: Vec<&DoluDilim> = dolu
                 .iter()
-                .filter(|dilim| dilim.adet as f64 > olagan.medyan)
+                .filter(|dilim| dilim.adet as f64 > olagan.median)
                 .collect();
             // Olağanın üstündeki art arda dilimler bir gruptur: bir sonraki, bir öncekinin hemen
             // arkasındaki dilimse aynı gruba girer
@@ -246,7 +246,7 @@ impl AniArtislar {
                         .expect("`chunk_by` boş grup vermez"),
                     // Örnekler aşağıda bulunur
                     ornek: String::new(),
-                    olagan: olagan.medyan,
+                    olagan: olagan.median,
                     mad: olagan.mad,
                     baslangic: dilim_basi(ilk.numara),
                     bitis: dilim_basi(son.numara + 1),

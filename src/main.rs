@@ -1,12 +1,12 @@
 //! veylog: Laravel log dosyalarını özetleyen komut satırı aracı.
 
 mod ani_artis;
+mod columns;
 mod depo;
 mod dil;
+mod distinct;
 mod drain;
-mod farkli_sayac;
 mod filtre;
-mod istatistik;
 mod istisna_metni;
 mod izle;
 mod json;
@@ -20,7 +20,7 @@ mod okuyucu;
 mod parmak_izi;
 mod rapor;
 mod satir_bicimi;
-mod sutunlar;
+mod stats;
 mod zaman;
 mod zaman_bicimi;
 

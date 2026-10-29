@@ -26,8 +26,8 @@ use std::fmt;
 
 use crate::depo::Depo;
 use crate::dil::{self, Dil};
-use crate::istatistik::binom_ust_kuyruk;
 use crate::rapor::KalipAnalizi;
+use crate::stats::binomial_upper_tail;
 use crate::zaman::{Zaman, ZamanNoktasi};
 
 /// Bir kalıbın "artan" sayılması için sonraki saatlik sıklığın öncekine en az oranı.
@@ -211,15 +211,15 @@ impl Karsilastirma {
             };
             if once_adet == 0 {
                 // Kayıtların hepsinin tesadüfen sonraya düşme ihtimali
-                let p_degeri = binom_ust_kuyruk(rastgele_sonra, rastgele_sonra, sonra_payi);
+                let p_degeri = binomial_upper_tail(rastgele_sonra, rastgele_sonra, sonra_payi);
                 sonuc.yeni.push(degisim(p_degeri));
             } else if sonra_adet == 0 {
                 // Hepsinin tesadüfen önceye düşme ihtimali: önceye düşme ihtimali 1 − pay
-                let p_degeri = binom_ust_kuyruk(rastgele_once, rastgele_once, 1.0 - sonra_payi);
+                let p_degeri = binomial_upper_tail(rastgele_once, rastgele_once, 1.0 - sonra_payi);
                 sonuc.kaybolan.push(degisim(p_degeri));
             } else if sonra_adet >= EN_AZ_KAYIT && kat >= ARTIS_KATI {
                 let p_degeri =
-                    binom_ust_kuyruk(rastgele_once + rastgele_sonra, rastgele_sonra, sonra_payi);
+                    binomial_upper_tail(rastgele_once + rastgele_sonra, rastgele_sonra, sonra_payi);
                 if p_degeri < ANLAMLILIK {
                     sonuc.artan.push(degisim(p_degeri));
                 }

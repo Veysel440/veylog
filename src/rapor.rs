@@ -244,7 +244,7 @@ pub struct KalipAnalizi {
     /// Maskelemeden önce kaç farklı mesaj vardı?
     pub ham_mesaj_sayisi: usize,
     /// Farklı mesaj sayısı bir tahmin mi? Çok sayıda farklı mesajda sayı HyperLogLog ile
-    /// tahmin edilir (`farkli_sayac` modülü).
+    /// tahmin edilir (`distinct` modülü).
     pub ham_mesaj_yaklasik: bool,
     /// Maskelemeden sonra kaç farklı mesaj kaldı?
     pub maskeli_mesaj_sayisi: usize,
@@ -405,8 +405,8 @@ pub fn kaliplari_cikar(depo: &Depo, ayarlar: &RaporAyarlari) -> KalipAnalizi {
         .collect();
 
     KalipAnalizi {
-        ham_mesaj_sayisi: depo.ham_mesajlar().sayi(),
-        ham_mesaj_yaklasik: depo.ham_mesajlar().yaklasik_mi(),
+        ham_mesaj_sayisi: depo.ham_mesajlar().count(),
+        ham_mesaj_yaklasik: depo.ham_mesajlar().is_approximate(),
         maskeli_mesaj_sayisi: depo.maskeli_mesaj_sayisi(),
         kalip_sayisi: kumeler.len(),
         satirlar: sirali,
@@ -1119,12 +1119,12 @@ fn sayi_sutunlari<const N: usize>(
             .fold(basliklar[sutun].chars().count(), usize::max)
     });
     let yaz = |hucreler: [&str; N]| {
-        let sutunlar: Vec<String> = hucreler
+        let columns: Vec<String> = hucreler
             .iter()
             .zip(genislikler)
             .map(|(hucre, genislik)| format!("{hucre:>genislik$}"))
             .collect();
-        sutunlar.join("  ")
+        columns.join("  ")
     };
     let sayilar = satirlar
         .iter()

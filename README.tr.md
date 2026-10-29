@@ -598,8 +598,8 @@ src/
 ├── satir_bicimi.rs  başlık satırının biçimi: Laravel'inki ya da --desen (Monolog dizgesi, düzenli ifade)
 ├── zaman_bicimi.rs  --zaman-bicimi: PHP'nin date() dizgesiyle yazılmış zamanları okur
 ├── depo.rs          okunurken her kayıttan özet için gerekenler: alt gruplar, sütunlar, kökler
-├── sutunlar.rs      kayıtların zamanları ve alt grupları, delta ve LEB128 ile sıkıştırılmış
-├── farkli_sayac.rs  farklı mesaj sayacı: tam, çok sayıda farklı değerde HyperLogLog
+├── columns.rs       kayıtların zamanları ve alt grupları, delta ve LEB128 ile sıkıştırılmış
+├── distinct.rs      farklı mesaj sayacı: tam, çok sayıda farklı değerde HyperLogLog
 ├── json_okuyucu.rs  Monolog'un JSON satırları için kütüphanesiz JSON okuyucu
 ├── maske.rs         değişkenleri yer tutucularla değiştirir: <SAYI>, <IP>, <YOL>...
 ├── drain.rs         Drain: maskelenmiş mesajlardan kalıp çıkarır; esnek eşik, kodsal biçimler, değişken konumlar
@@ -608,7 +608,7 @@ src/
 ├── rapor.rs         özet ve kalıp tablosu; metin çıktısı, kontrol karakterlerinin temizlenmesi
 ├── karsilastirma.rs iki zaman aralığının karşılaştırılması
 ├── ani_artis.rs     dilimler, medyan ve MAD, değiştirilmiş z puanı, çift eşik
-├── istatistik.rs    binom dağılımının kuyruğu; seyrek dizilerde medyan ve MAD
+├── stats.rs         binom dağılımının kuyruğu; seyrek dizilerde medyan ve MAD
 ├── zaman.rs         tarih ve saat hesapları, saat dilimleri
 ├── json.rs          JSON çıktısı
 └── markdown.rs      Markdown çıktısı

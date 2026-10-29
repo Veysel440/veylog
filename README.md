@@ -636,7 +636,8 @@ The full list is in [limitations](docs/sinirlamalar.md) (in Turkish).
 
 ## Project layout
 
-Module names, identifiers and code comments are currently in Turkish.
+Translation of the code from Turkish to English is in progress: some module names, identifiers
+and comments are still in Turkish.
 
 ```text
 src/
@@ -650,8 +651,8 @@ src/
 ├── satir_bicimi.rs  format of the header line: Laravel's or --pattern (Monolog string, regular expression)
 ├── zaman_bicimi.rs  --time-format: reads times written with a PHP date() format
 ├── depo.rs          what the summary needs from each record, collected while reading: subgroups, columns, roots
-├── sutunlar.rs      record times and subgroups, compressed with delta and LEB128 encoding
-├── farkli_sayac.rs  distinct message counter: exact, HyperLogLog for many distinct values
+├── columns.rs       record times and subgroups, compressed with delta and LEB128 encoding
+├── distinct.rs      distinct message counter: exact, HyperLogLog for many distinct values
 ├── json_okuyucu.rs  dependency-free JSON reader for Monolog's JSON lines
 ├── maske.rs         replaces variables with placeholders: <NUM>, <IP>, <PATH>...
 ├── drain.rs         Drain: extracts patterns from masked messages; flexible threshold, code-like shapes, variable positions
@@ -660,7 +661,7 @@ src/
 ├── rapor.rs         summary and pattern table; text output, control character cleanup
 ├── karsilastirma.rs comparison of two time ranges
 ├── ani_artis.rs     slices, median and MAD, modified z-score, double threshold
-├── istatistik.rs    binomial tail; median and MAD over sparse arrays
+├── stats.rs         binomial tail; median and MAD over sparse arrays
 ├── zaman.rs         date and time arithmetic, time zones
 ├── json.rs          JSON output
 └── markdown.rs      Markdown output
